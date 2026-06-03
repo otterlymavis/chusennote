@@ -1831,6 +1831,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     web_parser = subparsers.add_parser("web", help="Run the local web UI")
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
 
     export_parser = subparsers.add_parser("export", help="Export saved data")
     export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events"))
@@ -2131,20 +2132,22 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
     return ChusennoteHandler
 
 
-def create_web_server(db_path: str, port: int) -> http.server.ThreadingHTTPServer:
-    return http.server.ThreadingHTTPServer(("127.0.0.1", port), make_web_handler(db_path))
+def create_web_server(db_path: str, port: int, host: str = "127.0.0.1") -> http.server.ThreadingHTTPServer:
+    return http.server.ThreadingHTTPServer((host, port), make_web_handler(db_path))
 
 
-def run_web(db_path: str, port: int) -> None:
-    server = create_web_server(db_path, port)
-    print(f"Serving chusennote at http://127.0.0.1:{server.server_port}")
+def run_web(db_path: str, port: int, host: str = "127.0.0.1") -> None:
+    server = create_web_server(db_path, port, host)
+    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    bind_note = f" (bound to {host})" if display_host != host else ""
+    print(f"Serving chusennote at http://{display_host}:{server.server_port}{bind_note}")
     server.serve_forever()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     if args.command == "web":
-        run_web(args.db, args.port)
+        run_web(args.db, args.port, args.host)
         return 0
     if args.command == "export":
         if args.target == "events":

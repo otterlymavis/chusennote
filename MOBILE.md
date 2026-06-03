@@ -10,6 +10,18 @@ Run this from the repository root before opening either app:
 python lottery_monitor.py web --db chusennote.sqlite3 --port 8765
 ```
 
+On Windows, you can use the helper script instead:
+
+```powershell
+.\scripts\start-chusennote.ps1 -Open
+```
+
+Check that the server is reachable:
+
+```powershell
+.\scripts\check-chusennote.ps1
+```
+
 The mobile apps read:
 
 - `GET /api/health`
@@ -43,6 +55,12 @@ For a physical Android device, change the base URL in the app to your computer's
 http://192.168.1.20:8765
 ```
 
+Start the server with LAN binding first:
+
+```powershell
+.\scripts\start-chusennote.ps1 -Lan
+```
+
 ## iOS
 
 Open `ios/Chusennote.xcodeproj` in Xcode.
@@ -54,6 +72,12 @@ http://127.0.0.1:8765
 ```
 
 For a physical iPhone, change the base URL in the app to your computer's LAN IP.
+
+Start the server with LAN binding first:
+
+```powershell
+.\scripts\start-chusennote.ps1 -Lan
+```
 
 ## CI builds
 

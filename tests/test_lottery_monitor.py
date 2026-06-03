@@ -584,6 +584,15 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         thread.join(timeout=5)
 
 
+def test_web_command_parses_explicit_host():
+    args = lm.parse_args(["web", "--db", "local.sqlite3", "--port", "0", "--host", "0.0.0.0"])
+
+    assert args.command == "web"
+    assert args.db == "local.sqlite3"
+    assert args.port == 0
+    assert args.host == "0.0.0.0"
+
+
 def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))

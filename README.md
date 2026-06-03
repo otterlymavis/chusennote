@@ -81,6 +81,24 @@ python3 lottery_monitor.py web --db chusennote.sqlite3 --port 8765
 
 Then open <http://127.0.0.1:8765>.
 
+On Windows, the helper script starts the same server and can open the browser:
+
+```powershell
+.\scripts\start-chusennote.ps1 -Open
+```
+
+For testing from a physical phone on the same Wi-Fi, bind to your LAN interface:
+
+```powershell
+.\scripts\start-chusennote.ps1 -Lan
+```
+
+Then use one of the printed `LAN URL` values in the mobile app. You can verify a running server with:
+
+```powershell
+.\scripts\check-chusennote.ps1
+```
+
 Native mobile client source is available in [`android/`](android/) and [`ios/`](ios/). See [`MOBILE.md`](MOBILE.md) for setup notes.
 
 Export local data for other tools:
