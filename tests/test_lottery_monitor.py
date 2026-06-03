@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import sqlite3
 import threading
@@ -551,6 +552,38 @@ def test_public_manual_source_adds_ticket_round(tmp_path, monkeypatch):
     assert blocks.ticket_info[0].application_end_at == "2026-06-18"
 
 
+def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=example_blocks("Example").general_info,
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="First lottery",
+                lottery_start="2026-06-03",
+                lottery_end="2026-06-05",
+                results_date="2026-06-08",
+                general_sale_date="2026-06-20",
+                payment_deadline="2026-06-10",
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-03T00:00:00+00:00")
+
+    calendar = lm.render_calendar_ics(str(db_path), generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC))
+
+    assert "BEGIN:VCALENDAR" in calendar
+    assert "DTSTAMP:20260603T000000Z" in calendar
+    assert "SUMMARY:Lottery application: Example Tour - First lottery" in calendar
+    assert "DTSTART;VALUE=DATE:20260603" in calendar
+    assert "DTEND;VALUE=DATE:20260606" in calendar
+    assert "SUMMARY:Lottery results: Example Tour - First lottery" in calendar
+    assert "SUMMARY:Payment due: Example Tour - First lottery" in calendar
+    assert "SUMMARY:General sale: Example Tour - First lottery" in calendar
+    assert "URL:https://t.pia.jp/example" in calendar
+
+
 def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
@@ -568,8 +601,11 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         sources = json_load_url(f"{base}/api/sources")
         events = json_load_url(f"{base}/api/events")
         alerts = json_load_url(f"{base}/api/alerts")
+        calendar_response = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5)
+        calendar = calendar_response.read().decode("utf-8")
 
         assert "chusennote" in home
+        assert "Calendar feed" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
         assert "Example Tour" in detail
@@ -579,6 +615,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert sources == []
         assert events[0]["title"] == "Example Tour"
         assert alerts
+        assert "text/calendar" in calendar_response.headers["Content-Type"]
+        assert "BEGIN:VCALENDAR" in calendar
     finally:
         server.shutdown()
         thread.join(timeout=5)

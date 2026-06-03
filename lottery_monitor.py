@@ -1274,6 +1274,103 @@ def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         return alerts
 
 
+def ics_escape(value: object) -> str:
+    text = str(value or "")
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def ics_date(value: str | None) -> str | None:
+    parsed = parse_iso_date(value)
+    return parsed.strftime("%Y%m%d") if parsed else None
+
+
+def ics_dtstamp(generated_at: dt.datetime | None = None) -> str:
+    stamp = generated_at or dt.datetime.now(dt.UTC)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.UTC)
+    return stamp.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def timeline_calendar_entries(db_path: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for event in recent_events(db_path, limit=500):
+        if event.get("watch_kind") != WATCH_KIND_EVENT:
+            continue
+        event_id = str(event.get("id") or "")
+        title = str(event.get("title") or event.get("keyword") or "Tracked event")
+        official_url = str(event.get("official_url") or "")
+        for index, round_info in enumerate(event.get("rounds", [])):
+            if not isinstance(round_info, dict):
+                continue
+            round_name = str(round_info.get("name") or "Ticket round")
+            platform = str(round_info.get("platform") or "ticket")
+            url = str(round_info.get("url") or official_url)
+            label = f"{title} - {round_name}"
+            application_start_text = str(round_info.get("application_start_at") or "")
+            application_start = parse_iso_date(application_start_text)
+            application_end = parse_iso_date(str(round_info.get("application_end_at") or ""))
+            if application_start:
+                entries.append(
+                    {
+                        "uid": stable_hash(f"{event_id}|{index}|application|{platform}|{round_name}|{application_start_text}"),
+                        "summary": f"Lottery application: {label}",
+                        "dtstart": application_start.strftime("%Y%m%d"),
+                        "dtend": ((application_end or application_start) + dt.timedelta(days=1)).strftime("%Y%m%d"),
+                        "description": f"Platform: {platform}\nStatus: {round_info.get('status') or 'unknown'}",
+                        "url": url,
+                    }
+                )
+            for field, prefix in (
+                ("results_date", "Lottery results"),
+                ("payment_end_at", "Payment due"),
+                ("general_sale_date", "General sale"),
+            ):
+                parsed_date = parse_iso_date(str(round_info.get(field) or ""))
+                if not parsed_date:
+                    continue
+                date_value = parsed_date.strftime("%Y%m%d")
+                entries.append(
+                    {
+                        "uid": stable_hash(f"{event_id}|{index}|{field}|{platform}|{round_name}|{date_value}"),
+                        "summary": f"{prefix}: {label}",
+                        "dtstart": date_value,
+                        "dtend": (parsed_date + dt.timedelta(days=1)).strftime("%Y%m%d"),
+                        "description": f"Platform: {platform}\nStatus: {round_info.get('status') or 'unknown'}",
+                        "url": url,
+                    }
+                )
+    return entries
+
+
+def render_calendar_ics(db_path: str, generated_at: dt.datetime | None = None) -> str:
+    stamp = ics_dtstamp(generated_at)
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//chusennote//ticket timeline//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:chusennote ticket timeline",
+    ]
+    for entry in timeline_calendar_entries(db_path):
+        lines.extend(
+            [
+                "BEGIN:VEVENT",
+                f"UID:{entry['uid']}@chusennote.local",
+                f"DTSTAMP:{stamp}",
+                f"SUMMARY:{ics_escape(entry['summary'])}",
+                f"DTSTART;VALUE=DATE:{entry['dtstart']}",
+                f"DTEND;VALUE=DATE:{entry['dtend']}",
+                f"DESCRIPTION:{ics_escape(entry['description'])}",
+            ]
+        )
+        if entry.get("url"):
+            lines.append(f"URL:{ics_escape(entry['url'])}")
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
 def api_health(db_path: str) -> dict[str, object]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
@@ -1834,7 +1931,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
 
     export_parser = subparsers.add_parser("export", help="Export saved data")
-    export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events"))
+    export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events", "calendar"))
     export_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     export_parser.add_argument("--json", action="store_true", default=True)
 
@@ -1876,6 +1973,15 @@ def json_response(handler: http.server.BaseHTTPRequestHandler, payload: object, 
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def text_response(handler: http.server.BaseHTTPRequestHandler, body: str, content_type: str, status: int = 200) -> None:
+    data = body.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
 
 
 def html_response(handler: http.server.BaseHTTPRequestHandler, body: str, status: int = 200) -> None:
@@ -1952,6 +2058,8 @@ def render_web_page(db_path: str) -> str:
   <style>
     body {{ margin: 0; font-family: Arial, sans-serif; background: #f6f7f9; color: #20242a; }}
     header {{ background: #1f2933; color: white; padding: 18px 24px; }}
+    header a {{ color: white; }}
+    .topbar {{ display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }}
     main {{ max-width: 1120px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }}
     section {{ background: white; border: 1px solid #d8dde3; border-radius: 6px; padding: 16px; }}
     h1, h2, h3 {{ margin: 0 0 12px; }}
@@ -1969,7 +2077,7 @@ def render_web_page(db_path: str) -> str:
   </style>
 </head>
 <body>
-  <header><h1>chusennote</h1></header>
+  <header><div class="topbar"><h1>chusennote</h1><a href="/calendar.ics">Calendar feed</a></div></header>
   <main>
     <section>
       <h2>Tracked Artists</h2>
@@ -2066,6 +2174,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, recent_alerts(db_path))
             elif path == "/api/sources":
                 json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=True)])
+            elif path == "/calendar.ics":
+                text_response(self, render_calendar_ics(db_path), "text/calendar; charset=utf-8")
             else:
                 json_response(self, {"error": "not found"}, status=404)
 
@@ -2158,6 +2268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_ARTIST)))
         elif args.target == "tracked-events":
             print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_EVENT)))
+        elif args.target == "calendar":
+            print(render_calendar_ics(args.db), end="")
         return 0
     if args.command in {"artist", "event"}:
         if args.kind_command == "add":

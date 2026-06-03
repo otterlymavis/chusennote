@@ -108,7 +108,10 @@ python3 lottery_monitor.py export events --db chusennote.sqlite3
 python3 lottery_monitor.py export alerts --db chusennote.sqlite3
 python3 lottery_monitor.py export artists --db chusennote.sqlite3
 python3 lottery_monitor.py export tracked-events --db chusennote.sqlite3
+python3 lottery_monitor.py export calendar --db chusennote.sqlite3 > chusennote.ics
 ```
+
+The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8765/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
 
 ## How the current pipeline works
 
