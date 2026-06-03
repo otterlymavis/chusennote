@@ -1214,7 +1214,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     search_parser = subparsers.add_parser("search", help="Search a single keyword")
     search_parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
-    search_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    search_parser.add_argument("--db", default=None, help="SQLite database path for saving search results")
     search_parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
     search_parser.add_argument("--alerts-json", action="store_true", help="With --db, output only detected alert changes as JSON")
 
