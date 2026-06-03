@@ -29,7 +29,23 @@ USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticke
 SEARCH_URL = "https://duckduckgo.com/html/"
 TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
+WATCH_KIND_ARTIST = "artist"
+WATCH_KIND_EVENT = "event"
+DEFAULT_ALERT_PREFERENCES = ",".join(
+    (
+        "new_official_page",
+        "new_ticket_link",
+        "new_lottery_round",
+        "ticket_field_changed",
+        "lottery_opened",
+        "lottery_closing_soon",
+        "results_today",
+        "payment_due_soon",
+        "general_sale_soon",
+        "watch_failed",
+    )
+)
 
 TICKET_DOMAINS = {
     "pia": ("t.pia.jp", "ticket.pia.jp"),
@@ -127,6 +143,8 @@ class TicketRound:
     trade_end_at: str | None = None
     confidence: int = 50
     status: str = "unknown"
+    round_type: str = "unknown"
+    membership_required: str = "unknown"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,9 +157,11 @@ class AppBlocks:
 class Watch:
     id: int
     keyword: str
+    kind: str = WATCH_KIND_ARTIST
     tags: str = ""
     preferred_regions: str = ""
     preferred_venues: str = ""
+    alert_preferences: str = DEFAULT_ALERT_PREFERENCES
     muted: bool = False
     last_checked_at: str | None = None
 
@@ -183,12 +203,50 @@ def source_name_for_url(url: str) -> str:
     return host or "unknown"
 
 
+def source_provenance(url: str, label: str = "") -> str:
+    platform = source_name_for_url(url)
+    haystack = f"{label} {url}".lower()
+    if platform in TICKET_DOMAINS:
+        return "ticket_primary"
+    if any(hint.lower() in haystack for hint in OFFICIAL_HINTS):
+        return "official"
+    if platform == "unknown":
+        return "low_confidence"
+    return "manual_public"
+
+
 def platform_confidence(platform: str) -> int:
     if platform in TICKET_DOMAINS:
         return 90
     if platform in {"official", "manual"}:
         return 70
     return 50
+
+
+def infer_round_type(name: str) -> str:
+    text = name.lower()
+    if "fc" in text or "ファンクラブ" in text:
+        return "fc"
+    if "一般発売" in name:
+        return "general"
+    if "トレード" in name or "リセール" in name:
+        return "trade"
+    if "公式" in name or "オフィシャル" in name:
+        return "official"
+    if any(token in text for token in ("pia", "ぴあ", "e+", "ローソン", "lawson")):
+        return "platform"
+    if any(token in name for token in ("抽選", "先行", "プレオーダー")):
+        return "platform"
+    return "unknown"
+
+
+def infer_membership_required(name: str, evidence: str = "") -> str:
+    text = f"{name} {evidence}".lower()
+    if "fc" in text or "ファンクラブ" in text or "会員" in text:
+        return "yes"
+    if "一般発売" in name:
+        return "no"
+    return "unknown"
 
 
 def normalize_round_name(name: str) -> str:
@@ -572,7 +630,21 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
     return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
 
 
+def build_artist_blocks(keyword: str, search_results: Sequence[SearchResult] | None = None) -> AppBlocks:
+    results = list(search_results) if search_results is not None else search_web(keyword)
+    official_pages: list[Page] = []
+    for result in choose_official_results(results, keyword):
+        try:
+            official_pages.append(fetch_page(result.url))
+        except (OSError, ValueError):
+            continue
+    info = build_event_info(keyword, official_pages)
+    return AppBlocks(general_info=dataclasses.replace(info, ticket_links=()), ticket_info=())
+
+
 def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
+    if watch.kind == WATCH_KIND_ARTIST:
+        return build_artist_blocks(watch.keyword)
     blocks = build_blocks(watch.keyword)
     manual_sources = list_watch_sources(db_path, str(watch.id))
     manual_links = tuple(Link(source.label, source.url) for source in manual_sources)
@@ -656,9 +728,11 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS watched_keywords (
             id INTEGER PRIMARY KEY,
             keyword TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'artist',
             tags TEXT NOT NULL DEFAULT '',
             preferred_regions TEXT NOT NULL DEFAULT '',
             preferred_venues TEXT NOT NULL DEFAULT '',
+            alert_preferences TEXT NOT NULL DEFAULT '',
             muted INTEGER NOT NULL DEFAULT 0,
             last_checked_at TEXT,
             created_at TEXT NOT NULL,
@@ -671,6 +745,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             canonical_title TEXT NOT NULL,
             official_url TEXT,
             summary TEXT,
+            status TEXT NOT NULL DEFAULT 'watching',
+            event_key TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(watch_id, official_url),
@@ -684,6 +760,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             label TEXT NOT NULL,
             platform TEXT NOT NULL,
             confidence INTEGER NOT NULL,
+            provenance TEXT NOT NULL DEFAULT 'low_confidence',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(event_id, url),
@@ -712,6 +789,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             trade_end_at TEXT,
             confidence INTEGER NOT NULL DEFAULT 50,
             status TEXT NOT NULL DEFAULT 'unknown',
+            round_type TEXT NOT NULL DEFAULT 'unknown',
+            membership_required TEXT NOT NULL DEFAULT 'unknown',
             evidence TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -770,10 +849,15 @@ def add_column_if_missing(connection: sqlite3.Connection, table: str, column: st
 
 def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "watched_keywords", "tags", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "watched_keywords", "kind", "TEXT NOT NULL DEFAULT 'artist'")
     add_column_if_missing(connection, "watched_keywords", "preferred_regions", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "watched_keywords", "preferred_venues", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "watched_keywords", "alert_preferences", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "watched_keywords", "muted", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(connection, "watched_keywords", "last_checked_at", "TEXT")
+    add_column_if_missing(connection, "events", "status", "TEXT NOT NULL DEFAULT 'watching'")
+    add_column_if_missing(connection, "events", "event_key", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "sources", "provenance", "TEXT NOT NULL DEFAULT 'low_confidence'")
 
     add_column_if_missing(connection, "ticket_rounds", "round_number", "INTEGER")
     add_column_if_missing(connection, "ticket_rounds", "platform", "TEXT")
@@ -785,6 +869,8 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "ticket_rounds", "trade_end_at", "TEXT")
     add_column_if_missing(connection, "ticket_rounds", "confidence", "INTEGER NOT NULL DEFAULT 50")
     add_column_if_missing(connection, "ticket_rounds", "status", "TEXT NOT NULL DEFAULT 'unknown'")
+    add_column_if_missing(connection, "ticket_rounds", "round_type", "TEXT NOT NULL DEFAULT 'unknown'")
+    add_column_if_missing(connection, "ticket_rounds", "membership_required", "TEXT NOT NULL DEFAULT 'unknown'")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS watch_sources (
@@ -809,11 +895,11 @@ def migrate_db(connection: sqlite3.Connection) -> None:
 def upsert_keyword(connection: sqlite3.Connection, keyword: str, now: str) -> int:
     connection.execute(
         """
-        INSERT INTO watched_keywords(keyword, created_at, updated_at)
-        VALUES (?, ?, ?)
+        INSERT INTO watched_keywords(keyword, kind, alert_preferences, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(keyword) DO UPDATE SET updated_at = excluded.updated_at
         """,
-        (keyword, now, now),
+        (keyword, WATCH_KIND_EVENT, DEFAULT_ALERT_PREFERENCES, now, now),
     )
     row = connection.execute("SELECT id FROM watched_keywords WHERE keyword = ?", (keyword,)).fetchone()
     return int(row[0])
@@ -822,9 +908,11 @@ def upsert_keyword(connection: sqlite3.Connection, keyword: str, now: str) -> in
 def add_watch(
     db_path: str,
     keyword: str,
+    kind: str = WATCH_KIND_EVENT,
     tags: str = "",
     preferred_regions: str = "",
     preferred_venues: str = "",
+    alert_preferences: str = DEFAULT_ALERT_PREFERENCES,
     now: str | None = None,
 ) -> Watch:
     timestamp = now or utc_now_iso()
@@ -833,21 +921,23 @@ def add_watch(
         connection.execute(
             """
             INSERT INTO watched_keywords(
-                keyword, tags, preferred_regions, preferred_venues, muted, created_at, updated_at
+                keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(keyword) DO UPDATE SET
+                kind = excluded.kind,
                 tags = excluded.tags,
                 preferred_regions = excluded.preferred_regions,
                 preferred_venues = excluded.preferred_venues,
+                alert_preferences = excluded.alert_preferences,
                 muted = 0,
                 updated_at = excluded.updated_at
             """,
-            (keyword, tags, preferred_regions, preferred_venues, timestamp, timestamp),
+            (keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, timestamp, timestamp),
         )
         row = connection.execute(
             """
-            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            SELECT id, keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, last_checked_at
             FROM watched_keywords
             WHERE keyword = ?
             """,
@@ -860,11 +950,13 @@ def watch_from_row(row: sqlite3.Row | tuple[object, ...]) -> Watch:
     return Watch(
         id=int(row[0]),
         keyword=str(row[1]),
-        tags=str(row[2] or ""),
-        preferred_regions=str(row[3] or ""),
-        preferred_venues=str(row[4] or ""),
-        muted=bool(row[5]),
-        last_checked_at=str(row[6]) if row[6] else None,
+        kind=str(row[2] or WATCH_KIND_ARTIST),
+        tags=str(row[3] or ""),
+        preferred_regions=str(row[4] or ""),
+        preferred_venues=str(row[5] or ""),
+        alert_preferences=str(row[6] or DEFAULT_ALERT_PREFERENCES),
+        muted=bool(row[7]),
+        last_checked_at=str(row[8]) if row[8] else None,
     )
 
 
@@ -881,17 +973,25 @@ def watch_source_from_row(row: sqlite3.Row | tuple[object, ...]) -> WatchSource:
     )
 
 
-def list_watches(db_path: str, include_muted: bool = False) -> list[Watch]:
+def list_watches(db_path: str, include_muted: bool = False, kind: str | None = None) -> list[Watch]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
-        where = "" if include_muted else "WHERE muted = 0"
+        clauses: list[str] = []
+        params: list[object] = []
+        if not include_muted:
+            clauses.append("muted = 0")
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            SELECT id, keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, last_checked_at
             FROM watched_keywords
             {where}
             ORDER BY id
-            """
+            """,
+            params,
         ).fetchall()
         return [watch_from_row(row) for row in rows]
 
@@ -900,7 +1000,7 @@ def resolve_watch(connection: sqlite3.Connection, identifier: str) -> Watch | No
     if identifier.isdigit():
         row = connection.execute(
             """
-            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            SELECT id, keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, last_checked_at
             FROM watched_keywords
             WHERE id = ?
             """,
@@ -909,7 +1009,7 @@ def resolve_watch(connection: sqlite3.Connection, identifier: str) -> Watch | No
     else:
         row = connection.execute(
             """
-            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            SELECT id, keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, last_checked_at
             FROM watched_keywords
             WHERE keyword = ?
             """,
@@ -1033,13 +1133,43 @@ def mark_watch_checked(db_path: str, watch_id: int, now: str) -> None:
         )
 
 
-def run_watches(db_path: str, now: str | None = None) -> list[dict[str, str]]:
+def comma_values(value: str) -> tuple[str, ...]:
+    return tuple(clean_text(part).lower() for part in value.split(",") if clean_text(part))
+
+
+def watch_matches_blocks(watch: Watch, blocks: AppBlocks) -> bool:
+    regions = comma_values(watch.preferred_regions)
+    venues = comma_values(watch.preferred_venues)
+    if not regions and not venues:
+        return True
+    haystack = " ".join(blocks.general_info.event_dates + blocks.general_info.venues + (blocks.general_info.summary or "",)).lower()
+    return any(region in haystack for region in regions) or any(venue in haystack for venue in venues)
+
+
+def filter_alerts_for_watch(watch: Watch, blocks: AppBlocks, alerts: Sequence[dict[str, str]]) -> list[dict[str, str]]:
+    allowed = set(comma_values(watch.alert_preferences or DEFAULT_ALERT_PREFERENCES))
+    if not watch_matches_blocks(watch, blocks):
+        return [
+            {
+                "type": "watch_filtered",
+                "watch_id": str(watch.id),
+                "keyword": watch.keyword,
+                "reason": "preferred region/venue did not match",
+            }
+        ]
+    if not allowed:
+        return []
+    return [alert for alert in alerts if alert.get("type", "").lower() in allowed]
+
+
+def run_watches(db_path: str, now: str | None = None, kind: str | None = None) -> list[dict[str, str]]:
     timestamp = now or utc_now_iso()
     alerts: list[dict[str, str]] = []
-    for watch in list_watches(db_path):
+    for watch in list_watches(db_path, kind=kind):
         try:
             blocks = build_blocks_for_watch(db_path, watch)
-            alerts.extend(save_blocks(db_path, blocks, now=timestamp))
+            saved_alerts = save_blocks(db_path, blocks, now=timestamp)
+            alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
         except (OSError, ValueError, sqlite3.Error) as error:
             alerts.append(
                 {
@@ -1059,7 +1189,7 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         init_db(connection)
         rows = connection.execute(
             """
-            SELECT e.id, w.id, w.keyword, e.canonical_title, e.official_url, e.summary, e.updated_at
+            SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary, e.status, e.updated_at
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
             ORDER BY e.updated_at DESC
@@ -1081,7 +1211,8 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
             rounds = connection.execute(
                 """
                 SELECT name, platform, url, application_start_at, application_end_at,
-                       results_date, general_sale_date, payment_end_at, status, confidence
+                       results_date, general_sale_date, payment_end_at, status, confidence,
+                       round_type, membership_required
                 FROM ticket_rounds
                 WHERE event_id = ?
                 ORDER BY platform, round_number, name
@@ -1093,10 +1224,12 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                     "id": row[0],
                     "watch_id": row[1],
                     "keyword": row[2],
-                    "title": row[3],
-                    "official_url": row[4],
-                    "summary": row[5],
-                    "updated_at": row[6],
+                    "watch_kind": row[3],
+                    "title": row[4],
+                    "official_url": row[5],
+                    "summary": row[6],
+                    "status": row[7],
+                    "updated_at": row[8],
                     "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
                     "rounds": [
                         {
@@ -1110,6 +1243,8 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                             "payment_end_at": ticket[7],
                             "status": ticket[8],
                             "confidence": ticket[9],
+                            "round_type": ticket[10],
+                            "membership_required": ticket[11],
                         }
                         for ticket in rounds
                     ],
@@ -1139,7 +1274,46 @@ def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         return alerts
 
 
-def upsert_event(connection: sqlite3.Connection, watch_id: int, info: EventInfo, now: str) -> tuple[int, bool]:
+def event_detail(db_path: str, event_id: int) -> dict[str, object] | None:
+    for event in recent_events(db_path, limit=500):
+        if int(event["id"]) == event_id:
+            return event
+    return None
+
+
+def render_event_detail_page(db_path: str, event_id: int) -> str:
+    event = event_detail(db_path, event_id)
+    if not event:
+        return "<!doctype html><title>Not found</title><h1>Event not found</h1>"
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(str(event.get('title') or 'Event'))}</title></head>
+<body style="font-family: Arial, sans-serif; margin: 24px; max-width: 920px;">
+  <p><a href="/">Back to chusennote</a></p>
+  <h1>{html.escape(str(event.get('title') or 'Untitled event'))}</h1>
+  <p>Status: <strong>{html.escape(str(event.get('status') or 'watching'))}</strong></p>
+  {render_event_card(event, basic=event.get('watch_kind') == WATCH_KIND_ARTIST)}
+  <h2>Manual Sources</h2>
+  <ul>
+    {''.join(f"<li>{html.escape(str(source.get('label')))} · {html.escape(str(source.get('url')))} · {html.escape('private note' if source.get('private_note') else str(source.get('platform')))}</li>" for source in event.get('manual_sources', []))}
+  </ul>
+</body>
+</html>"""
+
+
+def event_identity_key(info: EventInfo) -> str:
+    venue = normalize_round_name(" ".join(info.venues[:2]))
+    date = normalize_round_name(" ".join(info.event_dates[:2]))
+    return stable_hash("|".join((normalize_round_name(info.title or info.keyword), venue, date, info.official_page or "")))
+
+
+def upsert_event(
+    connection: sqlite3.Connection,
+    watch_id: int,
+    info: EventInfo,
+    rounds: Sequence[TicketRound],
+    now: str,
+) -> tuple[int, bool]:
     official_url = info.official_page or f"keyword:{info.keyword}"
     existing = connection.execute(
         "SELECT id FROM events WHERE watch_id = ? AND official_url = ?",
@@ -1147,14 +1321,25 @@ def upsert_event(connection: sqlite3.Connection, watch_id: int, info: EventInfo,
     ).fetchone()
     connection.execute(
         """
-        INSERT INTO events(watch_id, canonical_title, official_url, summary, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO events(watch_id, canonical_title, official_url, summary, status, event_key, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(watch_id, official_url) DO UPDATE SET
             canonical_title = excluded.canonical_title,
             summary = excluded.summary,
+            status = excluded.status,
+            event_key = excluded.event_key,
             updated_at = excluded.updated_at
         """,
-        (watch_id, info.title or info.keyword, official_url, info.summary, now, now),
+        (
+            watch_id,
+            info.title or info.keyword,
+            official_url,
+            info.summary,
+            compute_event_status(info, rounds, parse_iso_date(now)),
+            event_identity_key(info),
+            now,
+            now,
+        ),
     )
     row = connection.execute(
         "SELECT id FROM events WHERE watch_id = ? AND official_url = ?",
@@ -1180,15 +1365,25 @@ def upsert_sources(connection: sqlite3.Connection, event_id: int, links: Sequenc
         ).fetchone()
         connection.execute(
             """
-            INSERT INTO sources(event_id, url, label, platform, confidence, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sources(event_id, url, label, platform, confidence, provenance, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id, url) DO UPDATE SET
                 label = excluded.label,
                 platform = excluded.platform,
                 confidence = excluded.confidence,
+                provenance = excluded.provenance,
                 updated_at = excluded.updated_at
             """,
-            (event_id, link.url, link.label, source_name_for_url(link.url), source_confidence(link), now, now),
+            (
+                event_id,
+                link.url,
+                link.label,
+                source_name_for_url(link.url),
+                source_confidence(link),
+                source_provenance(link.url, link.label),
+                now,
+                now,
+            ),
         )
         if existing is None:
             alerts.append({"type": "new_ticket_link", "label": link.label, "url": link.url})
@@ -1256,6 +1451,18 @@ def compute_ticket_status(ticket: TicketRound, today: dt.date | None = None) -> 
     return "unknown"
 
 
+def compute_event_status(info: EventInfo, rounds: Sequence[TicketRound], today: dt.date | None = None) -> str:
+    if any(normalize_ticket_round(ticket, today).status in {"open", "closing_soon"} for ticket in rounds):
+        return "lottery_open"
+    if rounds:
+        return "lottery_found"
+    if info.ticket_links:
+        return "ticket_links_found"
+    if info.official_page:
+        return "official_found"
+    return "watching"
+
+
 def normalize_ticket_round(ticket: TicketRound, today: dt.date | None = None) -> TicketRound:
     platform = ticket.platform or ticket.source or source_name_for_url(ticket.url)
     application_start = ticket.application_start_at or ticket.lottery_start
@@ -1269,6 +1476,12 @@ def normalize_ticket_round(ticket: TicketRound, today: dt.date | None = None) ->
         application_end_at=application_end,
         payment_end_at=payment_end,
         confidence=ticket.confidence or platform_confidence(platform),
+        round_type=ticket.round_type if ticket.round_type != "unknown" else infer_round_type(ticket.name),
+        membership_required=(
+            ticket.membership_required
+            if ticket.membership_required != "unknown"
+            else infer_membership_required(ticket.name, ticket.evidence)
+        ),
     )
     return dataclasses.replace(normalized, status=compute_ticket_status(normalized, today))
 
@@ -1389,9 +1602,10 @@ def upsert_ticket_rounds(
                 event_id, round_key, source, url, name, round_number, platform,
                 lottery_start, lottery_end, results_date, general_sale_date, payment_deadline,
                 application_start_at, application_end_at, payment_start_at, payment_end_at,
-                trade_start_at, trade_end_at, confidence, status, evidence, created_at, updated_at
+                trade_start_at, trade_end_at, confidence, status, round_type, membership_required,
+                evidence, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id, round_key) DO UPDATE SET
                 source = excluded.source,
                 url = excluded.url,
@@ -1411,6 +1625,8 @@ def upsert_ticket_rounds(
                 trade_end_at = excluded.trade_end_at,
                 confidence = excluded.confidence,
                 status = excluded.status,
+                round_type = excluded.round_type,
+                membership_required = excluded.membership_required,
                 evidence = excluded.evidence,
                 updated_at = excluded.updated_at
             """,
@@ -1435,6 +1651,8 @@ def upsert_ticket_rounds(
                 ticket.trade_end_at,
                 ticket.confidence,
                 ticket.status,
+                ticket.round_type,
+                ticket.membership_required,
                 ticket.evidence,
                 now,
                 now,
@@ -1478,20 +1696,21 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None) -> list
         init_db(connection)
         info = blocks.general_info
         watch_id = upsert_keyword(connection, info.keyword, timestamp)
-        event_id, new_event = upsert_event(connection, watch_id, info, timestamp)
+        normalized_rounds = dedupe_ticket_rounds(blocks.ticket_info, parse_iso_date(timestamp))
+        event_id, new_event = upsert_event(connection, watch_id, info, normalized_rounds, timestamp)
         event_title = info.title or info.keyword
         alerts: list[dict[str, str]] = []
         if new_event and info.official_page:
             alerts.append({"type": "new_official_page", "event": event_title, "url": info.official_page})
         alerts.extend(upsert_sources(connection, event_id, info.ticket_links, timestamp))
-        alerts.extend(upsert_ticket_rounds(connection, event_id, event_title, blocks.ticket_info, timestamp))
-        alerts.extend(record_lifecycle_alerts(connection, event_id, event_title, blocks.ticket_info, timestamp))
-        save_snapshot(connection, event_id, blocks, timestamp)
+        alerts.extend(upsert_ticket_rounds(connection, event_id, event_title, normalized_rounds, timestamp))
+        alerts.extend(record_lifecycle_alerts(connection, event_id, event_title, normalized_rounds, timestamp))
+        save_snapshot(connection, event_id, dataclasses.replace(blocks, ticket_info=normalized_rounds), timestamp)
         return alerts
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    if argv and argv[0] not in {"search", "watch", "web", "-h", "--help"}:
+    if argv and argv[0] not in {"search", "watch", "artist", "event", "export", "web", "-h", "--help"}:
         parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
         parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
         parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
@@ -1532,6 +1751,35 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     run_parser.add_argument("--alerts-json", action="store_true")
 
+    for command_name, kind, help_text in (
+        ("artist", WATCH_KIND_ARTIST, "Manage tracked artists with basic event info"),
+        ("event", WATCH_KIND_EVENT, "Manage tracked events with ticket and lottery info"),
+    ):
+        kind_parser = subparsers.add_parser(command_name, help=help_text)
+        kind_parser.set_defaults(kind=kind)
+        kind_subparsers = kind_parser.add_subparsers(dest="kind_command", required=True)
+
+        kind_add_parser = kind_subparsers.add_parser("add", help=f"Add a tracked {kind}")
+        kind_add_parser.add_argument("keyword")
+        kind_add_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+        kind_add_parser.add_argument("--tags", default="")
+        kind_add_parser.add_argument("--regions", default="")
+        kind_add_parser.add_argument("--venues", default="")
+        kind_add_parser.add_argument("--alerts", default=DEFAULT_ALERT_PREFERENCES)
+
+        kind_list_parser = kind_subparsers.add_parser("list", help=f"List tracked {kind}s")
+        kind_list_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+        kind_list_parser.add_argument("--json", action="store_true")
+        kind_list_parser.add_argument("--include-muted", action="store_true")
+
+        kind_remove_parser = kind_subparsers.add_parser("remove", help=f"Remove a tracked {kind}")
+        kind_remove_parser.add_argument("identifier")
+        kind_remove_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
+        kind_run_parser = kind_subparsers.add_parser("run", help=f"Run all active tracked {kind}s")
+        kind_run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+        kind_run_parser.add_argument("--alerts-json", action="store_true")
+
     source_parser = watch_subparsers.add_parser("source", help="Manage manual source URLs for a watch")
     source_subparsers = source_parser.add_subparsers(dest="source_command", required=True)
 
@@ -1555,6 +1803,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     web_parser = subparsers.add_parser("web", help="Run the local web UI")
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
+
+    export_parser = subparsers.add_parser("export", help="Export saved data")
+    export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events"))
+    export_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    export_parser.add_argument("--json", action="store_true", default=True)
 
     return parser.parse_args(argv)
 
@@ -1623,18 +1876,28 @@ def render_web_page(db_path: str) -> str:
     sources = list_watch_sources(db_path)
     events = recent_events(db_path)
     alerts = recent_alerts(db_path, limit=20)
-    active_watches = [watch for watch in watches if not watch.muted]
-    watch_items = "\n".join(
+    active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
+    active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
+    artist_items = "\n".join(
         f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · tags {html.escape(watch.tags or "none")} · last checked {html.escape(watch.last_checked_at or "never")}</small></span>
           <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
         </li>
         """
-        for watch in active_watches
-    ) or "<li>No active watches.</li>"
+        for watch in active_artist_watches
+    ) or "<li>No tracked artists.</li>"
+    tracked_event_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · alerts {html.escape(watch.alert_preferences or "none")} · last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
+        </li>
+        """
+        for watch in active_event_watches
+    ) or "<li>No tracked events.</li>"
     source_options = "\n".join(
-        f'<option value="{watch.id}">{html.escape(watch.keyword)}</option>' for watch in active_watches
+        f'<option value="{watch.id}">{html.escape(watch.keyword)}</option>' for watch in active_event_watches
     )
     source_items = "\n".join(
         f"""
@@ -1645,7 +1908,8 @@ def render_web_page(db_path: str) -> str:
         """
         for source in sources
     ) or "<li>No manual sources.</li>"
-    event_items = "\n".join(render_event_card(event) for event in events) or "<p>No events saved yet.</p>"
+    artist_event_items = "\n".join(render_event_card(event, basic=True) for event in events if event.get("watch_kind") == WATCH_KIND_ARTIST) or "<p>No artist event info saved yet.</p>"
+    ticket_event_items = "\n".join(render_event_card(event) for event in events if event.get("watch_kind") == WATCH_KIND_EVENT) or "<p>No tracked event ticket info saved yet.</p>"
     alert_items = "\n".join(
         f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> {html.escape(str(alert.get('event', '')))} {html.escape(str(alert.get('round', '')))} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
         for alert in alerts
@@ -1679,13 +1943,24 @@ def render_web_page(db_path: str) -> str:
   <header><h1>chusennote</h1></header>
   <main>
     <section>
-      <h2>Watchlist</h2>
+      <h2>Tracked Artists</h2>
       <form method="post" action="/watch/add">
-        <input name="keyword" placeholder="Artist, event, or musical keyword" required>
-        <button>Add Watch</button>
+        <input type="hidden" name="kind" value="artist">
+        <input name="keyword" placeholder="Artist or performer keyword" required>
+        <button>Add Artist</button>
       </form>
-      <form method="post" action="/watch/run" style="margin-top: 10px;"><button>Run All Watches</button></form>
-      <ul style="margin-top: 14px;">{watch_items}</ul>
+      <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="artist"><button>Run Artists</button></form>
+      <ul style="margin-top: 14px;">{artist_items}</ul>
+    </section>
+    <section>
+      <h2>Tracked Events</h2>
+      <form method="post" action="/watch/add">
+        <input type="hidden" name="kind" value="event">
+        <input name="keyword" placeholder="Specific event or musical keyword" required>
+        <button>Add Event</button>
+      </form>
+      <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="event"><button>Run Events</button></form>
+      <ul style="margin-top: 14px;">{tracked_event_items}</ul>
     </section>
     <section>
       <h2>Manual Sources</h2>
@@ -1699,8 +1974,12 @@ def render_web_page(db_path: str) -> str:
       <ul style="margin-top: 14px;">{source_items}</ul>
     </section>
     <section>
-      <h2>Events</h2>
-      {event_items}
+      <h2>Artist Event Info</h2>
+      {artist_event_items}
+    </section>
+    <section>
+      <h2>Tracked Event Tickets</h2>
+      {ticket_event_items}
     </section>
     <section>
       <h2>Recent Alerts</h2>
@@ -1711,26 +1990,28 @@ def render_web_page(db_path: str) -> str:
 </html>"""
 
 
-def render_event_card(event: dict[str, object]) -> str:
+def render_event_card(event: dict[str, object], basic: bool = False) -> str:
     rounds = event.get("rounds", [])
-    round_cards = "\n".join(
+    round_cards = "" if basic else "\n".join(
         f"""
         <div class="round">
           <strong>{html.escape(str(ticket.get('name') or 'Ticket round'))}</strong>
-          <div><span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span> {html.escape(str(ticket.get('platform') or 'unknown'))}</div>
+          <div><span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span> {html.escape(str(ticket.get('platform') or 'unknown'))} · confidence {html.escape(str(ticket.get('confidence') or 'unknown'))}</div>
           <small>Apply: {html.escape(str(ticket.get('application_start_at') or 'unknown'))} to {html.escape(str(ticket.get('application_end_at') or 'unknown'))}</small><br>
           <small>Results: {html.escape(str(ticket.get('results_date') or 'unknown'))}</small><br>
+          <small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))}</small><br>
           <a href="{html.escape(str(ticket.get('url') or '#'))}">Source</a>
         </div>
         """
         for ticket in rounds
     ) or "<p>No ticket rounds saved yet.</p>"
     official = event.get("official_url") or "#"
+    ticket_section = "" if basic else f'<div class="rounds">{round_cards}</div>'
     return f"""
     <article class="event">
-      <h3>{html.escape(str(event.get('title') or 'Untitled event'))}</h3>
-      <p><a href="{html.escape(str(official))}">Official page</a> · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
-      <div class="rounds">{round_cards}</div>
+      <h3><a href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a></h3>
+      <p><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span> <a href="{html.escape(str(official))}">Official page</a> · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
+      {ticket_section}
     </article>
     """
 
@@ -1744,6 +2025,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             path = urllib.parse.urlparse(self.path).path
             if path == "/":
                 html_response(self, render_web_page(db_path))
+            elif re.fullmatch(r"/events/\d+", path):
+                html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1])))
             elif path == "/api/watchlist":
                 json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=True)])
             elif path == "/api/events":
@@ -1763,13 +2046,13 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                add_watch(db_path, keyword)
+                add_watch(db_path, keyword, kind=form.get("kind", WATCH_KIND_EVENT))
                 redirect_response(self)
             elif path == "/watch/remove":
                 remove_watch(db_path, form.get("identifier", ""))
                 redirect_response(self)
             elif path == "/watch/run":
-                run_watches(db_path)
+                run_watches(db_path, kind=form.get("kind") or None)
                 redirect_response(self)
             elif path == "/source/add":
                 try:
@@ -1792,11 +2075,11 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                json_response(self, dataclasses.asdict(add_watch(db_path, keyword)))
+                json_response(self, dataclasses.asdict(add_watch(db_path, keyword, kind=form.get("kind", WATCH_KIND_EVENT))))
             elif path == "/api/watchlist/remove":
                 json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
             elif path == "/api/run":
-                json_response(self, run_watches(db_path))
+                json_response(self, run_watches(db_path, kind=form.get("kind") or None))
             elif path == "/api/sources":
                 try:
                     source = add_watch_source(
@@ -1833,6 +2116,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "web":
         run_web(args.db, args.port)
         return 0
+    if args.command == "export":
+        if args.target == "events":
+            print(json.dumps(recent_events(args.db), ensure_ascii=False, indent=2))
+        elif args.target == "alerts":
+            print(json.dumps(recent_alerts(args.db), ensure_ascii=False, indent=2))
+        elif args.target == "artists":
+            print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_ARTIST)))
+        elif args.target == "tracked-events":
+            print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_EVENT)))
+        return 0
+    if args.command in {"artist", "event"}:
+        if args.kind_command == "add":
+            watch = add_watch(
+                args.db,
+                args.keyword,
+                kind=args.kind,
+                tags=args.tags,
+                preferred_regions=args.regions,
+                preferred_venues=args.venues,
+                alert_preferences=args.alerts,
+            )
+            print(f"Added tracked {args.kind} {watch.id}: {watch.keyword}")
+            return 0
+        if args.kind_command == "list":
+            watches = list_watches(args.db, include_muted=args.include_muted, kind=args.kind)
+            print(watches_to_json(watches) if args.json else render_watches(watches))
+            return 0
+        if args.kind_command == "remove":
+            removed = remove_watch(args.db, args.identifier)
+            print(f"Removed tracked {args.kind}." if removed else f"Tracked {args.kind} not found.")
+            return 0 if removed else 1
+        if args.kind_command == "run":
+            alerts = run_watches(args.db, kind=args.kind)
+            if args.alerts_json:
+                print(json.dumps(alerts, ensure_ascii=False, indent=2))
+            else:
+                print(f"Ran {len(list_watches(args.db, kind=args.kind))} active tracked {args.kind}s; {len(alerts)} alerts.")
+            return 0
     if args.command == "watch":
         if args.watch_command == "source":
             if args.source_command == "add":
@@ -1852,7 +2173,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("Removed source." if removed else "Source not found.")
                 return 0 if removed else 1
         if args.watch_command == "add":
-            watch = add_watch(args.db, args.keyword, args.tags, args.regions, args.venues)
+            watch = add_watch(
+                args.db,
+                args.keyword,
+                kind=WATCH_KIND_EVENT,
+                tags=args.tags,
+                preferred_regions=args.regions,
+                preferred_venues=args.venues,
+            )
             print(f"Added watch {watch.id}: {watch.keyword}")
             return 0
         if args.watch_command == "list":

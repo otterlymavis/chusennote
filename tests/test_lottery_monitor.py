@@ -405,6 +405,76 @@ def test_watch_run_continues_after_single_watch_failure(tmp_path, monkeypatch):
     assert all(watch.last_checked_at == "2026-06-03T00:00:00+00:00" for watch in watches)
 
 
+def test_artist_and_event_commands_are_separate_lanes(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    monkeypatch.setattr(lm, "build_artist_blocks", lambda keyword: lm.AppBlocks(example_blocks(keyword).general_info, ()))
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    assert lm.main(["artist", "add", "Artist Name", "--db", str(db_path)]) == 0
+    assert lm.main(["event", "add", "Event Name", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    assert lm.main(["artist", "list", "--db", str(db_path), "--json"]) == 0
+    artist_output = capsys.readouterr().out
+    assert '"keyword": "Artist Name"' in artist_output
+    assert '"keyword": "Event Name"' not in artist_output
+
+    assert lm.main(["event", "run", "--db", str(db_path), "--alerts-json"]) == 0
+    event_alerts = capsys.readouterr().out
+    assert '"type": "new_lottery_round"' in event_alerts
+
+    assert lm.main(["artist", "run", "--db", str(db_path), "--alerts-json"]) == 0
+    artist_alerts = capsys.readouterr().out
+    assert '"type": "new_lottery_round"' not in artist_alerts
+
+
+def test_alert_preferences_and_venue_filters_reduce_noise(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(
+        str(db_path),
+        "Example",
+        kind=lm.WATCH_KIND_EVENT,
+        preferred_venues="Different Hall",
+        alert_preferences="new_lottery_round",
+        now="2026-06-01T00:00:00+00:00",
+    )
+    monkeypatch.setattr(lm, "build_blocks_for_watch", lambda db_path_value, watch: example_blocks(watch.keyword))
+
+    alerts = lm.run_watches(str(db_path), now="2026-06-03T00:00:00+00:00")
+
+    assert alerts == [
+        {
+            "type": "watch_filtered",
+            "watch_id": "1",
+            "keyword": "Example",
+            "reason": "preferred region/venue did not match",
+        }
+    ]
+
+
+def test_source_provenance_and_round_metadata_are_exported(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = example_blocks("Example")
+
+    lm.save_blocks(str(db_path), blocks, now="2026-06-03T00:00:00+00:00")
+    events = lm.recent_events(str(db_path))
+
+    assert events[0]["status"] == "lottery_open"
+    assert events[0]["rounds"][0]["round_type"] == "platform"
+    assert events[0]["rounds"][0]["membership_required"] == "unknown"
+
+
+def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.save_blocks(str(db_path), example_blocks("Example"), now="2026-06-03T00:00:00+00:00")
+
+    assert lm.main(["export", "events", "--db", str(db_path)]) == 0
+    output = capsys.readouterr().out
+
+    assert '"title": "Example Tour"' in output
+    assert '"status": "lottery_open"' in output
+
+
 def test_watch_source_cli_add_list_remove(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
@@ -474,12 +544,16 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
     base = f"http://127.0.0.1:{server.server_port}"
     try:
         home = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
+        detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         watchlist = json_load_url(f"{base}/api/watchlist")
         sources = json_load_url(f"{base}/api/sources")
         events = json_load_url(f"{base}/api/events")
         alerts = json_load_url(f"{base}/api/alerts")
 
         assert "chusennote" in home
+        assert "Tracked Artists" in home
+        assert "Tracked Events" in home
+        assert "Example Tour" in detail
         assert watchlist[0]["keyword"] == "Example"
         assert sources == []
         assert events[0]["title"] == "Example Tour"

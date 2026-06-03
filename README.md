@@ -2,6 +2,11 @@
 
 A keyword-first assistant for tracking Japanese concert and musical ticket lotteries.
 
+chusennote is split into two local tracking lanes:
+
+- **Tracked artists**: follows artist/performer/company keywords and stores basic event discovery info such as title, official page, date clues, venue clues, status, and source confidence.
+- **Tracked events**: follows a specific concert, stage show, musical, or event and stores ticket links, manual sources, lottery rounds, application windows, result dates, payment deadlines, general sale dates, and alert history.
+
 Instead of asking you to hand-maintain every ticket URL first, chusennote starts from the workflow you described:
 
 1. You enter an artist/event/musical keyword.
@@ -46,9 +51,18 @@ Alert output includes newly discovered facts plus date-based lifecycle events su
 Add keywords to the persistent watchlist and run all active watches:
 
 ```bash
-python3 lottery_monitor.py watch add "your event keyword"
-python3 lottery_monitor.py watch list
-python3 lottery_monitor.py watch run --alerts-json
+python3 lottery_monitor.py artist add "artist keyword"
+python3 lottery_monitor.py artist run
+python3 lottery_monitor.py event add "specific event keyword"
+python3 lottery_monitor.py event run --alerts-json
+```
+
+The older `watch add/list/run` commands still work as compatibility aliases for tracked events.
+
+Limit alert noise with preferences and venue/region filters:
+
+```bash
+python3 lottery_monitor.py event add "specific event keyword" --venues "Tokyo Garden Theater" --alerts "new_lottery_round,lottery_closing_soon,payment_due_soon"
 ```
 
 Attach manual source URLs to a watch. Public sources are fetched during `watch run`; private notes are stored and shown, but not scraped:
@@ -66,6 +80,15 @@ python3 lottery_monitor.py web --db chusennote.sqlite3 --port 8765
 ```
 
 Then open <http://127.0.0.1:8765>.
+
+Export local data for other tools:
+
+```bash
+python3 lottery_monitor.py export events --db chusennote.sqlite3
+python3 lottery_monitor.py export alerts --db chusennote.sqlite3
+python3 lottery_monitor.py export artists --db chusennote.sqlite3
+python3 lottery_monitor.py export tracked-events --db chusennote.sqlite3
+```
 
 ## How the current pipeline works
 
@@ -143,6 +166,9 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - Japanese ticket sites often change HTML, use dynamic rendering, and hide details behind JavaScript or login gates.
 - This version uses only the Python standard library, so it is easy to run anywhere, but site-specific parsers may be needed for high precision.
 - SQLite persistence stores watched keywords, events, ticket sources, detected ticket rounds, compact JSON snapshots, and emitted lifecycle alerts.
+- Saved events include lifecycle statuses like `watching`, `official_found`, `ticket_links_found`, `lottery_found`, and `lottery_open`.
+- Ticket rounds include platform confidence, round type, and membership-required metadata when chusennote can infer them.
+- Per-watch alert preferences and venue/region filters keep batch monitoring quieter.
 - The local web UI is intentionally standard-library only and runs on your machine.
 - The best long-term approach is to keep this keyword-first pipeline and add dedicated adapters for Pia, eplus, Lawson Ticket, official fan-club pages, and musical production sites.
 - The MVP does not send Discord, LINE, Slack, or email notifications and does not scrape private/login-only fan-club pages; use private manual sources for those notes.
