@@ -56,4 +56,4 @@ For a physical iPhone, change the base URL in the app to your computer's LAN IP.
 
 ## CI builds
 
-GitHub Actions are configured for Python tests, Android debug APK builds, and iOS simulator builds. Local native builds still require Android Studio/Gradle or Xcode on the development machine.
+GitHub Actions are configured for Python tests, Android debug APK builds, and iOS simulator builds. The Android workflow uploads a debug APK artifact, and the iOS workflow uploads a simulator app artifact. Local native builds still require Android Studio/Gradle or Xcode on the development machine.

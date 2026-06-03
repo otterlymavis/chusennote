@@ -17,5 +17,11 @@ jobs:
           -project ios/Chusennote.xcodeproj
           -target Chusennote
           -destination 'platform=iOS Simulator,name=iPhone 16'
+          -derivedDataPath build/ios
           CODE_SIGNING_ALLOWED=NO
           build
+      - name: Upload simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: chusennote-ios-simulator-app
+          path: build/ios/Build/Products/Debug-iphonesimulator/Chusennote.app
