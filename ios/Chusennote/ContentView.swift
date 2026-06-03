@@ -113,6 +113,20 @@ struct ContentView: View {
                     }
                 }
 
+                Section("Needs Attention") {
+                    if store.upcoming.isEmpty {
+                        Text("No urgent ticket dates saved yet.")
+                    }
+                    ForEach(store.upcoming.prefix(8)) { item in
+                        VStack(alignment: .leading) {
+                            Text(item.eventTitle ?? "Untitled event").font(.headline)
+                            Text([item.status, item.platform, item.roundName, item.relevantDate].compactMap { $0 }.joined(separator: " - "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 Section("Artist Event Info") {
                     let artistEvents = store.events.filter { ($0.watchKind ?? "event") == "artist" }
                     if artistEvents.isEmpty {
@@ -202,6 +216,9 @@ struct EventDetailView: View {
                 }
                 if let venues = event.venues, !venues.isEmpty {
                     Text("Venues: \(venues.prefix(2).joined(separator: "; "))")
+                }
+                if let reasons = event.matchReasons, !reasons.isEmpty {
+                    Text("Why: \(reasons.prefix(3).joined(separator: "; "))")
                 }
             }
             Section("Ticket Rounds") {

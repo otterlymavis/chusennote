@@ -27,6 +27,7 @@ struct EventSummary: Codable, Identifiable {
     let officialUrl: String?
     let eventDates: [String]?
     let venues: [String]?
+    let matchReasons: [String]?
     let rounds: [TicketRound]
 
     enum CodingKeys: String, CodingKey {
@@ -38,7 +39,35 @@ struct EventSummary: Codable, Identifiable {
         case officialUrl = "official_url"
         case eventDates = "event_dates"
         case venues
+        case matchReasons = "match_reasons"
         case rounds
+    }
+}
+
+struct UpcomingItem: Codable, Identifiable {
+    var id: String { "\(eventId ?? 0)-\(platform ?? "")-\(roundName ?? "")-\(relevantDate ?? "")" }
+    let eventId: Int?
+    let eventTitle: String?
+    let watchId: Int?
+    let watchKind: String?
+    let platform: String?
+    let roundName: String?
+    let status: String?
+    let relevantDate: String?
+    let url: String?
+    let matchReasons: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case eventId = "event_id"
+        case eventTitle = "event_title"
+        case watchId = "watch_id"
+        case watchKind = "watch_kind"
+        case platform
+        case roundName = "round_name"
+        case status
+        case relevantDate = "relevant_date"
+        case url
+        case matchReasons = "match_reasons"
     }
 }
 

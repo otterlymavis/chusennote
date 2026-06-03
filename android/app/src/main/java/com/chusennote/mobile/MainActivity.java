@@ -40,6 +40,7 @@ public class MainActivity extends Activity {
     private EditText sourceLabelInput;
     private LinearLayout artistList;
     private LinearLayout eventList;
+    private LinearLayout needsAttentionList;
     private LinearLayout sourceList;
     private LinearLayout alertList;
     private TextView statusText;
@@ -113,6 +114,11 @@ public class MainActivity extends Activity {
         eventList.setOrientation(LinearLayout.VERTICAL);
         root.addView(eventList);
 
+        root.addView(section("Needs Attention"));
+        needsAttentionList = new LinearLayout(this);
+        needsAttentionList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(needsAttentionList);
+
         root.addView(section("Manual Event Source"));
         sourceWatchInput = new EditText(this);
         sourceWatchInput.setSingleLine(true);
@@ -149,10 +155,11 @@ public class MainActivity extends Activity {
             try {
                 JSONArray watches = getJsonArray("/api/watchlist");
                 JSONArray events = getJsonArray("/api/events");
+                JSONArray upcoming = getJsonArray("/api/upcoming");
                 JSONArray alerts = getJsonArray("/api/alerts");
                 JSONArray sources = getJsonArray("/api/sources");
                 JSONObject health = getJsonObject("/api/health");
-                mainHandler.post(() -> render(watches, events, alerts, sources, health));
+                mainHandler.post(() -> render(watches, events, upcoming, alerts, sources, health));
             } catch (Exception error) {
                 mainHandler.post(() -> statusText.setText("Could not load chusennote: " + error.getMessage()));
             }
@@ -319,9 +326,10 @@ public class MainActivity extends Activity {
         return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
     }
 
-    private void render(JSONArray watches, JSONArray events, JSONArray alerts, JSONArray sources, JSONObject health) {
+    private void render(JSONArray watches, JSONArray events, JSONArray upcoming, JSONArray alerts, JSONArray sources, JSONObject health) {
         artistList.removeAllViews();
         eventList.removeAllViews();
+        needsAttentionList.removeAllViews();
         sourceList.removeAllViews();
         alertList.removeAllViews();
         int artistCount = 0;
@@ -353,6 +361,10 @@ public class MainActivity extends Activity {
                 if (!clues.isEmpty()) {
                     detail = detail + "\n" + clues;
                 }
+                String reasons = joinFirst(event.optJSONArray("match_reasons"));
+                if (!reasons.isEmpty()) {
+                    detail = detail + "\nWhy: " + reasons;
+                }
                 artistList.addView(card(event.optString("title", "Untitled event"), detail));
                 continue;
             }
@@ -360,6 +372,10 @@ public class MainActivity extends Activity {
             String detail = event.optString("status", "watching") + " - " + (rounds == null ? 0 : rounds.length()) + " ticket rounds";
             if (!clues.isEmpty()) {
                 detail = detail + "\n" + clues;
+            }
+            String reasons = joinFirst(event.optJSONArray("match_reasons"));
+            if (!reasons.isEmpty()) {
+                detail = detail + "\nWhy: " + reasons;
             }
             eventList.addView(card(event.optString("title", "Untitled event"), detail));
         }
@@ -369,6 +385,24 @@ public class MainActivity extends Activity {
         }
         if (eventCount == 0 && eventList.getChildCount() == 0) {
             eventList.addView(body("No tracked events yet."));
+        }
+        for (int i = 0; i < Math.min(upcoming.length(), 8); i++) {
+            JSONObject item = upcoming.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            String detail = item.optString("status", "unknown")
+                + " - " + item.optString("platform", "unknown")
+                + " - " + item.optString("round_name", "Ticket round")
+                + " - " + item.optString("relevant_date", "date unknown");
+            String reasons = joinFirst(item.optJSONArray("match_reasons"));
+            if (!reasons.isEmpty()) {
+                detail = detail + "\nWhy: " + reasons;
+            }
+            needsAttentionList.addView(card(item.optString("event_title", "Untitled event"), detail));
+        }
+        if (needsAttentionList.getChildCount() == 0) {
+            needsAttentionList.addView(body("No urgent ticket dates saved yet."));
         }
         for (int i = 0; i < sources.length(); i++) {
             JSONObject source = sources.optJSONObject(i);

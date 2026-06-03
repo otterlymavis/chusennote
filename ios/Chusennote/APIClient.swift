@@ -9,6 +9,7 @@ final class ChusennoteStore: ObservableObject {
     }
     @Published var watches: [Watch] = []
     @Published var events: [EventSummary] = []
+    @Published var upcoming: [UpcomingItem] = []
     @Published var alerts: [AlertPayload] = []
     @Published var sources: [WatchSource] = []
     @Published var health: HealthSummary?
@@ -30,11 +31,13 @@ final class ChusennoteStore: ObservableObject {
         do {
             async let fetchedWatches: [Watch] = fetch("/api/watchlist")
             async let fetchedEvents: [EventSummary] = fetch("/api/events")
+            async let fetchedUpcoming: [UpcomingItem] = fetch("/api/upcoming")
             async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
             async let fetchedSources: [WatchSource] = fetch("/api/sources")
             async let fetchedHealth: HealthSummary = fetch("/api/health")
             watches = try await fetchedWatches
             events = try await fetchedEvents
+            upcoming = try await fetchedUpcoming
             alerts = try await fetchedAlerts
             sources = try await fetchedSources
             health = try await fetchedHealth

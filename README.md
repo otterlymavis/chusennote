@@ -110,10 +110,13 @@ python3 lottery_monitor.py export events --db chusennote.sqlite3
 python3 lottery_monitor.py export alerts --db chusennote.sqlite3
 python3 lottery_monitor.py export artists --db chusennote.sqlite3
 python3 lottery_monitor.py export tracked-events --db chusennote.sqlite3
+python3 lottery_monitor.py export upcoming --db chusennote.sqlite3
 python3 lottery_monitor.py export calendar --db chusennote.sqlite3 > chusennote.ics
 ```
 
 The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8765/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
+
+Saved events include `match_reasons` explaining why chusennote kept them, and `export upcoming` / `/api/upcoming` show the highest-priority ticket dates first. Manual source `remove` is a soft mute; use `watch source mute ID_OR_URL` and `watch source unmute ID_OR_URL` when you want the action to be explicit.
 
 ## How the current pipeline works
 
@@ -193,6 +196,7 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - SQLite persistence stores watched keywords, events, ticket sources, detected ticket rounds, compact JSON snapshots, and emitted lifecycle alerts.
 - Saved events include lifecycle statuses like `watching`, `official_found`, `ticket_links_found`, `lottery_found`, and `lottery_open`.
 - Ticket rounds include platform confidence, round type, and membership-required metadata when chusennote can infer them.
+- Saved events include local match reasons, and the web/API/mobile views include a “Needs Attention” ticket-date list.
 - Per-watch alert preferences and venue/region filters keep batch monitoring quieter.
 - The local web UI is intentionally standard-library only and runs on your machine.
 - The best long-term approach is to keep this keyword-first pipeline and add dedicated adapters for Pia, eplus, Lawson Ticket, official fan-club pages, and musical production sites.
