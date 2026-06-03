@@ -32,6 +32,16 @@ DEFAULT_DB_PATH = "chusennote.sqlite3"
 DB_SCHEMA_VERSION = 4
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
+UPCOMING_STATUS_ORDER = {
+    "closing_soon": 0,
+    "results_today": 1,
+    "payment_due": 2,
+    "general_sale_soon": 3,
+    "open": 4,
+    "upcoming": 5,
+    "unknown": 6,
+    "closed": 7,
+}
 DEFAULT_ALERT_PREFERENCES = ",".join(
     (
         "new_official_page",
@@ -1128,6 +1138,24 @@ def remove_watch_source(db_path: str, identifier: str, now: str | None = None) -
         return bool(cursor.rowcount)
 
 
+def set_watch_source_muted(db_path: str, identifier: str, muted: bool, now: str | None = None) -> bool:
+    timestamp = now or utc_now_iso()
+    muted_value = 1 if muted else 0
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        if identifier.isdigit():
+            cursor = connection.execute(
+                "UPDATE watch_sources SET muted = ?, updated_at = ? WHERE id = ?",
+                (muted_value, timestamp, int(identifier)),
+            )
+        else:
+            cursor = connection.execute(
+                "UPDATE watch_sources SET muted = ?, updated_at = ? WHERE url = ?",
+                (muted_value, timestamp, identifier),
+            )
+        return bool(cursor.rowcount)
+
+
 def mark_watch_checked(db_path: str, watch_id: int, now: str) -> None:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
@@ -1164,6 +1192,47 @@ def filter_alerts_for_watch(watch: Watch, blocks: AppBlocks, alerts: Sequence[di
     if not allowed:
         return []
     return [alert for alert in alerts if alert.get("type", "").lower() in allowed]
+
+
+def event_match_reasons(event: dict[str, object]) -> list[str]:
+    reasons: list[str] = []
+    keyword = clean_text(str(event.get("keyword") or ""))
+    title = clean_text(str(event.get("title") or ""))
+    summary = clean_text(str(event.get("summary") or ""))
+    dates = [clean_text(str(value)) for value in event.get("event_dates", []) if clean_text(str(value))]
+    venues = [clean_text(str(value)) for value in event.get("venues", []) if clean_text(str(value))]
+    sources = event.get("manual_sources", [])
+    rounds = event.get("rounds", [])
+
+    haystack = " ".join((title, summary, " ".join(dates), " ".join(venues))).lower()
+    if keyword and keyword.lower() in haystack:
+        reasons.append(f"keyword match: {keyword}")
+    elif keyword:
+        reasons.append(f"tracked keyword: {keyword}")
+    if dates:
+        reasons.append(f"date clue: {dates[0]}")
+    if venues:
+        reasons.append(f"venue clue: {venues[0]}")
+    if isinstance(sources, list) and sources:
+        public_count = sum(1 for source in sources if isinstance(source, dict) and not source.get("private_note"))
+        private_count = sum(1 for source in sources if isinstance(source, dict) and source.get("private_note"))
+        if public_count:
+            reasons.append(f"manual public source: {public_count}")
+        if private_count:
+            reasons.append(f"private source note: {private_count}")
+    if isinstance(rounds, list) and rounds:
+        best_confidence = max((int(round_info.get("confidence") or 0) for round_info in rounds if isinstance(round_info, dict)), default=0)
+        platforms = sorted({str(round_info.get("platform") or "") for round_info in rounds if isinstance(round_info, dict) and round_info.get("platform")})
+        urgent = [str(round_info.get("status")) for round_info in rounds if isinstance(round_info, dict) and round_info.get("status") in UPCOMING_STATUS_ORDER]
+        if platforms:
+            reasons.append(f"ticket platforms: {', '.join(platforms[:3])}")
+        if best_confidence:
+            reasons.append(f"source confidence: {best_confidence}")
+        if urgent:
+            reasons.append(f"ticket status: {urgent[0]}")
+    if not reasons:
+        reasons.append("saved local event")
+    return reasons
 
 
 def run_watches(db_path: str, now: str | None = None, kind: str | None = None) -> list[dict[str, str]]:
@@ -1224,8 +1293,7 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                 """,
                 (row[0],),
             ).fetchall()
-            events.append(
-                {
+            event = {
                     "id": row[0],
                     "watch_id": row[1],
                     "keyword": row[2],
@@ -1256,8 +1324,66 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                         for ticket in rounds
                     ],
                 }
-            )
+            event["match_reasons"] = event_match_reasons(event)
+            events.append(event)
         return events
+
+
+def upcoming_relevant_date(round_info: dict[str, object]) -> str:
+    status = str(round_info.get("status") or "unknown")
+    if status in {"closing_soon", "open", "upcoming"}:
+        return str(round_info.get("application_end_at") or round_info.get("application_start_at") or "")
+    if status == "results_today":
+        return str(round_info.get("results_date") or "")
+    if status == "payment_due":
+        return str(round_info.get("payment_end_at") or "")
+    if status == "general_sale_soon":
+        return str(round_info.get("general_sale_date") or "")
+    return str(
+        round_info.get("application_start_at")
+        or round_info.get("application_end_at")
+        or round_info.get("results_date")
+        or round_info.get("payment_end_at")
+        or round_info.get("general_sale_date")
+        or ""
+    )
+
+
+def upcoming_priority_rows(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for event in recent_events(db_path, limit=500):
+        if event.get("watch_kind") != WATCH_KIND_EVENT:
+            continue
+        for round_info in event.get("rounds", []):
+            if not isinstance(round_info, dict):
+                continue
+            status = str(round_info.get("status") or "unknown")
+            relevant_date = upcoming_relevant_date(round_info)
+            if status == "closed" and not relevant_date:
+                continue
+            rows.append(
+                {
+                    "event_id": event.get("id"),
+                    "event_title": event.get("title"),
+                    "watch_id": event.get("watch_id"),
+                    "watch_kind": event.get("watch_kind"),
+                    "keyword": event.get("keyword"),
+                    "platform": round_info.get("platform"),
+                    "round_name": round_info.get("name"),
+                    "status": status,
+                    "relevant_date": relevant_date,
+                    "url": round_info.get("url"),
+                    "match_reasons": event.get("match_reasons", []),
+                }
+            )
+    rows.sort(
+        key=lambda row: (
+            UPCOMING_STATUS_ORDER.get(str(row.get("status") or "unknown"), 99),
+            str(row.get("relevant_date") or "9999-12-31"),
+            str(row.get("event_title") or ""),
+        )
+    )
+    return rows[:limit]
 
 
 def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
@@ -1936,13 +2062,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     source_remove_parser.add_argument("identifier")
     source_remove_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
 
+    for source_toggle in ("mute", "unmute"):
+        source_toggle_parser = source_subparsers.add_parser(source_toggle, help=f"{source_toggle.title()} a manual source by id or URL")
+        source_toggle_parser.add_argument("identifier")
+        source_toggle_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
     web_parser = subparsers.add_parser("web", help="Run the local web UI")
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
     web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
 
     export_parser = subparsers.add_parser("export", help="Export saved data")
-    export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events", "calendar"))
+    export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events", "calendar", "upcoming"))
     export_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     export_parser.add_argument("--json", action="store_true", default=True)
 
@@ -2021,6 +2152,7 @@ def render_web_page(db_path: str) -> str:
     watches = list_watches(db_path, include_muted=True)
     sources = list_watch_sources(db_path)
     events = recent_events(db_path)
+    upcoming = upcoming_priority_rows(db_path, limit=8)
     alerts = recent_alerts(db_path, limit=20)
     active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
@@ -2056,6 +2188,16 @@ def render_web_page(db_path: str) -> str:
     ) or "<li>No manual sources.</li>"
     artist_event_items = "\n".join(render_event_card(event, basic=True) for event in events if event.get("watch_kind") == WATCH_KIND_ARTIST) or "<p>No artist event info saved yet.</p>"
     ticket_event_items = "\n".join(render_event_card(event) for event in events if event.get("watch_kind") == WATCH_KIND_EVENT) or "<p>No tracked event ticket info saved yet.</p>"
+    upcoming_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(str(item.get('event_title') or 'Untitled event'))}</strong><br>
+          <small>{html.escape(str(item.get('status') or 'unknown'))} · {html.escape(str(item.get('platform') or 'unknown'))} · {html.escape(str(item.get('round_name') or 'Ticket round'))} · {html.escape(str(item.get('relevant_date') or 'date unknown'))}</small></span>
+          <a href="{html.escape(str(item.get('url') or '#'))}">Source</a>
+        </li>
+        """
+        for item in upcoming
+    ) or "<li>No urgent ticket dates saved yet.</li>"
     alert_items = "\n".join(
         f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> {html.escape(str(alert.get('event', '')))} {html.escape(str(alert.get('round', '')))} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
         for alert in alerts
@@ -2085,6 +2227,7 @@ def render_web_page(db_path: str) -> str:
     .rounds {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }}
     .round {{ border: 1px solid #d8dde3; border-radius: 6px; padding: 10px; background: #fbfcfd; }}
     .status {{ display: inline-block; padding: 2px 6px; border-radius: 4px; background: #e8f0fe; color: #174ea6; font-size: 12px; }}
+    .reasons {{ margin: 6px 0; padding-left: 18px; color: #4d5967; }}
   </style>
 </head>
 <body>
@@ -2122,6 +2265,10 @@ def render_web_page(db_path: str) -> str:
       <ul style="margin-top: 14px;">{source_items}</ul>
     </section>
     <section>
+      <h2>Needs Attention</h2>
+      <ul>{upcoming_items}</ul>
+    </section>
+    <section>
       <h2>Artist Event Info</h2>
       {artist_event_items}
     </section>
@@ -2149,6 +2296,9 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
         for label, value in (("Dates", date_text), ("Venues", venue_text))
         if value
     )
+    reasons = event.get("match_reasons", [])
+    reason_items = "".join(f"<li>{html.escape(str(reason))}</li>" for reason in reasons[:4]) if isinstance(reasons, list) else ""
+    reason_section = f'<ul class="reasons">{reason_items}</ul>' if reason_items else ""
     round_cards = "" if basic else "\n".join(
         f"""
         <div class="round">
@@ -2169,6 +2319,7 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
       <h3><a href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a></h3>
       <p><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span> <a href="{html.escape(str(official))}">Official page</a> · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
       {metadata}
+      {reason_section}
       {ticket_section}
     </article>
     """
@@ -2180,7 +2331,9 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             return
 
         def do_GET(self) -> None:
-            path = urllib.parse.urlparse(self.path).path
+            parsed_url = urllib.parse.urlparse(self.path)
+            path = parsed_url.path
+            query = urllib.parse.parse_qs(parsed_url.query)
             if path == "/":
                 html_response(self, render_web_page(db_path))
             elif re.fullmatch(r"/events/\d+", path):
@@ -2191,10 +2344,13 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=True)])
             elif path == "/api/events":
                 json_response(self, recent_events(db_path))
+            elif path == "/api/upcoming":
+                json_response(self, upcoming_priority_rows(db_path))
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path))
             elif path == "/api/sources":
-                json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=True)])
+                include_muted = query.get("include_muted", ["1"])[0].lower() not in {"0", "false", "no"}
+                json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=include_muted)])
             elif path == "/calendar.ics":
                 text_response(self, render_calendar_ics(db_path), "text/calendar; charset=utf-8")
             else:
@@ -2257,6 +2413,10 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, dataclasses.asdict(source))
             elif path == "/api/sources/remove":
                 json_response(self, {"removed": remove_watch_source(db_path, form.get("identifier", ""))})
+            elif path == "/api/sources/mute":
+                json_response(self, {"muted": set_watch_source_muted(db_path, form.get("identifier", ""), True)})
+            elif path == "/api/sources/unmute":
+                json_response(self, {"unmuted": set_watch_source_muted(db_path, form.get("identifier", ""), False)})
             else:
                 json_response(self, {"error": "not found"}, status=404)
 
@@ -2291,6 +2451,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_EVENT)))
         elif args.target == "calendar":
             print(render_calendar_ics(args.db), end="")
+        elif args.target == "upcoming":
+            print(json.dumps(upcoming_priority_rows(args.db), ensure_ascii=False, indent=2))
         return 0
     if args.command in {"artist", "event"}:
         if args.kind_command == "add":
@@ -2338,6 +2500,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 removed = remove_watch_source(args.db, args.identifier)
                 print("Removed source." if removed else "Source not found.")
                 return 0 if removed else 1
+            if args.source_command == "mute":
+                muted = set_watch_source_muted(args.db, args.identifier, True)
+                print("Muted source." if muted else "Source not found.")
+                return 0 if muted else 1
+            if args.source_command == "unmute":
+                unmuted = set_watch_source_muted(args.db, args.identifier, False)
+                print("Unmuted source." if unmuted else "Source not found.")
+                return 0 if unmuted else 1
         if args.watch_command == "add":
             watch = add_watch(
                 args.db,

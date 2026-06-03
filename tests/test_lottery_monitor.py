@@ -465,6 +465,9 @@ def test_source_provenance_and_round_metadata_are_exported(tmp_path):
     assert events[0]["status"] == "lottery_open"
     assert events[0]["event_dates"] == ["公演日 2026年7月10日"]
     assert events[0]["venues"] == ["会場 Example Hall"]
+    assert any(reason.startswith("keyword match: Example") for reason in events[0]["match_reasons"])
+    assert any(reason.startswith("date clue:") for reason in events[0]["match_reasons"])
+    assert any(reason.startswith("venue clue:") for reason in events[0]["match_reasons"])
     assert events[0]["rounds"][0]["round_type"] == "platform"
     assert events[0]["rounds"][0]["membership_required"] == "unknown"
 
@@ -479,6 +482,56 @@ def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
     assert '"title": "Example Tour"' in output
     assert '"status": "lottery_open"' in output
     assert '"event_dates": [' in output
+    assert '"match_reasons": [' in output
+
+
+def test_upcoming_export_sorts_urgent_ticket_rounds(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.save_blocks(
+        str(db_path),
+        lm.AppBlocks(
+            general_info=example_blocks("Closing").general_info,
+            ticket_info=(
+                lm.TicketRound(
+                    source="pia",
+                    url="https://t.pia.jp/closing",
+                    name="Closing soon",
+                    lottery_start="2026-06-01",
+                    lottery_end="2026-06-04",
+                ),
+            ),
+        ),
+        now="2026-06-03T00:00:00+00:00",
+    )
+    lm.save_blocks(
+        str(db_path),
+        lm.AppBlocks(
+            general_info=example_blocks("Payment").general_info,
+            ticket_info=(
+                lm.TicketRound(
+                    source="eplus",
+                    url="https://eplus.jp/payment",
+                    name="Payment due",
+                    lottery_start="2026-05-01",
+                    lottery_end="2026-05-02",
+                    payment_deadline="2026-06-04",
+                ),
+            ),
+        ),
+        now="2026-06-03T00:00:00+00:00",
+    )
+
+    rows = lm.upcoming_priority_rows(str(db_path))
+
+    assert rows[0]["status"] == "closing_soon"
+    assert rows[0]["event_title"] == "Closing Tour"
+    assert rows[1]["status"] == "payment_due"
+    assert rows[1]["relevant_date"] == "2026-06-04"
+
+    assert lm.main(["export", "upcoming", "--db", str(db_path)]) == 0
+    output = capsys.readouterr().out
+    assert '"event_title": "Closing Tour"' in output
+    assert '"match_reasons": [' in output
 
 
 def test_api_health_reports_database_counts(tmp_path):
@@ -513,6 +566,22 @@ def test_watch_source_cli_add_list_remove(tmp_path, capsys):
 
     assert lm.main(["watch", "source", "remove", "1", "--db", str(db_path)]) == 0
     assert "Removed source." in capsys.readouterr().out
+
+
+def test_watch_source_cli_mute_unmute_preserves_source_row(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    lm.add_watch_source(str(db_path), "Example", "https://t.pia.jp/example", "Pia")
+
+    assert lm.main(["watch", "source", "mute", "1", "--db", str(db_path)]) == 0
+    assert "Muted source." in capsys.readouterr().out
+    assert lm.list_watch_sources(str(db_path)) == []
+    muted_sources = lm.list_watch_sources(str(db_path), include_muted=True)
+    assert muted_sources[0].muted is True
+
+    assert lm.main(["watch", "source", "unmute", "1", "--db", str(db_path)]) == 0
+    assert "Unmuted source." in capsys.readouterr().out
+    assert lm.list_watch_sources(str(db_path))[0].muted is False
 
 
 def test_private_note_sources_are_not_scraped(tmp_path, monkeypatch):
@@ -604,7 +673,9 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         health = json_load_url(f"{base}/api/health")
         watchlist = json_load_url(f"{base}/api/watchlist")
         sources = json_load_url(f"{base}/api/sources")
+        active_sources = json_load_url(f"{base}/api/sources?include_muted=0")
         events = json_load_url(f"{base}/api/events")
+        upcoming = json_load_url(f"{base}/api/upcoming")
         alerts = json_load_url(f"{base}/api/alerts")
         calendar_response = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5)
         calendar = calendar_response.read().decode("utf-8")
@@ -613,6 +684,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Calendar feed" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
+        assert "Needs Attention" in home
         assert "Dates:" in home
         assert "Venues:" in home
         assert "Example Tour" in detail
@@ -620,7 +692,10 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert health["tracked_events"] >= 1
         assert watchlist[0]["keyword"] == "Example"
         assert sources == []
+        assert active_sources == []
         assert events[0]["title"] == "Example Tour"
+        assert "match_reasons" in events[0]
+        assert upcoming[0]["event_title"] == "Example Tour"
         assert alerts
         assert "text/calendar" in calendar_response.headers["Content-Type"]
         assert "BEGIN:VCALENDAR" in calendar
