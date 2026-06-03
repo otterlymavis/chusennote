@@ -1,4 +1,8 @@
+import json
 import sqlite3
+import threading
+import urllib.parse
+import urllib.request
 
 import lottery_monitor as lm
 
@@ -377,3 +381,59 @@ def test_watch_run_cli_outputs_alerts_json(tmp_path, monkeypatch, capsys):
 
     assert '"type": "new_official_page"' in output
     assert '"type": "new_lottery_round"' in output
+
+
+def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(str(db_path), example_blocks("Example"), now="2026-06-03T00:00:00+00:00")
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        home = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
+        watchlist = json_load_url(f"{base}/api/watchlist")
+        events = json_load_url(f"{base}/api/events")
+        alerts = json_load_url(f"{base}/api/alerts")
+
+        assert "chusennote" in home
+        assert watchlist[0]["keyword"] == "Example"
+        assert events[0]["title"] == "Example Tour"
+        assert alerts
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        post_form(f"{base}/api/watchlist", {"keyword": "Example"})
+        assert json_load_url(f"{base}/api/watchlist")[0]["keyword"] == "Example"
+
+        run_alerts = post_form(f"{base}/api/run", {})
+        assert any(alert["type"] == "new_lottery_round" for alert in run_alerts)
+
+        removed = post_form(f"{base}/api/watchlist/remove", {"identifier": "Example"})
+        assert removed["removed"] is True
+        assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def json_load_url(url):
+    return json.loads(urllib.request.urlopen(url, timeout=5).read().decode("utf-8"))
+
+
+def post_form(url, values):
+    data = urllib.parse.urlencode(values).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method="POST")
+    return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))

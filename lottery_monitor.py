@@ -848,6 +848,80 @@ def run_watches(db_path: str, now: str | None = None) -> list[dict[str, str]]:
     return alerts
 
 
+def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        rows = connection.execute(
+            """
+            SELECT e.id, w.keyword, e.canonical_title, e.official_url, e.summary, e.updated_at
+            FROM events e
+            JOIN watched_keywords w ON w.id = e.watch_id
+            ORDER BY e.updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        events: list[dict[str, object]] = []
+        for row in rows:
+            rounds = connection.execute(
+                """
+                SELECT name, platform, url, application_start_at, application_end_at,
+                       results_date, general_sale_date, payment_end_at, status, confidence
+                FROM ticket_rounds
+                WHERE event_id = ?
+                ORDER BY platform, round_number, name
+                """,
+                (row[0],),
+            ).fetchall()
+            events.append(
+                {
+                    "id": row[0],
+                    "keyword": row[1],
+                    "title": row[2],
+                    "official_url": row[3],
+                    "summary": row[4],
+                    "updated_at": row[5],
+                    "rounds": [
+                        {
+                            "name": ticket[0],
+                            "platform": ticket[1],
+                            "url": ticket[2],
+                            "application_start_at": ticket[3],
+                            "application_end_at": ticket[4],
+                            "results_date": ticket[5],
+                            "general_sale_date": ticket[6],
+                            "payment_end_at": ticket[7],
+                            "status": ticket[8],
+                            "confidence": ticket[9],
+                        }
+                        for ticket in rounds
+                    ],
+                }
+            )
+        return events
+
+
+def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        rows = connection.execute(
+            """
+            SELECT alert_type, payload_json, created_at
+            FROM alert_log
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        alerts: list[dict[str, object]] = []
+        for alert_type, payload_json, created_at in rows:
+            payload = json.loads(payload_json)
+            payload["created_at"] = created_at
+            payload["alert_type"] = alert_type
+            alerts.append(payload)
+        return alerts
+
+
 def upsert_event(connection: sqlite3.Connection, watch_id: int, info: EventInfo, now: str) -> tuple[int, bool]:
     official_url = info.official_page or f"keyword:{info.keyword}"
     existing = connection.execute(
@@ -1241,6 +1315,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     run_parser.add_argument("--alerts-json", action="store_true")
 
+    web_parser = subparsers.add_parser("web", help="Run the local web UI")
+    web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
+
     return parser.parse_args(argv)
 
 
@@ -1258,8 +1336,194 @@ def render_watches(watches: Sequence[Watch]) -> str:
     return "\n".join(lines)
 
 
+def json_response(handler: http.server.BaseHTTPRequestHandler, payload: object, status: int = 200) -> None:
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def html_response(handler: http.server.BaseHTTPRequestHandler, body: str, status: int = 200) -> None:
+    data = body.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def read_form(handler: http.server.BaseHTTPRequestHandler) -> dict[str, str]:
+    length = int(handler.headers.get("Content-Length", "0"))
+    raw = handler.rfile.read(length).decode("utf-8") if length else ""
+    parsed = urllib.parse.parse_qs(raw)
+    return {key: values[0] for key, values in parsed.items() if values}
+
+
+def redirect_response(handler: http.server.BaseHTTPRequestHandler, location: str = "/") -> None:
+    handler.send_response(303)
+    handler.send_header("Location", location)
+    handler.end_headers()
+
+
+def render_web_page(db_path: str) -> str:
+    watches = list_watches(db_path, include_muted=True)
+    events = recent_events(db_path)
+    alerts = recent_alerts(db_path, limit=20)
+    active_watches = [watch for watch in watches if not watch.muted]
+    watch_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
+        </li>
+        """
+        for watch in active_watches
+    ) or "<li>No active watches.</li>"
+    event_items = "\n".join(render_event_card(event) for event in events) or "<p>No events saved yet.</p>"
+    alert_items = "\n".join(
+        f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> {html.escape(str(alert.get('event', '')))} {html.escape(str(alert.get('round', '')))} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
+        for alert in alerts
+    ) or "<li>No alerts emitted yet.</li>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>chusennote</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; background: #f6f7f9; color: #20242a; }}
+    header {{ background: #1f2933; color: white; padding: 18px 24px; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }}
+    section {{ background: white; border: 1px solid #d8dde3; border-radius: 6px; padding: 16px; }}
+    h1, h2, h3 {{ margin: 0 0 12px; }}
+    form {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+    input {{ padding: 8px 10px; border: 1px solid #b9c1cb; border-radius: 4px; min-width: 220px; }}
+    button {{ padding: 8px 12px; border: 1px solid #1f2933; border-radius: 4px; background: #1f2933; color: white; cursor: pointer; }}
+    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border-bottom: 1px solid #edf0f3; padding-bottom: 8px; }}
+    small {{ color: #66717f; }}
+    .event {{ border-top: 1px solid #edf0f3; padding-top: 12px; margin-top: 12px; }}
+    .rounds {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }}
+    .round {{ border: 1px solid #d8dde3; border-radius: 6px; padding: 10px; background: #fbfcfd; }}
+    .status {{ display: inline-block; padding: 2px 6px; border-radius: 4px; background: #e8f0fe; color: #174ea6; font-size: 12px; }}
+  </style>
+</head>
+<body>
+  <header><h1>chusennote</h1></header>
+  <main>
+    <section>
+      <h2>Watchlist</h2>
+      <form method="post" action="/watch/add">
+        <input name="keyword" placeholder="Artist, event, or musical keyword" required>
+        <button>Add Watch</button>
+      </form>
+      <form method="post" action="/watch/run" style="margin-top: 10px;"><button>Run All Watches</button></form>
+      <ul style="margin-top: 14px;">{watch_items}</ul>
+    </section>
+    <section>
+      <h2>Events</h2>
+      {event_items}
+    </section>
+    <section>
+      <h2>Recent Alerts</h2>
+      <ul>{alert_items}</ul>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def render_event_card(event: dict[str, object]) -> str:
+    rounds = event.get("rounds", [])
+    round_cards = "\n".join(
+        f"""
+        <div class="round">
+          <strong>{html.escape(str(ticket.get('name') or 'Ticket round'))}</strong>
+          <div><span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span> {html.escape(str(ticket.get('platform') or 'unknown'))}</div>
+          <small>Apply: {html.escape(str(ticket.get('application_start_at') or 'unknown'))} to {html.escape(str(ticket.get('application_end_at') or 'unknown'))}</small><br>
+          <small>Results: {html.escape(str(ticket.get('results_date') or 'unknown'))}</small><br>
+          <a href="{html.escape(str(ticket.get('url') or '#'))}">Source</a>
+        </div>
+        """
+        for ticket in rounds
+    ) or "<p>No ticket rounds saved yet.</p>"
+    official = event.get("official_url") or "#"
+    return f"""
+    <article class="event">
+      <h3>{html.escape(str(event.get('title') or 'Untitled event'))}</h3>
+      <p><a href="{html.escape(str(official))}">Official page</a> · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
+      <div class="rounds">{round_cards}</div>
+    </article>
+    """
+
+
+def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
+    class ChusennoteHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+        def do_GET(self) -> None:
+            path = urllib.parse.urlparse(self.path).path
+            if path == "/":
+                html_response(self, render_web_page(db_path))
+            elif path == "/api/watchlist":
+                json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=True)])
+            elif path == "/api/events":
+                json_response(self, recent_events(db_path))
+            elif path == "/api/alerts":
+                json_response(self, recent_alerts(db_path))
+            else:
+                json_response(self, {"error": "not found"}, status=404)
+
+        def do_POST(self) -> None:
+            path = urllib.parse.urlparse(self.path).path
+            form = read_form(self)
+            if path == "/watch/add":
+                keyword = clean_text(form.get("keyword", ""))
+                if not keyword:
+                    json_response(self, {"error": "keyword is required"}, status=400)
+                    return
+                add_watch(db_path, keyword)
+                redirect_response(self)
+            elif path == "/watch/remove":
+                remove_watch(db_path, form.get("identifier", ""))
+                redirect_response(self)
+            elif path == "/watch/run":
+                run_watches(db_path)
+                redirect_response(self)
+            elif path == "/api/watchlist":
+                keyword = clean_text(form.get("keyword", ""))
+                if not keyword:
+                    json_response(self, {"error": "keyword is required"}, status=400)
+                    return
+                json_response(self, dataclasses.asdict(add_watch(db_path, keyword)))
+            elif path == "/api/watchlist/remove":
+                json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
+            elif path == "/api/run":
+                json_response(self, run_watches(db_path))
+            else:
+                json_response(self, {"error": "not found"}, status=404)
+
+    return ChusennoteHandler
+
+
+def create_web_server(db_path: str, port: int) -> http.server.ThreadingHTTPServer:
+    return http.server.ThreadingHTTPServer(("127.0.0.1", port), make_web_handler(db_path))
+
+
+def run_web(db_path: str, port: int) -> None:
+    server = create_web_server(db_path, port)
+    print(f"Serving chusennote at http://127.0.0.1:{server.server_port}")
+    server.serve_forever()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    if args.command == "web":
+        run_web(args.db, args.port)
+        return 0
     if args.command == "watch":
         if args.watch_command == "add":
             watch = add_watch(args.db, args.keyword, args.tags, args.regions, args.venues)

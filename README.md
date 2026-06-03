@@ -17,16 +17,22 @@ Instead of asking you to hand-maintain every ticket URL first, chusennote starts
 python3 lottery_monitor.py "your event keyword"
 ```
 
+The same search is available through the explicit command form:
+
+```bash
+python3 lottery_monitor.py search "your event keyword"
+```
+
 JSON output for a future web/app UI:
 
 ```bash
-python3 lottery_monitor.py "your event keyword" --json
+python3 lottery_monitor.py search "your event keyword" --json
 ```
 
 Save each run to SQLite so chusennote can detect changes over time:
 
 ```bash
-python3 lottery_monitor.py "your event keyword" --db chusennote.sqlite3
+python3 lottery_monitor.py search "your event keyword" --db chusennote.sqlite3
 ```
 
 Output only alert changes for automation:
@@ -36,6 +42,22 @@ python3 lottery_monitor.py "your event keyword" --db chusennote.sqlite3 --alerts
 ```
 
 Alert output includes newly discovered facts plus date-based lifecycle events such as `lottery_opened`, `lottery_closing_soon`, `results_today`, `payment_due_soon`, and `general_sale_soon`. Lifecycle alerts are recorded in SQLite so the same alert is not repeated on every run.
+
+Add keywords to the persistent watchlist and run all active watches:
+
+```bash
+python3 lottery_monitor.py watch add "your event keyword"
+python3 lottery_monitor.py watch list
+python3 lottery_monitor.py watch run --alerts-json
+```
+
+Run the local web UI:
+
+```bash
+python3 lottery_monitor.py web --db chusennote.sqlite3 --port 8765
+```
+
+Then open <http://127.0.0.1:8765>.
 
 ## How the current pipeline works
 
@@ -113,7 +135,9 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - Japanese ticket sites often change HTML, use dynamic rendering, and hide details behind JavaScript or login gates.
 - This version uses only the Python standard library, so it is easy to run anywhere, but site-specific parsers may be needed for high precision.
 - SQLite persistence stores watched keywords, events, ticket sources, detected ticket rounds, compact JSON snapshots, and emitted lifecycle alerts.
+- The local web UI is intentionally standard-library only and runs on your machine.
 - The best long-term approach is to keep this keyword-first pipeline and add dedicated adapters for Pia, eplus, Lawson Ticket, official fan-club pages, and musical production sites.
+- The MVP does not send Discord, LINE, Slack, or email notifications and does not scrape private/login-only fan-club pages.
 
 ## Future upgrades
 
