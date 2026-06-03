@@ -159,3 +159,69 @@ def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
             "url": "https://t.pia.jp/example",
         }
     ]
+
+
+def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
+    db_path = tmp_path / "otterpia.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Tour",
+            summary="公演情報",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="第1次抽選先行",
+                lottery_start="2026-06-03",
+                lottery_end="2026-06-05",
+                results_date="2026-06-03",
+                general_sale_date="2026-06-04",
+                payment_deadline="2026-06-04",
+            ),
+        ),
+    )
+
+    alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-03T09:00:00+00:00")
+    alert_types = {alert["type"] for alert in alerts}
+
+    assert "lottery_opened" in alert_types
+    assert "lottery_closing_soon" in alert_types
+    assert "results_today" in alert_types
+    assert "general_sale_soon" in alert_types
+    assert "payment_due_soon" in alert_types
+
+
+def test_save_blocks_does_not_repeat_lifecycle_alerts(tmp_path):
+    db_path = tmp_path / "otterpia.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Tour",
+            summary="公演情報",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="第1次抽選先行",
+                lottery_start="2026-06-03",
+                lottery_end="2026-06-05",
+            ),
+        ),
+    )
+
+    first_alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-03T09:00:00+00:00")
+    second_alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-03T10:00:00+00:00")
+
+    assert any(alert["type"] == "lottery_opened" for alert in first_alerts)
+    assert not any(alert["type"] in {"lottery_opened", "lottery_closing_soon"} for alert in second_alerts)

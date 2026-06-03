@@ -35,6 +35,8 @@ Output only alert changes for automation:
 python3 lottery_monitor.py "your event keyword" --db otterpia.sqlite3 --alerts-json
 ```
 
+Alert output includes newly discovered facts plus date-based lifecycle events such as `lottery_opened`, `lottery_closing_soon`, `results_today`, `payment_due_soon`, and `general_sale_soon`. Lifecycle alerts are recorded in SQLite so the same alert is not repeated on every run.
+
 ## How the current pipeline works
 
 ### 1. Search for the official page
@@ -110,7 +112,7 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 
 - Japanese ticket sites often change HTML, use dynamic rendering, and hide details behind JavaScript or login gates.
 - This version uses only the Python standard library, so it is easy to run anywhere, but site-specific parsers may be needed for high precision.
-- SQLite persistence stores watched keywords, events, ticket sources, detected ticket rounds, and compact JSON snapshots.
+- SQLite persistence stores watched keywords, events, ticket sources, detected ticket rounds, compact JSON snapshots, and emitted lifecycle alerts.
 - The best long-term approach is to keep this keyword-first pipeline and add dedicated adapters for Pia, eplus, Lawson Ticket, official fan-club pages, and musical production sites.
 
 ## Future upgrades

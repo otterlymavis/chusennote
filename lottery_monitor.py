@@ -588,6 +588,17 @@ def init_db(connection: sqlite3.Connection) -> None:
             UNIQUE(event_id, snapshot_hash),
             FOREIGN KEY(event_id) REFERENCES events(id)
         );
+
+        CREATE TABLE IF NOT EXISTS alert_log (
+            id INTEGER PRIMARY KEY,
+            event_id INTEGER NOT NULL,
+            alert_key TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(event_id, alert_key),
+            FOREIGN KEY(event_id) REFERENCES events(id)
+        );
         """
     )
 
@@ -673,6 +684,82 @@ def ticket_round_fields(ticket: TicketRound) -> dict[str, str | None]:
         "general_sale_date": ticket.general_sale_date,
         "payment_deadline": ticket.payment_deadline,
     }
+
+
+def parse_iso_date(value: str | None) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def date_alert(
+    alert_type: str,
+    event_title: str,
+    ticket: TicketRound,
+    field: str,
+    target_date: dt.date,
+    today: dt.date,
+) -> dict[str, str]:
+    days = (target_date - today).days
+    return {
+        "type": alert_type,
+        "event": event_title,
+        "round": ticket.name,
+        "source": ticket.source,
+        "date": target_date.isoformat(),
+        "days_until": str(days),
+        "url": ticket.url,
+        "field": field,
+    }
+
+
+def lifecycle_alerts_for_round(event_title: str, ticket: TicketRound, today: dt.date) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+    lottery_start = parse_iso_date(ticket.lottery_start)
+    lottery_end = parse_iso_date(ticket.lottery_end)
+    results_date = parse_iso_date(ticket.results_date)
+    general_sale_date = parse_iso_date(ticket.general_sale_date)
+    payment_deadline = parse_iso_date(ticket.payment_deadline)
+
+    if lottery_start and lottery_start == today:
+        alerts.append(date_alert("lottery_opened", event_title, ticket, "lottery_start", lottery_start, today))
+    if lottery_end and 0 <= (lottery_end - today).days <= 2:
+        alerts.append(date_alert("lottery_closing_soon", event_title, ticket, "lottery_end", lottery_end, today))
+    if results_date and results_date == today:
+        alerts.append(date_alert("results_today", event_title, ticket, "results_date", results_date, today))
+    if payment_deadline and 0 <= (payment_deadline - today).days <= 1:
+        alerts.append(date_alert("payment_due_soon", event_title, ticket, "payment_deadline", payment_deadline, today))
+    if general_sale_date and 0 <= (general_sale_date - today).days <= 2:
+        alerts.append(date_alert("general_sale_soon", event_title, ticket, "general_sale_date", general_sale_date, today))
+    return alerts
+
+
+def record_lifecycle_alerts(
+    connection: sqlite3.Connection,
+    event_id: int,
+    event_title: str,
+    rounds: Sequence[TicketRound],
+    now: str,
+) -> list[dict[str, str]]:
+    today = parse_iso_date(now) or dt.date.today()
+    alerts: list[dict[str, str]] = []
+    for ticket in rounds:
+        for alert in lifecycle_alerts_for_round(event_title, ticket, today):
+            key = stable_hash("|".join((alert["type"], ticket_round_key(ticket), alert["field"], alert["date"])))
+            payload = json.dumps(alert, ensure_ascii=False, sort_keys=True)
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO alert_log(event_id, alert_key, alert_type, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (event_id, key, alert["type"], payload, now),
+            )
+            if cursor.rowcount:
+                alerts.append(alert)
+    return alerts
 
 
 def upsert_ticket_rounds(
@@ -774,6 +861,7 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None) -> list
             alerts.append({"type": "new_official_page", "event": event_title, "url": info.official_page})
         alerts.extend(upsert_sources(connection, event_id, info.ticket_links, timestamp))
         alerts.extend(upsert_ticket_rounds(connection, event_id, event_title, blocks.ticket_info, timestamp))
+        alerts.extend(record_lifecycle_alerts(connection, event_id, event_title, blocks.ticket_info, timestamp))
         save_snapshot(connection, event_id, blocks, timestamp)
         return alerts
 
