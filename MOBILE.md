@@ -44,7 +44,7 @@ http://192.168.1.20:8765
 
 ## iOS
 
-Open Xcode and create an iOS SwiftUI app named `Chusennote`, then use the Swift files in `ios/Chusennote/`.
+Open `ios/Chusennote.xcodeproj` in Xcode.
 
 Default simulator URL:
 
@@ -53,3 +53,7 @@ http://127.0.0.1:8765
 ```
 
 For a physical iPhone, change the base URL in the app to your computer's LAN IP.
+
+## CI builds
+
+GitHub Actions are configured for Python tests, Android debug APK builds, and iOS simulator builds. Local native builds still require Android Studio/Gradle or Xcode on the development machine.
