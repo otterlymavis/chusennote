@@ -65,4 +65,31 @@ struct AlertPayload: Codable, Identifiable {
     let event: String?
     let keyword: String?
     let round: String?
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case event
+        case keyword
+        case round
+        case createdAt = "created_at"
+    }
+}
+
+struct WatchSource: Codable, Identifiable {
+    let id: Int
+    let watchId: Int
+    let url: String
+    let label: String
+    let platform: String
+    let privateNote: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case watchId = "watch_id"
+        case url
+        case label
+        case platform
+        case privateNote = "private_note"
+    }
 }

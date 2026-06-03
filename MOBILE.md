@@ -14,15 +14,17 @@ The mobile apps read:
 
 - `GET /api/watchlist`
 - `GET /api/events`
+- `GET /api/alerts`
 - `POST /api/watchlist`
 - `POST /api/run`
+- `POST /api/sources`
 
 They display the same two product lanes as the web app:
 
 - **Tracked Artists**: basic artist/event discovery watches.
 - **Tracked Events**: ticket and lottery timeline watches.
 
-Both mobile clients can add tracked artists, add tracked events, refresh current data, and run tracked event checks against the local server. The Python server still performs the actual scraping, persistence, and alert generation.
+Both mobile clients can add tracked artists, add tracked events, add manual public sources, refresh current data, run tracked event checks, and show recent alerts from the local server. The Python server still performs the actual scraping, persistence, and alert generation.
 
 ## Android
 

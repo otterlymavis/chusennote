@@ -30,8 +30,12 @@ public class MainActivity extends Activity {
     private EditText baseUrlInput;
     private EditText artistInput;
     private EditText eventInput;
+    private EditText sourceWatchInput;
+    private EditText sourceUrlInput;
+    private EditText sourceLabelInput;
     private LinearLayout artistList;
     private LinearLayout eventList;
+    private LinearLayout alertList;
     private TextView statusText;
 
     @Override
@@ -95,6 +99,29 @@ public class MainActivity extends Activity {
         eventList.setOrientation(LinearLayout.VERTICAL);
         root.addView(eventList);
 
+        root.addView(section("Manual Event Source"));
+        sourceWatchInput = new EditText(this);
+        sourceWatchInput.setSingleLine(true);
+        sourceWatchInput.setHint("Tracked event watch id or keyword");
+        root.addView(sourceWatchInput);
+        sourceUrlInput = new EditText(this);
+        sourceUrlInput.setSingleLine(true);
+        sourceUrlInput.setHint("Ticket or source URL");
+        root.addView(sourceUrlInput);
+        sourceLabelInput = new EditText(this);
+        sourceLabelInput.setSingleLine(true);
+        sourceLabelInput.setHint("Label");
+        root.addView(sourceLabelInput);
+        Button addSource = new Button(this);
+        addSource.setText("Add Source");
+        addSource.setOnClickListener(view -> addSource());
+        root.addView(addSource);
+
+        root.addView(section("Recent Alerts"));
+        alertList = new LinearLayout(this);
+        alertList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(alertList);
+
         return scrollView;
     }
 
@@ -104,7 +131,8 @@ public class MainActivity extends Activity {
             try {
                 JSONArray watches = getJsonArray("/api/watchlist");
                 JSONArray events = getJsonArray("/api/events");
-                mainHandler.post(() -> render(watches, events));
+                JSONArray alerts = getJsonArray("/api/alerts");
+                mainHandler.post(() -> render(watches, events, alerts));
             } catch (Exception error) {
                 mainHandler.post(() -> statusText.setText("Could not load chusennote: " + error.getMessage()));
             }
@@ -142,6 +170,33 @@ public class MainActivity extends Activity {
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> statusText.setText("Could not run watches: " + error.getMessage()));
+            }
+        });
+    }
+
+    private void addSource() {
+        String watch = sourceWatchInput.getText().toString().trim();
+        String url = sourceUrlInput.getText().toString().trim();
+        String label = sourceLabelInput.getText().toString().trim();
+        if (watch.isEmpty() || url.isEmpty()) {
+            statusText.setText("Enter a watch id/keyword and source URL first.");
+            return;
+        }
+        statusText.setText("Adding source...");
+        executor.execute(() -> {
+            try {
+                postForm(
+                    "/api/sources",
+                    "watch=" + encode(watch) + "&url=" + encode(url) + "&label=" + encode(label)
+                );
+                mainHandler.post(() -> {
+                    sourceWatchInput.setText("");
+                    sourceUrlInput.setText("");
+                    sourceLabelInput.setText("");
+                    refresh();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not add source: " + error.getMessage()));
             }
         });
     }
@@ -193,9 +248,10 @@ public class MainActivity extends Activity {
         return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
     }
 
-    private void render(JSONArray watches, JSONArray events) {
+    private void render(JSONArray watches, JSONArray events, JSONArray alerts) {
         artistList.removeAllViews();
         eventList.removeAllViews();
+        alertList.removeAllViews();
         int artistCount = 0;
         int eventCount = 0;
 
@@ -229,6 +285,18 @@ public class MainActivity extends Activity {
         }
         if (eventCount == 0 && eventList.getChildCount() == 0) {
             eventList.addView(body("No tracked events yet."));
+        }
+        for (int i = 0; i < Math.min(alerts.length(), 10); i++) {
+            JSONObject alert = alerts.optJSONObject(i);
+            if (alert == null) {
+                continue;
+            }
+            String title = alert.optString("type", "alert");
+            String detail = alert.optString("event", alert.optString("keyword", "")) + " " + alert.optString("round", "");
+            alertList.addView(card(title, detail.trim()));
+        }
+        if (alertList.getChildCount() == 0) {
+            alertList.addView(body("No recent alerts."));
         }
         statusText.setText("Loaded " + artistCount + " artists and " + eventCount + " event watches.");
     }

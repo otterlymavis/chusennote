@@ -4,6 +4,9 @@ struct ContentView: View {
     @StateObject private var store = ChusennoteStore()
     @State private var artistKeyword = ""
     @State private var eventKeyword = ""
+    @State private var sourceWatch = ""
+    @State private var sourceURL = ""
+    @State private var sourceLabel = ""
 
     var body: some View {
         NavigationStack {
@@ -83,6 +86,39 @@ struct ContentView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                        }
+                    }
+                }
+
+                Section("Manual Event Source") {
+                    TextField("Watch id or keyword", text: $sourceWatch)
+                        .textInputAutocapitalization(.never)
+                    TextField("Ticket or source URL", text: $sourceURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Label", text: $sourceLabel)
+                    Button("Add Source") {
+                        let watch = sourceWatch.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let url = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let label = sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !watch.isEmpty, !url.isEmpty else { return }
+                        sourceWatch = ""
+                        sourceURL = ""
+                        sourceLabel = ""
+                        Task { await store.addSource(watch: watch, url: url, label: label) }
+                    }
+                }
+
+                Section("Recent Alerts") {
+                    if store.alerts.isEmpty {
+                        Text("No recent alerts.")
+                    }
+                    ForEach(store.alerts.prefix(10)) { alert in
+                        VStack(alignment: .leading) {
+                            Text(alert.type).font(.headline)
+                            Text([alert.event, alert.keyword, alert.round].compactMap { $0 }.joined(separator: " "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

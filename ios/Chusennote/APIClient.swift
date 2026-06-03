@@ -5,6 +5,7 @@ final class ChusennoteStore: ObservableObject {
     @Published var baseURL = "http://127.0.0.1:8765"
     @Published var watches: [Watch] = []
     @Published var events: [EventSummary] = []
+    @Published var alerts: [AlertPayload] = []
     @Published var errorMessage: String?
 
     var trackedArtists: [Watch] {
@@ -19,8 +20,10 @@ final class ChusennoteStore: ObservableObject {
         do {
             async let fetchedWatches: [Watch] = fetch("/api/watchlist")
             async let fetchedEvents: [EventSummary] = fetch("/api/events")
+            async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
             watches = try await fetchedWatches
             events = try await fetchedEvents
+            alerts = try await fetchedAlerts
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -44,6 +47,21 @@ final class ChusennoteStore: ObservableObject {
     func runEventWatches() async {
         do {
             let _: [AlertPayload] = try await post("/api/run", body: "kind=event")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func addSource(watch: String, url: String, label: String) async {
+        do {
+            var fields = URLComponents()
+            fields.queryItems = [
+                URLQueryItem(name: "watch", value: watch),
+                URLQueryItem(name: "url", value: url),
+                URLQueryItem(name: "label", value: label)
+            ]
+            let _: WatchSource = try await post("/api/sources", body: fields.percentEncodedQuery ?? "")
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
