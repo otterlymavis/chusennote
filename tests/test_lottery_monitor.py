@@ -302,3 +302,78 @@ def test_adapter_dispatch_labels_ticket_platform():
     assert rounds[0].platform == "eplus"
     assert rounds[0].source == "eplus"
     assert rounds[0].confidence == 90
+
+
+def example_blocks(keyword="Example"):
+    return lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword=keyword,
+            official_page="https://official.example/",
+            title=f"{keyword} Tour",
+            summary="公演情報",
+            event_dates=(),
+            venues=(),
+            ticket_links=(lm.Link("Pia", "https://t.pia.jp/example"),),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="第1次抽選先行",
+                lottery_start="2026-06-03",
+                lottery_end="2026-06-05",
+            ),
+        ),
+    )
+
+
+def test_legacy_cli_invocation_still_renders_blocks(monkeypatch, capsys):
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    assert lm.main(["Example"]) == 0
+    output = capsys.readouterr().out
+
+    assert "# General event info" in output
+    assert "Example Tour" in output
+
+
+def test_search_cli_json_outputs_blocks(monkeypatch, capsys):
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    assert lm.main(["search", "Example", "--json"]) == 0
+    output = capsys.readouterr().out
+
+    assert '"keyword": "Example"' in output
+    assert '"ticket_info"' in output
+
+
+def test_watch_add_list_remove_cli(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+
+    assert lm.main(["watch", "add", "Example", "--db", str(db_path), "--tags", "musical"]) == 0
+    add_output = capsys.readouterr().out
+    assert "Added watch 1: Example" in add_output
+
+    assert lm.main(["watch", "list", "--db", str(db_path), "--json"]) == 0
+    list_output = capsys.readouterr().out
+    assert '"keyword": "Example"' in list_output
+    assert '"tags": "musical"' in list_output
+
+    assert lm.main(["watch", "remove", "Example", "--db", str(db_path)]) == 0
+    remove_output = capsys.readouterr().out
+    assert "Removed watch." in remove_output
+
+    assert lm.main(["watch", "list", "--db", str(db_path)]) == 0
+    assert "No active watches." in capsys.readouterr().out
+
+
+def test_watch_run_cli_outputs_alerts_json(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    assert lm.main(["watch", "run", "--db", str(db_path), "--alerts-json"]) == 0
+    output = capsys.readouterr().out
+
+    assert '"type": "new_official_page"' in output
+    assert '"type": "new_lottery_round"' in output

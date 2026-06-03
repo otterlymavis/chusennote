@@ -136,6 +136,17 @@ class AppBlocks:
     ticket_info: tuple[TicketRound, ...]
 
 
+@dataclasses.dataclass(frozen=True)
+class Watch:
+    id: int
+    keyword: str
+    tags: str = ""
+    preferred_regions: str = ""
+    preferred_venues: str = ""
+    muted: bool = False
+    last_checked_at: str | None = None
+
+
 def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -737,6 +748,106 @@ def upsert_keyword(connection: sqlite3.Connection, keyword: str, now: str) -> in
     return int(row[0])
 
 
+def add_watch(
+    db_path: str,
+    keyword: str,
+    tags: str = "",
+    preferred_regions: str = "",
+    preferred_venues: str = "",
+    now: str | None = None,
+) -> Watch:
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        connection.execute(
+            """
+            INSERT INTO watched_keywords(
+                keyword, tags, preferred_regions, preferred_venues, muted, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(keyword) DO UPDATE SET
+                tags = excluded.tags,
+                preferred_regions = excluded.preferred_regions,
+                preferred_venues = excluded.preferred_venues,
+                muted = 0,
+                updated_at = excluded.updated_at
+            """,
+            (keyword, tags, preferred_regions, preferred_venues, timestamp, timestamp),
+        )
+        row = connection.execute(
+            """
+            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            FROM watched_keywords
+            WHERE keyword = ?
+            """,
+            (keyword,),
+        ).fetchone()
+        return watch_from_row(row)
+
+
+def watch_from_row(row: sqlite3.Row | tuple[object, ...]) -> Watch:
+    return Watch(
+        id=int(row[0]),
+        keyword=str(row[1]),
+        tags=str(row[2] or ""),
+        preferred_regions=str(row[3] or ""),
+        preferred_venues=str(row[4] or ""),
+        muted=bool(row[5]),
+        last_checked_at=str(row[6]) if row[6] else None,
+    )
+
+
+def list_watches(db_path: str, include_muted: bool = False) -> list[Watch]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        where = "" if include_muted else "WHERE muted = 0"
+        rows = connection.execute(
+            f"""
+            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            FROM watched_keywords
+            {where}
+            ORDER BY id
+            """
+        ).fetchall()
+        return [watch_from_row(row) for row in rows]
+
+
+def remove_watch(db_path: str, identifier: str, now: str | None = None) -> bool:
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        if identifier.isdigit():
+            cursor = connection.execute(
+                "UPDATE watched_keywords SET muted = 1, updated_at = ? WHERE id = ? AND muted = 0",
+                (timestamp, int(identifier)),
+            )
+        else:
+            cursor = connection.execute(
+                "UPDATE watched_keywords SET muted = 1, updated_at = ? WHERE keyword = ? AND muted = 0",
+                (timestamp, identifier),
+            )
+        return bool(cursor.rowcount)
+
+
+def mark_watch_checked(db_path: str, watch_id: int, now: str) -> None:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        connection.execute(
+            "UPDATE watched_keywords SET last_checked_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, watch_id),
+        )
+
+
+def run_watches(db_path: str, now: str | None = None) -> list[dict[str, str]]:
+    timestamp = now or utc_now_iso()
+    alerts: list[dict[str, str]] = []
+    for watch in list_watches(db_path):
+        blocks = build_blocks(watch.keyword)
+        alerts.extend(save_blocks(db_path, blocks, now=timestamp))
+        mark_watch_checked(db_path, watch.id, timestamp)
+    return alerts
+
+
 def upsert_event(connection: sqlite3.Connection, watch_id: int, info: EventInfo, now: str) -> tuple[int, bool]:
     official_url = info.official_page or f"keyword:{info.keyword}"
     existing = connection.execute(
@@ -1089,16 +1200,87 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None) -> list
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
-    parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
-    parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
-    parser.add_argument("--db", help="SQLite database path for saving watch/event/ticket history")
-    parser.add_argument("--alerts-json", action="store_true", help="With --db, output only detected alert changes as JSON")
+    if argv and argv[0] not in {"search", "watch", "web", "-h", "--help"}:
+        parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
+        parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
+        parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
+        parser.add_argument("--db", default=None, help="SQLite database path for saving watch/event/ticket history")
+        parser.add_argument("--alerts-json", action="store_true", help="With --db, output only detected alert changes as JSON")
+        parser.set_defaults(command="legacy")
+        return parser.parse_args(argv)
+
+    parser = argparse.ArgumentParser(description="Monitor Japanese event ticket lotteries.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    search_parser = subparsers.add_parser("search", help="Search a single keyword")
+    search_parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
+    search_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    search_parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
+    search_parser.add_argument("--alerts-json", action="store_true", help="With --db, output only detected alert changes as JSON")
+
+    watch_parser = subparsers.add_parser("watch", help="Manage and run watched keywords")
+    watch_subparsers = watch_parser.add_subparsers(dest="watch_command", required=True)
+
+    add_parser = watch_subparsers.add_parser("add", help="Add a keyword to the watchlist")
+    add_parser.add_argument("keyword")
+    add_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    add_parser.add_argument("--tags", default="")
+    add_parser.add_argument("--regions", default="")
+    add_parser.add_argument("--venues", default="")
+
+    list_parser = watch_subparsers.add_parser("list", help="List watched keywords")
+    list_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    list_parser.add_argument("--json", action="store_true")
+    list_parser.add_argument("--include-muted", action="store_true")
+
+    remove_parser = watch_subparsers.add_parser("remove", help="Remove a watch by id or keyword")
+    remove_parser.add_argument("identifier")
+    remove_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
+    run_parser = watch_subparsers.add_parser("run", help="Run all active watched keywords")
+    run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    run_parser.add_argument("--alerts-json", action="store_true")
+
     return parser.parse_args(argv)
+
+
+def watches_to_json(watches: Sequence[Watch]) -> str:
+    return json.dumps([dataclasses.asdict(watch) for watch in watches], ensure_ascii=False, indent=2)
+
+
+def render_watches(watches: Sequence[Watch]) -> str:
+    if not watches:
+        return "No active watches."
+    lines = ["# Watchlist", ""]
+    for watch in watches:
+        checked = watch.last_checked_at or "never"
+        lines.append(f"- {watch.id}: {watch.keyword} (last checked: {checked})")
+    return "\n".join(lines)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    if args.command == "watch":
+        if args.watch_command == "add":
+            watch = add_watch(args.db, args.keyword, args.tags, args.regions, args.venues)
+            print(f"Added watch {watch.id}: {watch.keyword}")
+            return 0
+        if args.watch_command == "list":
+            watches = list_watches(args.db, include_muted=args.include_muted)
+            print(watches_to_json(watches) if args.json else render_watches(watches))
+            return 0
+        if args.watch_command == "remove":
+            removed = remove_watch(args.db, args.identifier)
+            print("Removed watch." if removed else "Watch not found.")
+            return 0 if removed else 1
+        if args.watch_command == "run":
+            alerts = run_watches(args.db)
+            if args.alerts_json:
+                print(json.dumps(alerts, ensure_ascii=False, indent=2))
+            else:
+                print(f"Ran {len(list_watches(args.db))} active watches; {len(alerts)} alerts.")
+            return 0
+
     blocks = build_blocks(args.keyword)
     alerts: list[dict[str, str]] = []
     if args.db:
