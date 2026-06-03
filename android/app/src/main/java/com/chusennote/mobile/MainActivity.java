@@ -344,11 +344,23 @@ public class MainActivity extends Activity {
 
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
-            if (event == null || !"event".equals(event.optString("watch_kind"))) {
+            if (event == null) {
+                continue;
+            }
+            String clues = eventClues(event);
+            if ("artist".equals(event.optString("watch_kind"))) {
+                String detail = event.optString("status", "watching");
+                if (!clues.isEmpty()) {
+                    detail = detail + "\n" + clues;
+                }
+                artistList.addView(card(event.optString("title", "Untitled event"), detail));
                 continue;
             }
             JSONArray rounds = event.optJSONArray("rounds");
             String detail = event.optString("status", "watching") + " - " + (rounds == null ? 0 : rounds.length()) + " ticket rounds";
+            if (!clues.isEmpty()) {
+                detail = detail + "\n" + clues;
+            }
             eventList.addView(card(event.optString("title", "Untitled event"), detail));
         }
 
@@ -417,6 +429,36 @@ public class MainActivity extends Activity {
         TextView view = body(title + "\n" + detail);
         view.setPadding(18, 18, 18, 18);
         return view;
+    }
+
+    private String eventClues(JSONObject event) {
+        StringBuilder detail = new StringBuilder();
+        String dates = joinFirst(event.optJSONArray("event_dates"));
+        String venues = joinFirst(event.optJSONArray("venues"));
+        if (!dates.isEmpty()) {
+            detail.append("Dates: ").append(dates);
+        }
+        if (!venues.isEmpty()) {
+            if (detail.length() > 0) {
+                detail.append("\n");
+            }
+            detail.append("Venues: ").append(venues);
+        }
+        return detail.toString();
+    }
+
+    private String joinFirst(JSONArray values) {
+        if (values == null || values.length() == 0) {
+            return "";
+        }
+        StringBuilder joined = new StringBuilder();
+        for (int i = 0; i < Math.min(values.length(), 2); i++) {
+            if (i > 0) {
+                joined.append("; ");
+            }
+            joined.append(values.optString(i));
+        }
+        return joined.toString();
     }
 
     private LinearLayout removableCard(String title, String detail, Runnable removeAction) {

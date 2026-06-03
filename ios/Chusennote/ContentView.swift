@@ -113,6 +113,21 @@ struct ContentView: View {
                     }
                 }
 
+                Section("Artist Event Info") {
+                    let artistEvents = store.events.filter { ($0.watchKind ?? "event") == "artist" }
+                    if artistEvents.isEmpty {
+                        Text("No artist event info saved yet.")
+                    }
+                    ForEach(artistEvents) { event in
+                        VStack(alignment: .leading) {
+                            Text(event.title ?? "Untitled event").font(.headline)
+                            Text([event.status, event.eventDates?.prefix(2).joined(separator: "; "), event.venues?.prefix(2).joined(separator: "; ")].compactMap { $0 }.joined(separator: " - "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 Section("Manual Event Source") {
                     TextField("Watch id or keyword", text: $sourceWatch)
                         .textInputAutocapitalization(.never)
@@ -182,6 +197,12 @@ struct EventDetailView: View {
             Section("Event") {
                 Text(event.title ?? "Untitled event")
                 Text(event.status ?? "watching")
+                if let dates = event.eventDates, !dates.isEmpty {
+                    Text("Dates: \(dates.prefix(2).joined(separator: "; "))")
+                }
+                if let venues = event.venues, !venues.isEmpty {
+                    Text("Venues: \(venues.prefix(2).joined(separator: "; "))")
+                }
             }
             Section("Ticket Rounds") {
                 if event.rounds.isEmpty {

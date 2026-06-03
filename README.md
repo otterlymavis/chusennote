@@ -7,6 +7,8 @@ chusennote is split into two local tracking lanes:
 - **Tracked artists**: follows artist/performer/company keywords and stores basic event discovery info such as title, official page, date clues, venue clues, status, and source confidence.
 - **Tracked events**: follows a specific concert, stage show, musical, or event and stores ticket links, manual sources, lottery rounds, application windows, result dates, payment deadlines, general sale dates, and alert history.
 
+Saved event records include extracted date and venue clues in SQLite and expose them through API/export output as `event_dates` and `venues`.
+
 Instead of asking you to hand-maintain every ticket URL first, chusennote starts from the workflow you described:
 
 1. You enter an artist/event/musical keyword.

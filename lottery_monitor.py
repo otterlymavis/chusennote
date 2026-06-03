@@ -29,7 +29,7 @@ USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticke
 SEARCH_URL = "https://duckduckgo.com/html/"
 TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
 DEFAULT_ALERT_PREFERENCES = ",".join(
@@ -745,6 +745,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             canonical_title TEXT NOT NULL,
             official_url TEXT,
             summary TEXT,
+            event_dates_json TEXT NOT NULL DEFAULT '[]',
+            venues_json TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL DEFAULT 'watching',
             event_key TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -857,6 +859,8 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "watched_keywords", "last_checked_at", "TEXT")
     add_column_if_missing(connection, "events", "status", "TEXT NOT NULL DEFAULT 'watching'")
     add_column_if_missing(connection, "events", "event_key", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "events", "event_dates_json", "TEXT NOT NULL DEFAULT '[]'")
+    add_column_if_missing(connection, "events", "venues_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column_if_missing(connection, "sources", "provenance", "TEXT NOT NULL DEFAULT 'low_confidence'")
 
     add_column_if_missing(connection, "ticket_rounds", "round_number", "INTEGER")
@@ -1189,7 +1193,8 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         init_db(connection)
         rows = connection.execute(
             """
-            SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary, e.status, e.updated_at
+            SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary,
+                   e.event_dates_json, e.venues_json, e.status, e.updated_at
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
             ORDER BY e.updated_at DESC
@@ -1228,8 +1233,10 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                     "title": row[4],
                     "official_url": row[5],
                     "summary": row[6],
-                    "status": row[7],
-                    "updated_at": row[8],
+                    "event_dates": json.loads(row[7] or "[]"),
+                    "venues": json.loads(row[8] or "[]"),
+                    "status": row[9],
+                    "updated_at": row[10],
                     "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
                     "rounds": [
                         {
@@ -1446,11 +1453,13 @@ def upsert_event(
     ).fetchone()
     connection.execute(
         """
-        INSERT INTO events(watch_id, canonical_title, official_url, summary, status, event_key, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO events(watch_id, canonical_title, official_url, summary, event_dates_json, venues_json, status, event_key, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(watch_id, official_url) DO UPDATE SET
             canonical_title = excluded.canonical_title,
             summary = excluded.summary,
+            event_dates_json = excluded.event_dates_json,
+            venues_json = excluded.venues_json,
             status = excluded.status,
             event_key = excluded.event_key,
             updated_at = excluded.updated_at
@@ -1460,6 +1469,8 @@ def upsert_event(
             info.title or info.keyword,
             official_url,
             info.summary,
+            json.dumps(list(info.event_dates), ensure_ascii=False),
+            json.dumps(list(info.venues), ensure_ascii=False),
             compute_event_status(info, rounds, parse_iso_date(now)),
             event_identity_key(info),
             now,
@@ -2129,6 +2140,15 @@ def render_web_page(db_path: str) -> str:
 
 def render_event_card(event: dict[str, object], basic: bool = False) -> str:
     rounds = event.get("rounds", [])
+    date_items = event.get("event_dates", [])
+    venue_items = event.get("venues", [])
+    date_text = "; ".join(str(item) for item in date_items[:2]) if isinstance(date_items, list) else ""
+    venue_text = "; ".join(str(item) for item in venue_items[:2]) if isinstance(venue_items, list) else ""
+    metadata = "".join(
+        f"<p><small>{html.escape(label)}: {html.escape(value)}</small></p>"
+        for label, value in (("Dates", date_text), ("Venues", venue_text))
+        if value
+    )
     round_cards = "" if basic else "\n".join(
         f"""
         <div class="round">
@@ -2148,6 +2168,7 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
     <article class="event">
       <h3><a href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a></h3>
       <p><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span> <a href="{html.escape(str(official))}">Official page</a> · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
+      {metadata}
       {ticket_section}
     </article>
     """

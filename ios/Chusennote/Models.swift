@@ -25,6 +25,8 @@ struct EventSummary: Codable, Identifiable {
     let title: String?
     let status: String?
     let officialUrl: String?
+    let eventDates: [String]?
+    let venues: [String]?
     let rounds: [TicketRound]
 
     enum CodingKeys: String, CodingKey {
@@ -34,6 +36,8 @@ struct EventSummary: Codable, Identifiable {
         case title
         case status
         case officialUrl = "official_url"
+        case eventDates = "event_dates"
+        case venues
         case rounds
     }
 }

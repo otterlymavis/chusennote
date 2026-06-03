@@ -125,8 +125,8 @@ def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
             official_page="https://official.example/",
             title="Example Tour",
             summary="公演情報",
-            event_dates=(),
-            venues=(),
+            event_dates=("公演日 2026年7月10日",),
+            venues=("会場 Example Hall",),
             ticket_links=(lm.Link("Pia", "https://t.pia.jp/example"),),
         ),
         ticket_info=(
@@ -265,11 +265,13 @@ def test_init_db_migrates_existing_current_schema(tmp_path):
         )
         lm.init_db(connection)
         watched_columns = lm.table_columns(connection, "watched_keywords")
+        event_columns = lm.table_columns(connection, "events")
         round_columns = lm.table_columns(connection, "ticket_rounds")
         source_columns = lm.table_columns(connection, "watch_sources")
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert {"tags", "preferred_regions", "preferred_venues", "muted", "last_checked_at"} <= watched_columns
+    assert {"event_dates_json", "venues_json"} <= event_columns
     assert {"platform", "application_start_at", "application_end_at", "confidence", "status"} <= round_columns
     assert {"watch_id", "url", "private_note", "muted"} <= source_columns
     assert user_version == lm.DB_SCHEMA_VERSION
@@ -318,8 +320,8 @@ def example_blocks(keyword="Example"):
             official_page="https://official.example/",
             title=f"{keyword} Tour",
             summary="公演情報",
-            event_dates=(),
-            venues=(),
+            event_dates=("公演日 2026年7月10日",),
+            venues=("会場 Example Hall",),
             ticket_links=(lm.Link("Pia", "https://t.pia.jp/example"),),
         ),
         ticket_info=(
@@ -461,6 +463,8 @@ def test_source_provenance_and_round_metadata_are_exported(tmp_path):
     events = lm.recent_events(str(db_path))
 
     assert events[0]["status"] == "lottery_open"
+    assert events[0]["event_dates"] == ["公演日 2026年7月10日"]
+    assert events[0]["venues"] == ["会場 Example Hall"]
     assert events[0]["rounds"][0]["round_type"] == "platform"
     assert events[0]["rounds"][0]["membership_required"] == "unknown"
 
@@ -474,6 +478,7 @@ def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
 
     assert '"title": "Example Tour"' in output
     assert '"status": "lottery_open"' in output
+    assert '"event_dates": [' in output
 
 
 def test_api_health_reports_database_counts(tmp_path):
@@ -608,6 +613,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Calendar feed" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
+        assert "Dates:" in home
+        assert "Venues:" in home
         assert "Example Tour" in detail
         assert health["status"] == "ok"
         assert health["tracked_events"] >= 1
