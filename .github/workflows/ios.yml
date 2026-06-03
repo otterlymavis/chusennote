@@ -16,7 +16,7 @@ jobs:
           xcodebuild
           -project ios/Chusennote.xcodeproj
           -scheme Chusennote
-          -destination 'platform=iOS Simulator,name=iPhone 16'
+          -destination 'generic/platform=iOS Simulator'
           -derivedDataPath build/ios
           CODE_SIGNING_ALLOWED=NO
           build
