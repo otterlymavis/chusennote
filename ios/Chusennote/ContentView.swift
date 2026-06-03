@@ -22,6 +22,11 @@ struct ContentView: View {
                         Text(error)
                             .foregroundStyle(.red)
                     }
+                    if let health = store.health {
+                        Text("Server \(health.status): \(health.trackedArtists) artists, \(health.trackedEvents) events, \(health.alerts) alerts")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Tracked Artists") {

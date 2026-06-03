@@ -144,7 +144,8 @@ public class MainActivity extends Activity {
                 JSONArray events = getJsonArray("/api/events");
                 JSONArray alerts = getJsonArray("/api/alerts");
                 JSONArray sources = getJsonArray("/api/sources");
-                mainHandler.post(() -> render(watches, events, alerts, sources));
+                JSONObject health = getJsonObject("/api/health");
+                mainHandler.post(() -> render(watches, events, alerts, sources, health));
             } catch (Exception error) {
                 mainHandler.post(() -> statusText.setText("Could not load chusennote: " + error.getMessage()));
             }
@@ -246,6 +247,14 @@ public class MainActivity extends Activity {
     }
 
     private JSONArray getJsonArray(String path) throws Exception {
+        return new JSONArray(getText(path));
+    }
+
+    private JSONObject getJsonObject(String path) throws Exception {
+        return new JSONObject(getText(path));
+    }
+
+    private String getText(String path) throws Exception {
         URL url = new URL(baseUrlInput.getText().toString().replaceAll("/+$", "") + path);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestMethod("GET");
@@ -257,7 +266,7 @@ public class MainActivity extends Activity {
             while ((line = reader.readLine()) != null) {
                 body.append(line);
             }
-            return new JSONArray(body.toString());
+            return body.toString();
         }
     }
 
@@ -292,7 +301,7 @@ public class MainActivity extends Activity {
         return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
     }
 
-    private void render(JSONArray watches, JSONArray events, JSONArray alerts, JSONArray sources) {
+    private void render(JSONArray watches, JSONArray events, JSONArray alerts, JSONArray sources, JSONObject health) {
         artistList.removeAllViews();
         eventList.removeAllViews();
         sourceList.removeAllViews();
@@ -354,7 +363,15 @@ public class MainActivity extends Activity {
         if (alertList.getChildCount() == 0) {
             alertList.addView(body("No recent alerts."));
         }
-        statusText.setText("Loaded " + artistCount + " artists and " + eventCount + " event watches.");
+        statusText.setText(
+            "Server ok - "
+                + health.optInt("tracked_artists", artistCount)
+                + " artists, "
+                + health.optInt("tracked_events", eventCount)
+                + " events, "
+                + health.optInt("alerts", 0)
+                + " alerts."
+        );
     }
 
     private TextView heading(String text) {

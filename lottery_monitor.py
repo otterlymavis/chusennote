@@ -1274,6 +1274,34 @@ def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         return alerts
 
 
+def api_health(db_path: str) -> dict[str, object]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        artists = connection.execute(
+            "SELECT COUNT(*) FROM watched_keywords WHERE muted = 0 AND kind = ?",
+            (WATCH_KIND_ARTIST,),
+        ).fetchone()[0]
+        tracked_events = connection.execute(
+            "SELECT COUNT(*) FROM watched_keywords WHERE muted = 0 AND kind = ?",
+            (WATCH_KIND_EVENT,),
+        ).fetchone()[0]
+        saved_events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        sources = connection.execute("SELECT COUNT(*) FROM watch_sources WHERE muted = 0").fetchone()[0]
+        alerts = connection.execute("SELECT COUNT(*) FROM alert_log").fetchone()[0]
+    return {
+        "app": "chusennote",
+        "status": "ok",
+        "schema_version": schema_version,
+        "db_path": db_path,
+        "tracked_artists": artists,
+        "tracked_events": tracked_events,
+        "saved_events": saved_events,
+        "manual_sources": sources,
+        "alerts": alerts,
+    }
+
+
 def event_detail(db_path: str, event_id: int) -> dict[str, object] | None:
     for event in recent_events(db_path, limit=500):
         if int(event["id"]) == event_id:
@@ -2027,6 +2055,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 html_response(self, render_web_page(db_path))
             elif re.fullmatch(r"/events/\d+", path):
                 html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1])))
+            elif path == "/api/health":
+                json_response(self, api_health(db_path))
             elif path == "/api/watchlist":
                 json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=True)])
             elif path == "/api/events":

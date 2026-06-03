@@ -97,3 +97,25 @@ struct WatchSource: Codable, Identifiable {
 struct RemoveResponse: Codable {
     let removed: Bool
 }
+
+struct HealthSummary: Codable {
+    let app: String
+    let status: String
+    let schemaVersion: Int
+    let trackedArtists: Int
+    let trackedEvents: Int
+    let savedEvents: Int
+    let manualSources: Int
+    let alerts: Int
+
+    enum CodingKeys: String, CodingKey {
+        case app
+        case status
+        case schemaVersion = "schema_version"
+        case trackedArtists = "tracked_artists"
+        case trackedEvents = "tracked_events"
+        case savedEvents = "saved_events"
+        case manualSources = "manual_sources"
+        case alerts
+    }
+}

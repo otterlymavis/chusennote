@@ -475,6 +475,24 @@ def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
     assert '"status": "lottery_open"' in output
 
 
+def test_api_health_reports_database_counts(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Artist", kind=lm.WATCH_KIND_ARTIST)
+    lm.add_watch(str(db_path), "Event", kind=lm.WATCH_KIND_EVENT)
+    lm.add_watch_source(str(db_path), "Event", "https://t.pia.jp/example", "Pia")
+    lm.save_blocks(str(db_path), example_blocks("Event"), now="2026-06-03T00:00:00+00:00")
+
+    health = lm.api_health(str(db_path))
+
+    assert health["app"] == "chusennote"
+    assert health["status"] == "ok"
+    assert health["schema_version"] == lm.DB_SCHEMA_VERSION
+    assert health["tracked_artists"] == 1
+    assert health["tracked_events"] >= 1
+    assert health["saved_events"] >= 1
+    assert health["manual_sources"] == 1
+
+
 def test_watch_source_cli_add_list_remove(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
@@ -545,6 +563,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
     try:
         home = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
+        health = json_load_url(f"{base}/api/health")
         watchlist = json_load_url(f"{base}/api/watchlist")
         sources = json_load_url(f"{base}/api/sources")
         events = json_load_url(f"{base}/api/events")
@@ -554,6 +573,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
         assert "Example Tour" in detail
+        assert health["status"] == "ok"
+        assert health["tracked_events"] >= 1
         assert watchlist[0]["keyword"] == "Example"
         assert sources == []
         assert events[0]["title"] == "Example Tour"

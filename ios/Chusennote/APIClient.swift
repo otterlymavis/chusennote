@@ -11,6 +11,7 @@ final class ChusennoteStore: ObservableObject {
     @Published var events: [EventSummary] = []
     @Published var alerts: [AlertPayload] = []
     @Published var sources: [WatchSource] = []
+    @Published var health: HealthSummary?
     @Published var errorMessage: String?
 
     var trackedArtists: [Watch] {
@@ -27,10 +28,12 @@ final class ChusennoteStore: ObservableObject {
             async let fetchedEvents: [EventSummary] = fetch("/api/events")
             async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
             async let fetchedSources: [WatchSource] = fetch("/api/sources")
+            async let fetchedHealth: HealthSummary = fetch("/api/health")
             watches = try await fetchedWatches
             events = try await fetchedEvents
             alerts = try await fetchedAlerts
             sources = try await fetchedSources
+            health = try await fetchedHealth
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
