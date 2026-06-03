@@ -385,6 +385,26 @@ def test_watch_run_cli_outputs_alerts_json(tmp_path, monkeypatch, capsys):
     assert '"type": "new_lottery_round"' in output
 
 
+def test_watch_run_continues_after_single_watch_failure(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Broken", now="2026-06-01T00:00:00+00:00")
+    lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+
+    def fake_build(db_path_value, watch):
+        if watch.keyword == "Broken":
+            raise OSError("network failed")
+        return example_blocks(watch.keyword)
+
+    monkeypatch.setattr(lm, "build_blocks_for_watch", fake_build)
+
+    alerts = lm.run_watches(str(db_path), now="2026-06-03T00:00:00+00:00")
+    watches = lm.list_watches(str(db_path))
+
+    assert any(alert["type"] == "watch_failed" and alert["keyword"] == "Broken" for alert in alerts)
+    assert any(alert["type"] == "new_official_page" and alert["event"] == "Example Tour" for alert in alerts)
+    assert all(watch.last_checked_at == "2026-06-03T00:00:00+00:00" for watch in watches)
+
+
 def test_watch_source_cli_add_list_remove(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")

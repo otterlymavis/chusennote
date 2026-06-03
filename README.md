@@ -41,7 +41,7 @@ Output only alert changes for automation:
 python3 lottery_monitor.py "your event keyword" --db chusennote.sqlite3 --alerts-json
 ```
 
-Alert output includes newly discovered facts plus date-based lifecycle events such as `lottery_opened`, `lottery_closing_soon`, `results_today`, `payment_due_soon`, and `general_sale_soon`. Lifecycle alerts are recorded in SQLite so the same alert is not repeated on every run.
+Alert output includes newly discovered facts plus date-based lifecycle events such as `lottery_opened`, `lottery_closing_soon`, `results_today`, `payment_due_soon`, and `general_sale_soon`. Lifecycle alerts are recorded in SQLite so the same alert is not repeated on every run. If one watch fails during a batch run, chusennote emits `watch_failed` for that keyword and continues checking the rest of the watchlist.
 
 Add keywords to the persistent watchlist and run all active watches:
 

@@ -1037,9 +1037,20 @@ def run_watches(db_path: str, now: str | None = None) -> list[dict[str, str]]:
     timestamp = now or utc_now_iso()
     alerts: list[dict[str, str]] = []
     for watch in list_watches(db_path):
-        blocks = build_blocks_for_watch(db_path, watch)
-        alerts.extend(save_blocks(db_path, blocks, now=timestamp))
-        mark_watch_checked(db_path, watch.id, timestamp)
+        try:
+            blocks = build_blocks_for_watch(db_path, watch)
+            alerts.extend(save_blocks(db_path, blocks, now=timestamp))
+        except (OSError, ValueError, sqlite3.Error) as error:
+            alerts.append(
+                {
+                    "type": "watch_failed",
+                    "watch_id": str(watch.id),
+                    "keyword": watch.keyword,
+                    "error": str(error),
+                }
+            )
+        finally:
+            mark_watch_checked(db_path, watch.id, timestamp)
     return alerts
 
 
