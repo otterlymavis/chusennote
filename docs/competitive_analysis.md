@@ -1,6 +1,6 @@
-# Competitive analysis: Songkick/Bandsintown patterns to adapt for Otterpia
+# Competitive analysis: Songkick/Bandsintown patterns to adapt for chusennote
 
-This note translates the useful parts of concert-tracking apps into features that fit Otterpia's Japan-specific goal: tracking lottery applications, result dates, payment windows, and ticket-sale links for concerts and musicals.
+This note translates the useful parts of concert-tracking apps into features that fit chusennote's Japan-specific goal: tracking lottery applications, result dates, payment windows, and ticket-sale links for concerts and musicals.
 
 ## What Songkick appears to optimize for
 
@@ -31,16 +31,16 @@ Bandsintown also has a `Notify Me` concept for events with no ticket link or fut
 ### Adaptable Bandsintown ideas
 
 - **Notify-me state before a lottery exists**: users can watch an event after the official announcement but before ticket pages publish lottery windows.
-- **Smart-link style event page**: one Otterpia event page should show official site, Pia/eplus/Lawson links, FC links, and latest known lottery status.
+- **Smart-link style event page**: one chusennote event page should show official site, Pia/eplus/Lawson links, FC links, and latest known lottery status.
 - **Artist/venue/region fan preferences**: alerts should include location filters, but Japan-specific users may also want city/venue/performer-cast filters for musicals.
 - **Lifecycle alerts**: announcement, lottery open, lottery closing soon, result date today, payment deadline soon, general sale soon, resale/official-trade open.
 - **Embeddable/API-ready output**: keep `--json` output stable so a web UI, notification worker, or browser extension can consume the same data.
 
-## Japan-specific gap Otterpia can own
+## Japan-specific gap chusennote can own
 
 Songkick/Bandsintown are strong at concert discovery, but Japanese ticketing has a different pain point: multiple lottery rounds, fan-club rounds, official presales, platform presales, result dates, payment deadlines, general sale dates, and sometimes official resale/trade windows.
 
-Otterpia should therefore avoid being only a concert calendar. The core object should be a **ticket timeline**.
+chusennote should therefore avoid being only a concert calendar. The core object should be a **ticket timeline**.
 
 ## Recommended implementation roadmap
 
@@ -78,7 +78,7 @@ Add a structured timeline table/object per event:
 - `evidence_text`
 - `confidence`
 
-This is the feature Songkick/Bandsintown do not specialize in, and it matches the original Otterpia use case.
+This is the feature Songkick/Bandsintown do not specialize in, and it matches the original chusennote use case.
 
 ### 3. Change detection and alert rules
 
@@ -141,12 +141,12 @@ The highest-value next patch is not another broad scraper. It is a persistence a
 ]
 ```
 
-That turns Otterpia from a one-off search command into a real monitoring app.
+That turns chusennote from a one-off search command into a real monitoring app.
 
 
 ## Legal and data-use notes
 
-If Otterpia later integrates official third-party APIs instead of only linking to public pages, keep each provider's terms visible in the implementation plan. For example, Songkick's API terms describe attribution and license requirements for applications using Songkick data. Source: <https://www.songkick.com/developer/api-terms-of-use>.
+If chusennote later integrates official third-party APIs instead of only linking to public pages, keep each provider's terms visible in the implementation plan. For example, Songkick's API terms describe attribution and license requirements for applications using Songkick data. Source: <https://www.songkick.com/developer/api-terms-of-use>.
 
 For the Japanese ticketing use case, the safest default is:
 

@@ -14,18 +14,23 @@ import argparse
 import dataclasses
 import datetime as dt
 import hashlib
+import html
+import http.server
 import json
 import re
 import sqlite3
 import sys
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Sequence
 from html.parser import HTMLParser
 
-USER_AGENT = "otterpia/0.2 (+https://github.com/otterpia; ticket lottery monitor)"
+USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticket lottery monitor)"
 SEARCH_URL = "https://duckduckgo.com/html/"
 TIMEOUT_SECONDS = 20
+DEFAULT_DB_PATH = "chusennote.sqlite3"
+DB_SCHEMA_VERSION = 2
 
 TICKET_DOMAINS = {
     "pia": ("t.pia.jp", "ticket.pia.jp"),
@@ -113,6 +118,16 @@ class TicketRound:
     general_sale_date: str | None = None
     payment_deadline: str | None = None
     evidence: str = ""
+    round_number: int | None = None
+    platform: str | None = None
+    application_start_at: str | None = None
+    application_end_at: str | None = None
+    payment_start_at: str | None = None
+    payment_end_at: str | None = None
+    trade_start_at: str | None = None
+    trade_end_at: str | None = None
+    confidence: int = 50
+    status: str = "unknown"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,6 +159,50 @@ def source_name_for_url(url: str) -> str:
         if any(domain in host for domain in domains):
             return name
     return host or "unknown"
+
+
+def platform_confidence(platform: str) -> int:
+    if platform in TICKET_DOMAINS:
+        return 90
+    if platform in {"official", "manual"}:
+        return 70
+    return 50
+
+
+def normalize_round_name(name: str) -> str:
+    return clean_text(name).lower()
+
+
+JP_NUMERALS = {
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+
+def parse_round_number(value: str) -> int | None:
+    match = re.search(r"([0-9０-９一二三四五六七八九十]+)\s*次", value)
+    if not match:
+        return None
+    raw = match.group(1).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    if raw.isdigit():
+        return int(raw)
+    if raw == "十":
+        return 10
+    if raw.startswith("十") and len(raw) == 2:
+        return 10 + JP_NUMERALS.get(raw[1], 0)
+    if raw.endswith("十") and len(raw) == 2:
+        return JP_NUMERALS.get(raw[0], 0) * 10
+    if "十" in raw and len(raw) == 3:
+        return JP_NUMERALS.get(raw[0], 0) * 10 + JP_NUMERALS.get(raw[2], 0)
+    return JP_NUMERALS.get(raw)
 
 
 class ExtractedHTML:
@@ -455,6 +514,23 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     return tuple(rounds)
 
 
+def adapt_ticket_rounds(page: Page, platform: str) -> tuple[TicketRound, ...]:
+    rounds = extract_ticket_rounds(page)
+    return tuple(
+        normalize_ticket_round(
+            dataclasses.replace(ticket, source=platform, platform=platform, confidence=platform_confidence(platform))
+        )
+        for ticket in rounds
+    )
+
+
+def extract_ticket_rounds_for_page(page: Page) -> tuple[TicketRound, ...]:
+    platform = source_name_for_url(page.url)
+    if platform in {"pia", "eplus", "lawson"}:
+        return adapt_ticket_rounds(page, platform)
+    return dedupe_ticket_rounds(extract_ticket_rounds(page))
+
+
 def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = None) -> AppBlocks:
     results = list(search_results) if search_results is not None else search_web(keyword)
     official_pages: list[Page] = []
@@ -468,10 +544,10 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
     rounds: list[TicketRound] = []
     for link in event_info.ticket_links:
         try:
-            rounds.extend(extract_ticket_rounds(fetch_page(link.url)))
+            rounds.extend(extract_ticket_rounds_for_page(fetch_page(link.url)))
         except (OSError, ValueError):
             rounds.append(TicketRound(source=source_name_for_url(link.url), url=link.url, name="Fetch failed", evidence=link.label))
-    return AppBlocks(general_info=event_info, ticket_info=tuple(rounds))
+    return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
 
 
 def render_blocks(blocks: AppBlocks) -> str:
@@ -531,6 +607,11 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS watched_keywords (
             id INTEGER PRIMARY KEY,
             keyword TEXT NOT NULL UNIQUE,
+            tags TEXT NOT NULL DEFAULT '',
+            preferred_regions TEXT NOT NULL DEFAULT '',
+            preferred_venues TEXT NOT NULL DEFAULT '',
+            muted INTEGER NOT NULL DEFAULT 0,
+            last_checked_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -567,11 +648,21 @@ def init_db(connection: sqlite3.Connection) -> None:
             source TEXT NOT NULL,
             url TEXT NOT NULL,
             name TEXT NOT NULL,
+            round_number INTEGER,
+            platform TEXT,
             lottery_start TEXT,
             lottery_end TEXT,
             results_date TEXT,
             general_sale_date TEXT,
             payment_deadline TEXT,
+            application_start_at TEXT,
+            application_end_at TEXT,
+            payment_start_at TEXT,
+            payment_end_at TEXT,
+            trade_start_at TEXT,
+            trade_end_at TEXT,
+            confidence INTEGER NOT NULL DEFAULT 50,
+            status TEXT NOT NULL DEFAULT 'unknown',
             evidence TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -601,6 +692,36 @@ def init_db(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    migrate_db(connection)
+
+
+def table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def add_column_if_missing(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if column not in table_columns(connection, table):
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def migrate_db(connection: sqlite3.Connection) -> None:
+    add_column_if_missing(connection, "watched_keywords", "tags", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "watched_keywords", "preferred_regions", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "watched_keywords", "preferred_venues", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing(connection, "watched_keywords", "muted", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(connection, "watched_keywords", "last_checked_at", "TEXT")
+
+    add_column_if_missing(connection, "ticket_rounds", "round_number", "INTEGER")
+    add_column_if_missing(connection, "ticket_rounds", "platform", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "application_start_at", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "application_end_at", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "payment_start_at", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "payment_end_at", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "trade_start_at", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "trade_end_at", "TEXT")
+    add_column_if_missing(connection, "ticket_rounds", "confidence", "INTEGER NOT NULL DEFAULT 50")
+    add_column_if_missing(connection, "ticket_rounds", "status", "TEXT NOT NULL DEFAULT 'unknown'")
+    connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
 
 
 def upsert_keyword(connection: sqlite3.Connection, keyword: str, now: str) -> int:
@@ -673,16 +794,29 @@ def upsert_sources(connection: sqlite3.Connection, event_id: int, links: Sequenc
 
 
 def ticket_round_key(ticket: TicketRound) -> str:
-    return stable_hash("|".join((ticket.source, ticket.url, ticket.name)))
+    normalized = normalize_ticket_round(ticket)
+    return stable_hash(
+        "|".join(
+            (
+                normalized.platform or normalized.source,
+                normalized.url,
+                normalize_round_name(normalized.name),
+            )
+        )
+    )
 
 
 def ticket_round_fields(ticket: TicketRound) -> dict[str, str | None]:
+    normalized = normalize_ticket_round(ticket)
     return {
-        "lottery_start": ticket.lottery_start,
-        "lottery_end": ticket.lottery_end,
-        "results_date": ticket.results_date,
-        "general_sale_date": ticket.general_sale_date,
-        "payment_deadline": ticket.payment_deadline,
+        "lottery_start": normalized.application_start_at or normalized.lottery_start,
+        "lottery_end": normalized.application_end_at or normalized.lottery_end,
+        "results_date": normalized.results_date,
+        "general_sale_date": normalized.general_sale_date,
+        "payment_deadline": normalized.payment_end_at or normalized.payment_deadline,
+        "payment_start_at": normalized.payment_start_at,
+        "trade_start_at": normalized.trade_start_at,
+        "trade_end_at": normalized.trade_end_at,
     }
 
 
@@ -693,6 +827,69 @@ def parse_iso_date(value: str | None) -> dt.date | None:
         return dt.date.fromisoformat(value[:10])
     except ValueError:
         return None
+
+
+def compute_ticket_status(ticket: TicketRound, today: dt.date | None = None) -> str:
+    today = today or dt.date.today()
+    application_start = parse_iso_date(ticket.application_start_at or ticket.lottery_start)
+    application_end = parse_iso_date(ticket.application_end_at or ticket.lottery_end)
+    results_date = parse_iso_date(ticket.results_date)
+    payment_end = parse_iso_date(ticket.payment_end_at or ticket.payment_deadline)
+    general_sale = parse_iso_date(ticket.general_sale_date)
+
+    if results_date == today:
+        return "results_today"
+    if payment_end and 0 <= (payment_end - today).days <= 1:
+        return "payment_due"
+    if general_sale and 0 <= (general_sale - today).days <= 2:
+        return "general_sale_soon"
+    if application_start and application_end and application_start <= today <= application_end:
+        if (application_end - today).days <= 2:
+            return "closing_soon"
+        return "open"
+    if application_start and today < application_start:
+        return "upcoming"
+    if application_end and today > application_end:
+        return "closed"
+    return "unknown"
+
+
+def normalize_ticket_round(ticket: TicketRound, today: dt.date | None = None) -> TicketRound:
+    platform = ticket.platform or ticket.source or source_name_for_url(ticket.url)
+    application_start = ticket.application_start_at or ticket.lottery_start
+    application_end = ticket.application_end_at or ticket.lottery_end
+    payment_end = ticket.payment_end_at or ticket.payment_deadline
+    normalized = dataclasses.replace(
+        ticket,
+        round_number=ticket.round_number if ticket.round_number is not None else parse_round_number(ticket.name),
+        platform=platform,
+        application_start_at=application_start,
+        application_end_at=application_end,
+        payment_end_at=payment_end,
+        confidence=ticket.confidence or platform_confidence(platform),
+    )
+    return dataclasses.replace(normalized, status=compute_ticket_status(normalized, today))
+
+
+def dedupe_ticket_rounds(rounds: Sequence[TicketRound], today: dt.date | None = None) -> tuple[TicketRound, ...]:
+    deduped: list[TicketRound] = []
+    seen: set[tuple[str, str, str, str | None, str | None, str | None, str | None]] = set()
+    for ticket in rounds:
+        normalized = normalize_ticket_round(ticket, today)
+        key = (
+            normalized.platform or normalized.source,
+            normalized.url,
+            normalize_round_name(normalized.name),
+            normalized.application_start_at,
+            normalized.application_end_at,
+            normalized.results_date,
+            normalized.general_sale_date,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return tuple(deduped)
 
 
 def date_alert(
@@ -717,12 +914,13 @@ def date_alert(
 
 
 def lifecycle_alerts_for_round(event_title: str, ticket: TicketRound, today: dt.date) -> list[dict[str, str]]:
+    ticket = normalize_ticket_round(ticket, today)
     alerts: list[dict[str, str]] = []
-    lottery_start = parse_iso_date(ticket.lottery_start)
-    lottery_end = parse_iso_date(ticket.lottery_end)
+    lottery_start = parse_iso_date(ticket.application_start_at or ticket.lottery_start)
+    lottery_end = parse_iso_date(ticket.application_end_at or ticket.lottery_end)
     results_date = parse_iso_date(ticket.results_date)
     general_sale_date = parse_iso_date(ticket.general_sale_date)
-    payment_deadline = parse_iso_date(ticket.payment_deadline)
+    payment_deadline = parse_iso_date(ticket.payment_end_at or ticket.payment_deadline)
 
     if lottery_start and lottery_start == today:
         alerts.append(date_alert("lottery_opened", event_title, ticket, "lottery_start", lottery_start, today))
@@ -770,11 +968,13 @@ def upsert_ticket_rounds(
     now: str,
 ) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
-    for ticket in rounds:
+    for ticket in dedupe_ticket_rounds(rounds, parse_iso_date(now)):
+        ticket = normalize_ticket_round(ticket, parse_iso_date(now))
         round_key = ticket_round_key(ticket)
         previous = connection.execute(
             """
-            SELECT lottery_start, lottery_end, results_date, general_sale_date, payment_deadline
+            SELECT lottery_start, lottery_end, results_date, general_sale_date, payment_deadline,
+                   payment_start_at, trade_start_at, trade_end_at
             FROM ticket_rounds
             WHERE event_id = ? AND round_key = ?
             """,
@@ -784,19 +984,31 @@ def upsert_ticket_rounds(
         connection.execute(
             """
             INSERT INTO ticket_rounds(
-                event_id, round_key, source, url, name, lottery_start, lottery_end,
-                results_date, general_sale_date, payment_deadline, evidence, created_at, updated_at
+                event_id, round_key, source, url, name, round_number, platform,
+                lottery_start, lottery_end, results_date, general_sale_date, payment_deadline,
+                application_start_at, application_end_at, payment_start_at, payment_end_at,
+                trade_start_at, trade_end_at, confidence, status, evidence, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id, round_key) DO UPDATE SET
                 source = excluded.source,
                 url = excluded.url,
                 name = excluded.name,
+                round_number = excluded.round_number,
+                platform = excluded.platform,
                 lottery_start = excluded.lottery_start,
                 lottery_end = excluded.lottery_end,
                 results_date = excluded.results_date,
                 general_sale_date = excluded.general_sale_date,
                 payment_deadline = excluded.payment_deadline,
+                application_start_at = excluded.application_start_at,
+                application_end_at = excluded.application_end_at,
+                payment_start_at = excluded.payment_start_at,
+                payment_end_at = excluded.payment_end_at,
+                trade_start_at = excluded.trade_start_at,
+                trade_end_at = excluded.trade_end_at,
+                confidence = excluded.confidence,
+                status = excluded.status,
                 evidence = excluded.evidence,
                 updated_at = excluded.updated_at
             """,
@@ -806,11 +1018,21 @@ def upsert_ticket_rounds(
                 ticket.source,
                 ticket.url,
                 ticket.name,
+                ticket.round_number,
+                ticket.platform,
                 ticket.lottery_start,
                 ticket.lottery_end,
                 ticket.results_date,
                 ticket.general_sale_date,
                 ticket.payment_deadline,
+                ticket.application_start_at,
+                ticket.application_end_at,
+                ticket.payment_start_at,
+                ticket.payment_end_at,
+                ticket.trade_start_at,
+                ticket.trade_end_at,
+                ticket.confidence,
+                ticket.status,
                 ticket.evidence,
                 now,
                 now,

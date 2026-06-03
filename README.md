@@ -1,8 +1,8 @@
-# otterpia
+# chusennote
 
 A keyword-first assistant for tracking Japanese concert and musical ticket lotteries.
 
-Instead of asking you to hand-maintain every ticket URL first, otterpia starts from the workflow you described:
+Instead of asking you to hand-maintain every ticket URL first, chusennote starts from the workflow you described:
 
 1. You enter an artist/event/musical keyword.
 2. The app searches for likely official pages.
@@ -23,16 +23,16 @@ JSON output for a future web/app UI:
 python3 lottery_monitor.py "your event keyword" --json
 ```
 
-Save each run to SQLite so Otterpia can detect changes over time:
+Save each run to SQLite so chusennote can detect changes over time:
 
 ```bash
-python3 lottery_monitor.py "your event keyword" --db otterpia.sqlite3
+python3 lottery_monitor.py "your event keyword" --db chusennote.sqlite3
 ```
 
 Output only alert changes for automation:
 
 ```bash
-python3 lottery_monitor.py "your event keyword" --db otterpia.sqlite3 --alerts-json
+python3 lottery_monitor.py "your event keyword" --db chusennote.sqlite3 --alerts-json
 ```
 
 Alert output includes newly discovered facts plus date-based lifecycle events such as `lottery_opened`, `lottery_closing_soon`, `results_today`, `payment_due_soon`, and `general_sale_soon`. Lifecycle alerts are recorded in SQLite so the same alert is not repeated on every run.
@@ -106,7 +106,7 @@ It then extracts nearby dates in formats like:
 
 ## Product research
 
-See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analysis of Songkick/Bandsintown patterns and a Japan-specific implementation roadmap for Otterpia.
+See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analysis of Songkick/Bandsintown patterns and a Japan-specific implementation roadmap for chusennote.
 
 ## Notes and limitations
 

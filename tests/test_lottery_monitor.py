@@ -1,3 +1,5 @@
+import sqlite3
+
 import lottery_monitor as lm
 
 
@@ -80,7 +82,7 @@ def test_render_blocks_has_two_expected_app_blocks():
 
 
 def test_save_blocks_persists_initial_monitoring_state(tmp_path):
-    db_path = tmp_path / "otterpia.sqlite3"
+    db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
         general_info=lm.EventInfo(
             keyword="Example",
@@ -111,7 +113,7 @@ def test_save_blocks_persists_initial_monitoring_state(tmp_path):
 
 
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
-    db_path = tmp_path / "otterpia.sqlite3"
+    db_path = tmp_path / "chusennote.sqlite3"
     original = lm.AppBlocks(
         general_info=lm.EventInfo(
             keyword="Example",
@@ -162,7 +164,7 @@ def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
 
 
 def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
-    db_path = tmp_path / "otterpia.sqlite3"
+    db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
         general_info=lm.EventInfo(
             keyword="Example",
@@ -198,7 +200,7 @@ def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
 
 
 def test_save_blocks_does_not_repeat_lifecycle_alerts(tmp_path):
-    db_path = tmp_path / "otterpia.sqlite3"
+    db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
         general_info=lm.EventInfo(
             keyword="Example",
@@ -225,3 +227,78 @@ def test_save_blocks_does_not_repeat_lifecycle_alerts(tmp_path):
 
     assert any(alert["type"] == "lottery_opened" for alert in first_alerts)
     assert not any(alert["type"] in {"lottery_opened", "lottery_closing_soon"} for alert in second_alerts)
+
+
+def test_init_db_migrates_existing_current_schema(tmp_path):
+    db_path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE watched_keywords (
+                id INTEGER PRIMARY KEY,
+                keyword TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE ticket_rounds (
+                id INTEGER PRIMARY KEY,
+                event_id INTEGER NOT NULL,
+                round_key TEXT NOT NULL,
+                source TEXT NOT NULL,
+                url TEXT NOT NULL,
+                name TEXT NOT NULL,
+                lottery_start TEXT,
+                lottery_end TEXT,
+                results_date TEXT,
+                general_sale_date TEXT,
+                payment_deadline TEXT,
+                evidence TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        lm.init_db(connection)
+        watched_columns = lm.table_columns(connection, "watched_keywords")
+        round_columns = lm.table_columns(connection, "ticket_rounds")
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+
+    assert {"tags", "preferred_regions", "preferred_venues", "muted", "last_checked_at"} <= watched_columns
+    assert {"platform", "application_start_at", "application_end_at", "confidence", "status"} <= round_columns
+    assert user_version == lm.DB_SCHEMA_VERSION
+
+
+def test_round_number_status_and_dedupe_timeline():
+    ticket = lm.TicketRound(
+        source="pia",
+        platform="pia",
+        url="https://t.pia.jp/example",
+        name="第２次抽選先行",
+        lottery_start="2026-06-01",
+        lottery_end="2026-06-04",
+    )
+
+    normalized = lm.normalize_ticket_round(ticket, today=lm.dt.date(2026, 6, 3))
+    deduped = lm.dedupe_ticket_rounds((ticket, ticket), today=lm.dt.date(2026, 6, 3))
+
+    assert normalized.round_number == 2
+    assert normalized.application_start_at == "2026-06-01"
+    assert normalized.application_end_at == "2026-06-04"
+    assert normalized.status == "closing_soon"
+    assert len(deduped) == 1
+
+
+def test_adapter_dispatch_labels_ticket_platform():
+    html = """
+    <html><body>
+      <h2>第1次抽選先行</h2>
+      <p>受付期間 2026年6月10日 ～ 2026年6月18日</p>
+    </body></html>
+    """
+    page = lm.parse_page("https://eplus.jp/example", html)
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert rounds[0].platform == "eplus"
+    assert rounds[0].source == "eplus"
+    assert rounds[0].confidence == 90
