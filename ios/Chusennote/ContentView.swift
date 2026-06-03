@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var store = ChusennoteStore()
+    @Environment(\.openURL) private var openURL
     @State private var artistKeyword = ""
     @State private var eventKeyword = ""
     @State private var sourceWatch = ""
@@ -17,6 +18,11 @@ struct ContentView: View {
                         .autocorrectionDisabled()
                     Button("Refresh") {
                         Task { await store.refresh() }
+                    }
+                    if let calendarURL = store.calendarFeedURL {
+                        Button("Open Calendar Feed") {
+                            openURL(calendarURL)
+                        }
                     }
                     if let error = store.errorMessage {
                         Text(error)

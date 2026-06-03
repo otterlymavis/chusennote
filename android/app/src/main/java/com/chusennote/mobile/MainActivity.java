@@ -1,7 +1,9 @@
 package com.chusennote.mobile;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -75,6 +77,11 @@ public class MainActivity extends Activity {
             refresh();
         });
         root.addView(refresh);
+
+        Button calendar = new Button(this);
+        calendar.setText("Open Calendar Feed");
+        calendar.setOnClickListener(view -> openCalendarFeed());
+        root.addView(calendar);
 
         root.addView(section("Tracked Artists"));
         artistInput = new EditText(this);
@@ -158,6 +165,17 @@ public class MainActivity extends Activity {
 
     private void saveBaseUrl() {
         preferences().edit().putString(PREF_BASE_URL, baseUrlInput.getText().toString().trim()).apply();
+    }
+
+    private void openCalendarFeed() {
+        saveBaseUrl();
+        String baseUrl = baseUrlInput.getText().toString().trim().replaceAll("/+$", "");
+        if (baseUrl.isEmpty()) {
+            statusText.setText("Enter the API base URL first.");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(baseUrl + "/calendar.ics"));
+        startActivity(intent);
     }
 
     private void addWatch(String kind, EditText input) {

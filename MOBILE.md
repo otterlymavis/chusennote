@@ -38,7 +38,7 @@ They display the same two product lanes as the web app:
 - **Tracked Artists**: basic artist/event discovery watches.
 - **Tracked Events**: ticket and lottery timeline watches.
 
-Both mobile clients can add and remove tracked artists, add and remove tracked events, add and remove manual public sources, refresh current data, run tracked event checks, show server health, and show recent alerts from the local server. The Python server still performs the actual scraping, persistence, and alert generation. The apps remember the API base URL locally after you change it.
+Both mobile clients can add and remove tracked artists, add and remove tracked events, add and remove manual public sources, refresh current data, run tracked event checks, show server health, open the calendar feed, and show recent alerts from the local server. The Python server still performs the actual scraping, persistence, and alert generation. The apps remember the API base URL locally after you change it.
 
 The server also exposes a standard iCalendar ticket timeline feed at `/calendar.ics` for calendar apps that can subscribe to a local URL.
 

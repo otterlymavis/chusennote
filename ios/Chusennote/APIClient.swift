@@ -22,6 +22,10 @@ final class ChusennoteStore: ObservableObject {
         watches.filter { !$0.muted && ($0.kind ?? "event") == "event" }
     }
 
+    var calendarFeedURL: URL? {
+        URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics")
+    }
+
     func refresh() async {
         do {
             async let fetchedWatches: [Watch] = fetch("/api/watchlist")
