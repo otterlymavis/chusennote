@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import re
+import sqlite3
 import sys
 import urllib.parse
 import urllib.request
@@ -515,17 +517,286 @@ def blocks_to_json(blocks: AppBlocks) -> str:
     return json.dumps(dataclasses.asdict(blocks), ensure_ascii=False, indent=2)
 
 
+def utc_now_iso() -> str:
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def stable_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+
+
+def init_db(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS watched_keywords (
+            id INTEGER PRIMARY KEY,
+            keyword TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY,
+            watch_id INTEGER NOT NULL,
+            canonical_title TEXT NOT NULL,
+            official_url TEXT,
+            summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(watch_id, official_url),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sources (
+            id INTEGER PRIMARY KEY,
+            event_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            label TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(event_id, url),
+            FOREIGN KEY(event_id) REFERENCES events(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS ticket_rounds (
+            id INTEGER PRIMARY KEY,
+            event_id INTEGER NOT NULL,
+            round_key TEXT NOT NULL,
+            source TEXT NOT NULL,
+            url TEXT NOT NULL,
+            name TEXT NOT NULL,
+            lottery_start TEXT,
+            lottery_end TEXT,
+            results_date TEXT,
+            general_sale_date TEXT,
+            payment_deadline TEXT,
+            evidence TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(event_id, round_key),
+            FOREIGN KEY(event_id) REFERENCES events(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS snapshots (
+            id INTEGER PRIMARY KEY,
+            event_id INTEGER NOT NULL,
+            snapshot_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(event_id, snapshot_hash),
+            FOREIGN KEY(event_id) REFERENCES events(id)
+        );
+        """
+    )
+
+
+def upsert_keyword(connection: sqlite3.Connection, keyword: str, now: str) -> int:
+    connection.execute(
+        """
+        INSERT INTO watched_keywords(keyword, created_at, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(keyword) DO UPDATE SET updated_at = excluded.updated_at
+        """,
+        (keyword, now, now),
+    )
+    row = connection.execute("SELECT id FROM watched_keywords WHERE keyword = ?", (keyword,)).fetchone()
+    return int(row[0])
+
+
+def upsert_event(connection: sqlite3.Connection, watch_id: int, info: EventInfo, now: str) -> tuple[int, bool]:
+    official_url = info.official_page or f"keyword:{info.keyword}"
+    existing = connection.execute(
+        "SELECT id FROM events WHERE watch_id = ? AND official_url = ?",
+        (watch_id, official_url),
+    ).fetchone()
+    connection.execute(
+        """
+        INSERT INTO events(watch_id, canonical_title, official_url, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(watch_id, official_url) DO UPDATE SET
+            canonical_title = excluded.canonical_title,
+            summary = excluded.summary,
+            updated_at = excluded.updated_at
+        """,
+        (watch_id, info.title or info.keyword, official_url, info.summary, now, now),
+    )
+    row = connection.execute(
+        "SELECT id FROM events WHERE watch_id = ? AND official_url = ?",
+        (watch_id, official_url),
+    ).fetchone()
+    return int(row[0]), existing is None
+
+
+def source_confidence(link: Link) -> int:
+    if is_ticket_url(link.url):
+        return 90
+    if any(hint.lower() in f"{link.label} {link.url}".lower() for hint in TICKET_LINK_HINTS):
+        return 60
+    return 40
+
+
+def upsert_sources(connection: sqlite3.Connection, event_id: int, links: Sequence[Link], now: str) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+    for link in links:
+        existing = connection.execute(
+            "SELECT id FROM sources WHERE event_id = ? AND url = ?",
+            (event_id, link.url),
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO sources(event_id, url, label, platform, confidence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id, url) DO UPDATE SET
+                label = excluded.label,
+                platform = excluded.platform,
+                confidence = excluded.confidence,
+                updated_at = excluded.updated_at
+            """,
+            (event_id, link.url, link.label, source_name_for_url(link.url), source_confidence(link), now, now),
+        )
+        if existing is None:
+            alerts.append({"type": "new_ticket_link", "label": link.label, "url": link.url})
+    return alerts
+
+
+def ticket_round_key(ticket: TicketRound) -> str:
+    return stable_hash("|".join((ticket.source, ticket.url, ticket.name)))
+
+
+def ticket_round_fields(ticket: TicketRound) -> dict[str, str | None]:
+    return {
+        "lottery_start": ticket.lottery_start,
+        "lottery_end": ticket.lottery_end,
+        "results_date": ticket.results_date,
+        "general_sale_date": ticket.general_sale_date,
+        "payment_deadline": ticket.payment_deadline,
+    }
+
+
+def upsert_ticket_rounds(
+    connection: sqlite3.Connection,
+    event_id: int,
+    event_title: str,
+    rounds: Sequence[TicketRound],
+    now: str,
+) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+    for ticket in rounds:
+        round_key = ticket_round_key(ticket)
+        previous = connection.execute(
+            """
+            SELECT lottery_start, lottery_end, results_date, general_sale_date, payment_deadline
+            FROM ticket_rounds
+            WHERE event_id = ? AND round_key = ?
+            """,
+            (event_id, round_key),
+        ).fetchone()
+        fields = ticket_round_fields(ticket)
+        connection.execute(
+            """
+            INSERT INTO ticket_rounds(
+                event_id, round_key, source, url, name, lottery_start, lottery_end,
+                results_date, general_sale_date, payment_deadline, evidence, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id, round_key) DO UPDATE SET
+                source = excluded.source,
+                url = excluded.url,
+                name = excluded.name,
+                lottery_start = excluded.lottery_start,
+                lottery_end = excluded.lottery_end,
+                results_date = excluded.results_date,
+                general_sale_date = excluded.general_sale_date,
+                payment_deadline = excluded.payment_deadline,
+                evidence = excluded.evidence,
+                updated_at = excluded.updated_at
+            """,
+            (
+                event_id,
+                round_key,
+                ticket.source,
+                ticket.url,
+                ticket.name,
+                ticket.lottery_start,
+                ticket.lottery_end,
+                ticket.results_date,
+                ticket.general_sale_date,
+                ticket.payment_deadline,
+                ticket.evidence,
+                now,
+                now,
+            ),
+        )
+        if previous is None:
+            alerts.append({"type": "new_lottery_round", "event": event_title, "round": ticket.name, "url": ticket.url})
+            continue
+        previous_fields = dict(zip(fields.keys(), previous, strict=True))
+        for field, value in fields.items():
+            old_value = previous_fields[field]
+            if old_value != value:
+                alerts.append(
+                    {
+                        "type": "ticket_field_changed",
+                        "event": event_title,
+                        "round": ticket.name,
+                        "field": field,
+                        "old": old_value or "",
+                        "new": value or "",
+                        "url": ticket.url,
+                    }
+                )
+    return alerts
+
+
+def save_snapshot(connection: sqlite3.Connection, event_id: int, blocks: AppBlocks, now: str) -> None:
+    payload = blocks_to_json(blocks)
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO snapshots(event_id, snapshot_hash, payload_json, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (event_id, stable_hash(payload), payload, now),
+    )
+
+
+def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None) -> list[dict[str, str]]:
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        info = blocks.general_info
+        watch_id = upsert_keyword(connection, info.keyword, timestamp)
+        event_id, new_event = upsert_event(connection, watch_id, info, timestamp)
+        event_title = info.title or info.keyword
+        alerts: list[dict[str, str]] = []
+        if new_event and info.official_page:
+            alerts.append({"type": "new_official_page", "event": event_title, "url": info.official_page})
+        alerts.extend(upsert_sources(connection, event_id, info.ticket_links, timestamp))
+        alerts.extend(upsert_ticket_rounds(connection, event_id, event_title, blocks.ticket_info, timestamp))
+        save_snapshot(connection, event_id, blocks, timestamp)
+        return alerts
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
     parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
     parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
+    parser.add_argument("--db", help="SQLite database path for saving watch/event/ticket history")
+    parser.add_argument("--alerts-json", action="store_true", help="With --db, output only detected alert changes as JSON")
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     blocks = build_blocks(args.keyword)
-    print(blocks_to_json(blocks) if args.json else render_blocks(blocks))
+    alerts: list[dict[str, str]] = []
+    if args.db:
+        alerts = save_blocks(args.db, blocks)
+    if args.alerts_json:
+        print(json.dumps(alerts, ensure_ascii=False, indent=2))
+    else:
+        print(blocks_to_json(blocks) if args.json else render_blocks(blocks))
     return 0
 
 

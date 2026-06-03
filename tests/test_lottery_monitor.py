@@ -77,3 +77,85 @@ def test_render_blocks_has_two_expected_app_blocks():
     assert "# General event info" in rendered
     assert "# Ticket / lottery info" in rendered
     assert "第1次抽選先行" in rendered
+
+
+def test_save_blocks_persists_initial_monitoring_state(tmp_path):
+    db_path = tmp_path / "otterpia.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Tour",
+            summary="公演情報",
+            event_dates=("公演日 2026年7月10日",),
+            venues=("会場 Example Hall",),
+            ticket_links=(lm.Link("Pia", "https://t.pia.jp/example"),),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="第1次抽選先行",
+                lottery_start="2026-06-10",
+                lottery_end="2026-06-18",
+                results_date="2026-06-22",
+            ),
+        ),
+    )
+
+    alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-03T00:00:00+00:00")
+
+    assert {"type": "new_official_page", "event": "Example Tour", "url": "https://official.example/"} in alerts
+    assert any(alert["type"] == "new_ticket_link" for alert in alerts)
+    assert any(alert["type"] == "new_lottery_round" for alert in alerts)
+
+
+def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
+    db_path = tmp_path / "otterpia.sqlite3"
+    original = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Tour",
+            summary="公演情報",
+            event_dates=(),
+            venues=(),
+            ticket_links=(lm.Link("Pia", "https://t.pia.jp/example"),),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="第1次抽選先行",
+                lottery_start="2026-06-10",
+                lottery_end="2026-06-18",
+            ),
+        ),
+    )
+    changed = lm.AppBlocks(
+        general_info=original.general_info,
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                url="https://t.pia.jp/example",
+                name="第1次抽選先行",
+                lottery_start="2026-06-10",
+                lottery_end="2026-06-20",
+            ),
+        ),
+    )
+
+    lm.save_blocks(str(db_path), original, now="2026-06-03T00:00:00+00:00")
+    alerts = lm.save_blocks(str(db_path), changed, now="2026-06-04T00:00:00+00:00")
+
+    assert alerts == [
+        {
+            "type": "ticket_field_changed",
+            "event": "Example Tour",
+            "round": "第1次抽選先行",
+            "field": "lottery_end",
+            "old": "2026-06-18",
+            "new": "2026-06-20",
+            "url": "https://t.pia.jp/example",
+        }
+    ]
