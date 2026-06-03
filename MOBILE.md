@@ -1,0 +1,49 @@
+# Mobile apps
+
+chusennote now includes lightweight native mobile clients for the local web/API server.
+
+## Start the API server
+
+Run this from the repository root before opening either app:
+
+```bash
+python lottery_monitor.py web --db chusennote.sqlite3 --port 8765
+```
+
+The mobile apps read:
+
+- `GET /api/watchlist`
+- `GET /api/events`
+
+They display the same two product lanes as the web app:
+
+- **Tracked Artists**: basic artist/event discovery watches.
+- **Tracked Events**: ticket and lottery timeline watches.
+
+## Android
+
+Open `android/` in Android Studio.
+
+Default emulator URL:
+
+```text
+http://10.0.2.2:8765
+```
+
+For a physical Android device, change the base URL in the app to your computer's LAN IP, for example:
+
+```text
+http://192.168.1.20:8765
+```
+
+## iOS
+
+Open Xcode and create an iOS SwiftUI app named `Chusennote`, then use the Swift files in `ios/Chusennote/`.
+
+Default simulator URL:
+
+```text
+http://127.0.0.1:8765
+```
+
+For a physical iPhone, change the base URL in the app to your computer's LAN IP.
