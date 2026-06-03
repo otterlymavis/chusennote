@@ -265,10 +265,12 @@ def test_init_db_migrates_existing_current_schema(tmp_path):
         lm.init_db(connection)
         watched_columns = lm.table_columns(connection, "watched_keywords")
         round_columns = lm.table_columns(connection, "ticket_rounds")
+        source_columns = lm.table_columns(connection, "watch_sources")
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert {"tags", "preferred_regions", "preferred_venues", "muted", "last_checked_at"} <= watched_columns
     assert {"platform", "application_start_at", "application_end_at", "confidence", "status"} <= round_columns
+    assert {"watch_id", "url", "private_note", "muted"} <= source_columns
     assert user_version == lm.DB_SCHEMA_VERSION
 
 
@@ -383,6 +385,64 @@ def test_watch_run_cli_outputs_alerts_json(tmp_path, monkeypatch, capsys):
     assert '"type": "new_lottery_round"' in output
 
 
+def test_watch_source_cli_add_list_remove(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+
+    assert lm.main(["watch", "source", "add", "Example", "https://fan.example/note", "--db", str(db_path), "--label", "FC note", "--private-note"]) == 0
+    assert "Added source 1: FC note" in capsys.readouterr().out
+
+    assert lm.main(["watch", "source", "list", "Example", "--db", str(db_path), "--json"]) == 0
+    source_output = capsys.readouterr().out
+    assert '"label": "FC note"' in source_output
+    assert '"private_note": true' in source_output
+
+    assert lm.main(["watch", "source", "remove", "1", "--db", str(db_path)]) == 0
+    assert "Removed source." in capsys.readouterr().out
+
+
+def test_private_note_sources_are_not_scraped(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    lm.add_watch_source(str(db_path), "Example", "https://fan.example/private", "FC private", private_note=True)
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    def fail_fetch(url):
+        raise AssertionError(f"private source should not be fetched: {url}")
+
+    monkeypatch.setattr(lm, "fetch_page", fail_fetch)
+
+    blocks = lm.build_blocks_for_watch(str(db_path), watch)
+
+    assert any(link.url == "https://fan.example/private" for link in blocks.general_info.ticket_links)
+
+
+def test_public_manual_source_adds_ticket_round(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    lm.add_watch_source(str(db_path), "Example", "https://l-tike.com/example", "Lawson", private_note=False)
+    monkeypatch.setattr(
+        lm,
+        "build_blocks",
+        lambda keyword: lm.AppBlocks(
+            general_info=example_blocks(keyword).general_info,
+            ticket_info=(),
+        ),
+    )
+    html = """
+    <html><body>
+      <h2>第1次抽選先行</h2>
+      <p>受付期間 2026年6月10日 ～ 2026年6月18日</p>
+    </body></html>
+    """
+    monkeypatch.setattr(lm, "fetch_page", lambda url: lm.parse_page(url, html))
+
+    blocks = lm.build_blocks_for_watch(str(db_path), watch)
+
+    assert blocks.ticket_info[0].platform == "lawson"
+    assert blocks.ticket_info[0].application_end_at == "2026-06-18"
+
+
 def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
@@ -395,11 +455,13 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
     try:
         home = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         watchlist = json_load_url(f"{base}/api/watchlist")
+        sources = json_load_url(f"{base}/api/sources")
         events = json_load_url(f"{base}/api/events")
         alerts = json_load_url(f"{base}/api/alerts")
 
         assert "chusennote" in home
         assert watchlist[0]["keyword"] == "Example"
+        assert sources == []
         assert events[0]["title"] == "Example Tour"
         assert alerts
     finally:
@@ -418,8 +480,14 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         post_form(f"{base}/api/watchlist", {"keyword": "Example"})
         assert json_load_url(f"{base}/api/watchlist")[0]["keyword"] == "Example"
 
+        source = post_form(f"{base}/api/sources", {"watch": "Example", "url": "https://fan.example/private", "label": "FC", "private_note": "1"})
+        assert source["private_note"] is True
+
         run_alerts = post_form(f"{base}/api/run", {})
         assert any(alert["type"] == "new_lottery_round" for alert in run_alerts)
+
+        removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
+        assert removed_source["removed"] is True
 
         removed = post_form(f"{base}/api/watchlist/remove", {"identifier": "Example"})
         assert removed["removed"] is True

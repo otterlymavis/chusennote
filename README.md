@@ -51,6 +51,14 @@ python3 lottery_monitor.py watch list
 python3 lottery_monitor.py watch run --alerts-json
 ```
 
+Attach manual source URLs to a watch. Public sources are fetched during `watch run`; private notes are stored and shown, but not scraped:
+
+```bash
+python3 lottery_monitor.py watch source add "your event keyword" "https://ticket.example/show" --label "Ticket page"
+python3 lottery_monitor.py watch source add "your event keyword" "https://fc.example/private" --label "Fan club note" --private-note
+python3 lottery_monitor.py watch source list "your event keyword"
+```
+
 Run the local web UI:
 
 ```bash
@@ -137,12 +145,11 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - SQLite persistence stores watched keywords, events, ticket sources, detected ticket rounds, compact JSON snapshots, and emitted lifecycle alerts.
 - The local web UI is intentionally standard-library only and runs on your machine.
 - The best long-term approach is to keep this keyword-first pipeline and add dedicated adapters for Pia, eplus, Lawson Ticket, official fan-club pages, and musical production sites.
-- The MVP does not send Discord, LINE, Slack, or email notifications and does not scrape private/login-only fan-club pages.
+- The MVP does not send Discord, LINE, Slack, or email notifications and does not scrape private/login-only fan-club pages; use private manual sources for those notes.
 
 ## Future upgrades
 
-- Add a small web UI that displays the two blocks as cards.
-- Persist event history in SQLite and alert only on changes.
 - Add Discord/LINE/Slack notifications for newly opened or closing lotteries.
-- Add source-specific parsers for Pia/eplus/Lawson Ticket date fields.
+- Deepen source-specific parsers for Pia/eplus/Lawson Ticket date fields.
 - Support multiple rounds explicitly (`1st lottery`, `2nd lottery`, `official presale`, `general sale`).
+- Add recurring background scheduling outside the current one-shot `watch run` command.

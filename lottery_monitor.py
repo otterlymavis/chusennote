@@ -20,7 +20,6 @@ import json
 import re
 import sqlite3
 import sys
-import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Sequence
@@ -145,6 +144,18 @@ class Watch:
     preferred_venues: str = ""
     muted: bool = False
     last_checked_at: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class WatchSource:
+    id: int
+    watch_id: int
+    url: str
+    label: str
+    platform: str
+    confidence: int
+    private_note: bool = False
+    muted: bool = False
 
 
 def clean_text(value: str) -> str:
@@ -561,6 +572,33 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
     return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
 
 
+def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
+    blocks = build_blocks(watch.keyword)
+    manual_sources = list_watch_sources(db_path, str(watch.id))
+    manual_links = tuple(Link(source.label, source.url) for source in manual_sources)
+    public_sources = [source for source in manual_sources if not source.private_note]
+    extra_rounds: list[TicketRound] = []
+    for source in public_sources:
+        try:
+            extra_rounds.extend(extract_ticket_rounds_for_page(fetch_page(source.url)))
+        except (OSError, ValueError):
+            extra_rounds.append(
+                TicketRound(
+                    source=source.platform,
+                    platform=source.platform,
+                    url=source.url,
+                    name="Fetch failed",
+                    evidence=source.label,
+                    confidence=source.confidence,
+                )
+            )
+    info = blocks.general_info
+    existing_urls = {link.url for link in info.ticket_links}
+    merged_links = info.ticket_links + tuple(link for link in manual_links if link.url not in existing_urls)
+    merged_info = dataclasses.replace(info, ticket_links=merged_links)
+    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(blocks.ticket_info + tuple(extra_rounds)))
+
+
 def render_blocks(blocks: AppBlocks) -> str:
     info = blocks.general_info
     lines = ["# General event info", ""]
@@ -701,6 +739,21 @@ def init_db(connection: sqlite3.Connection) -> None:
             UNIQUE(event_id, alert_key),
             FOREIGN KEY(event_id) REFERENCES events(id)
         );
+
+        CREATE TABLE IF NOT EXISTS watch_sources (
+            id INTEGER PRIMARY KEY,
+            watch_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            label TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            confidence INTEGER NOT NULL DEFAULT 70,
+            private_note INTEGER NOT NULL DEFAULT 0,
+            muted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(watch_id, url),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
         """
     )
     migrate_db(connection)
@@ -732,6 +785,24 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "ticket_rounds", "trade_end_at", "TEXT")
     add_column_if_missing(connection, "ticket_rounds", "confidence", "INTEGER NOT NULL DEFAULT 50")
     add_column_if_missing(connection, "ticket_rounds", "status", "TEXT NOT NULL DEFAULT 'unknown'")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS watch_sources (
+            id INTEGER PRIMARY KEY,
+            watch_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            label TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            confidence INTEGER NOT NULL DEFAULT 70,
+            private_note INTEGER NOT NULL DEFAULT 0,
+            muted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(watch_id, url),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
+        """
+    )
     connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
 
 
@@ -797,6 +868,19 @@ def watch_from_row(row: sqlite3.Row | tuple[object, ...]) -> Watch:
     )
 
 
+def watch_source_from_row(row: sqlite3.Row | tuple[object, ...]) -> WatchSource:
+    return WatchSource(
+        id=int(row[0]),
+        watch_id=int(row[1]),
+        url=str(row[2]),
+        label=str(row[3] or row[2]),
+        platform=str(row[4] or source_name_for_url(str(row[2]))),
+        confidence=int(row[5] or 70),
+        private_note=bool(row[6]),
+        muted=bool(row[7]),
+    )
+
+
 def list_watches(db_path: str, include_muted: bool = False) -> list[Watch]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
@@ -810,6 +894,28 @@ def list_watches(db_path: str, include_muted: bool = False) -> list[Watch]:
             """
         ).fetchall()
         return [watch_from_row(row) for row in rows]
+
+
+def resolve_watch(connection: sqlite3.Connection, identifier: str) -> Watch | None:
+    if identifier.isdigit():
+        row = connection.execute(
+            """
+            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            FROM watched_keywords
+            WHERE id = ?
+            """,
+            (int(identifier),),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT id, keyword, tags, preferred_regions, preferred_venues, muted, last_checked_at
+            FROM watched_keywords
+            WHERE keyword = ?
+            """,
+            (identifier,),
+        ).fetchone()
+    return watch_from_row(row) if row else None
 
 
 def remove_watch(db_path: str, identifier: str, now: str | None = None) -> bool:
@@ -829,6 +935,95 @@ def remove_watch(db_path: str, identifier: str, now: str | None = None) -> bool:
         return bool(cursor.rowcount)
 
 
+def add_watch_source(
+    db_path: str,
+    watch_identifier: str,
+    url: str,
+    label: str = "",
+    private_note: bool = False,
+    now: str | None = None,
+) -> WatchSource:
+    timestamp = now or utc_now_iso()
+    url = clean_text(url)
+    if not url:
+        raise ValueError("Source URL is required")
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        watch = resolve_watch(connection, watch_identifier)
+        if not watch:
+            raise ValueError(f"Watch not found: {watch_identifier}")
+        platform = "manual" if private_note else source_name_for_url(url)
+        confidence = 40 if private_note else platform_confidence(platform)
+        connection.execute(
+            """
+            INSERT INTO watch_sources(
+                watch_id, url, label, platform, confidence, private_note, muted, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(watch_id, url) DO UPDATE SET
+                label = excluded.label,
+                platform = excluded.platform,
+                confidence = excluded.confidence,
+                private_note = excluded.private_note,
+                muted = 0,
+                updated_at = excluded.updated_at
+            """,
+            (watch.id, url, label or url, platform, confidence, int(private_note), timestamp, timestamp),
+        )
+        row = connection.execute(
+            """
+            SELECT id, watch_id, url, label, platform, confidence, private_note, muted
+            FROM watch_sources
+            WHERE watch_id = ? AND url = ?
+            """,
+            (watch.id, url),
+        ).fetchone()
+        return watch_source_from_row(row)
+
+
+def list_watch_sources(db_path: str, watch_identifier: str | None = None, include_muted: bool = False) -> list[WatchSource]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        params: list[object] = []
+        clauses: list[str] = []
+        if watch_identifier:
+            watch = resolve_watch(connection, watch_identifier)
+            if not watch:
+                return []
+            clauses.append("watch_id = ?")
+            params.append(watch.id)
+        if not include_muted:
+            clauses.append("muted = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = connection.execute(
+            f"""
+            SELECT id, watch_id, url, label, platform, confidence, private_note, muted
+            FROM watch_sources
+            {where}
+            ORDER BY watch_id, id
+            """,
+            params,
+        ).fetchall()
+        return [watch_source_from_row(row) for row in rows]
+
+
+def remove_watch_source(db_path: str, identifier: str, now: str | None = None) -> bool:
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        if identifier.isdigit():
+            cursor = connection.execute(
+                "UPDATE watch_sources SET muted = 1, updated_at = ? WHERE id = ? AND muted = 0",
+                (timestamp, int(identifier)),
+            )
+        else:
+            cursor = connection.execute(
+                "UPDATE watch_sources SET muted = 1, updated_at = ? WHERE url = ? AND muted = 0",
+                (timestamp, identifier),
+            )
+        return bool(cursor.rowcount)
+
+
 def mark_watch_checked(db_path: str, watch_id: int, now: str) -> None:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
@@ -842,7 +1037,7 @@ def run_watches(db_path: str, now: str | None = None) -> list[dict[str, str]]:
     timestamp = now or utc_now_iso()
     alerts: list[dict[str, str]] = []
     for watch in list_watches(db_path):
-        blocks = build_blocks(watch.keyword)
+        blocks = build_blocks_for_watch(db_path, watch)
         alerts.extend(save_blocks(db_path, blocks, now=timestamp))
         mark_watch_checked(db_path, watch.id, timestamp)
     return alerts
@@ -853,7 +1048,7 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         init_db(connection)
         rows = connection.execute(
             """
-            SELECT e.id, w.keyword, e.canonical_title, e.official_url, e.summary, e.updated_at
+            SELECT e.id, w.id, w.keyword, e.canonical_title, e.official_url, e.summary, e.updated_at
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
             ORDER BY e.updated_at DESC
@@ -863,6 +1058,15 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         ).fetchall()
         events: list[dict[str, object]] = []
         for row in rows:
+            manual_sources = connection.execute(
+                """
+                SELECT id, watch_id, url, label, platform, confidence, private_note, muted
+                FROM watch_sources
+                WHERE watch_id = ? AND muted = 0
+                ORDER BY id
+                """,
+                (row[1],),
+            ).fetchall()
             rounds = connection.execute(
                 """
                 SELECT name, platform, url, application_start_at, application_end_at,
@@ -876,11 +1080,13 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
             events.append(
                 {
                     "id": row[0],
-                    "keyword": row[1],
-                    "title": row[2],
-                    "official_url": row[3],
-                    "summary": row[4],
-                    "updated_at": row[5],
+                    "watch_id": row[1],
+                    "keyword": row[2],
+                    "title": row[3],
+                    "official_url": row[4],
+                    "summary": row[5],
+                    "updated_at": row[6],
+                    "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
                     "rounds": [
                         {
                             "name": ticket[0],
@@ -1315,6 +1521,26 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     run_parser.add_argument("--alerts-json", action="store_true")
 
+    source_parser = watch_subparsers.add_parser("source", help="Manage manual source URLs for a watch")
+    source_subparsers = source_parser.add_subparsers(dest="source_command", required=True)
+
+    source_add_parser = source_subparsers.add_parser("add", help="Add a manual source URL")
+    source_add_parser.add_argument("watch")
+    source_add_parser.add_argument("url")
+    source_add_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    source_add_parser.add_argument("--label", default="")
+    source_add_parser.add_argument("--private-note", action="store_true", help="Store the URL/note without scraping it")
+
+    source_list_parser = source_subparsers.add_parser("list", help="List manual source URLs")
+    source_list_parser.add_argument("watch", nargs="?")
+    source_list_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    source_list_parser.add_argument("--json", action="store_true")
+    source_list_parser.add_argument("--include-muted", action="store_true")
+
+    source_remove_parser = source_subparsers.add_parser("remove", help="Remove a manual source by id or URL")
+    source_remove_parser.add_argument("identifier")
+    source_remove_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
     web_parser = subparsers.add_parser("web", help="Run the local web UI")
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
@@ -1326,6 +1552,10 @@ def watches_to_json(watches: Sequence[Watch]) -> str:
     return json.dumps([dataclasses.asdict(watch) for watch in watches], ensure_ascii=False, indent=2)
 
 
+def watch_sources_to_json(sources: Sequence[WatchSource]) -> str:
+    return json.dumps([dataclasses.asdict(source) for source in sources], ensure_ascii=False, indent=2)
+
+
 def render_watches(watches: Sequence[Watch]) -> str:
     if not watches:
         return "No active watches."
@@ -1333,6 +1563,16 @@ def render_watches(watches: Sequence[Watch]) -> str:
     for watch in watches:
         checked = watch.last_checked_at or "never"
         lines.append(f"- {watch.id}: {watch.keyword} (last checked: {checked})")
+    return "\n".join(lines)
+
+
+def render_watch_sources(sources: Sequence[WatchSource]) -> str:
+    if not sources:
+        return "No manual sources."
+    lines = ["# Manual sources", ""]
+    for source in sources:
+        mode = "private note" if source.private_note else source.platform
+        lines.append(f"- {source.id}: watch {source.watch_id} · {source.label} ({mode}) {source.url}")
     return "\n".join(lines)
 
 
@@ -1369,6 +1609,7 @@ def redirect_response(handler: http.server.BaseHTTPRequestHandler, location: str
 
 def render_web_page(db_path: str) -> str:
     watches = list_watches(db_path, include_muted=True)
+    sources = list_watch_sources(db_path)
     events = recent_events(db_path)
     alerts = recent_alerts(db_path, limit=20)
     active_watches = [watch for watch in watches if not watch.muted]
@@ -1381,6 +1622,18 @@ def render_web_page(db_path: str) -> str:
         """
         for watch in active_watches
     ) or "<li>No active watches.</li>"
+    source_options = "\n".join(
+        f'<option value="{watch.id}">{html.escape(watch.keyword)}</option>' for watch in active_watches
+    )
+    source_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} · {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small></span>
+          <form method="post" action="/source/remove"><input type="hidden" name="identifier" value="{source.id}"><button>Remove</button></form>
+        </li>
+        """
+        for source in sources
+    ) or "<li>No manual sources.</li>"
     event_items = "\n".join(render_event_card(event) for event in events) or "<p>No events saved yet.</p>"
     alert_items = "\n".join(
         f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> {html.escape(str(alert.get('event', '')))} {html.escape(str(alert.get('round', '')))} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
@@ -1399,7 +1652,8 @@ def render_web_page(db_path: str) -> str:
     section {{ background: white; border: 1px solid #d8dde3; border-radius: 6px; padding: 16px; }}
     h1, h2, h3 {{ margin: 0 0 12px; }}
     form {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
-    input {{ padding: 8px 10px; border: 1px solid #b9c1cb; border-radius: 4px; min-width: 220px; }}
+    input, select {{ padding: 8px 10px; border: 1px solid #b9c1cb; border-radius: 4px; min-width: 220px; }}
+    input[type="checkbox"] {{ min-width: 0; }}
     button {{ padding: 8px 12px; border: 1px solid #1f2933; border-radius: 4px; background: #1f2933; color: white; cursor: pointer; }}
     ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
     li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border-bottom: 1px solid #edf0f3; padding-bottom: 8px; }}
@@ -1421,6 +1675,17 @@ def render_web_page(db_path: str) -> str:
       </form>
       <form method="post" action="/watch/run" style="margin-top: 10px;"><button>Run All Watches</button></form>
       <ul style="margin-top: 14px;">{watch_items}</ul>
+    </section>
+    <section>
+      <h2>Manual Sources</h2>
+      <form method="post" action="/source/add">
+        <select name="watch" required>{source_options}</select>
+        <input name="url" placeholder="Public ticket URL or private note URL" required>
+        <input name="label" placeholder="Label">
+        <label><input type="checkbox" name="private_note" value="1"> Private note</label>
+        <button>Add Source</button>
+      </form>
+      <ul style="margin-top: 14px;">{source_items}</ul>
     </section>
     <section>
       <h2>Events</h2>
@@ -1474,6 +1739,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, recent_events(db_path))
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path))
+            elif path == "/api/sources":
+                json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=True)])
             else:
                 json_response(self, {"error": "not found"}, status=404)
 
@@ -1493,6 +1760,22 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/watch/run":
                 run_watches(db_path)
                 redirect_response(self)
+            elif path == "/source/add":
+                try:
+                    add_watch_source(
+                        db_path,
+                        form.get("watch", ""),
+                        form.get("url", ""),
+                        form.get("label", ""),
+                        bool(form.get("private_note")),
+                    )
+                except ValueError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                redirect_response(self)
+            elif path == "/source/remove":
+                remove_watch_source(db_path, form.get("identifier", ""))
+                redirect_response(self)
             elif path == "/api/watchlist":
                 keyword = clean_text(form.get("keyword", ""))
                 if not keyword:
@@ -1503,6 +1786,21 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
             elif path == "/api/run":
                 json_response(self, run_watches(db_path))
+            elif path == "/api/sources":
+                try:
+                    source = add_watch_source(
+                        db_path,
+                        form.get("watch", ""),
+                        form.get("url", ""),
+                        form.get("label", ""),
+                        bool(form.get("private_note")),
+                    )
+                except ValueError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, dataclasses.asdict(source))
+            elif path == "/api/sources/remove":
+                json_response(self, {"removed": remove_watch_source(db_path, form.get("identifier", ""))})
             else:
                 json_response(self, {"error": "not found"}, status=404)
 
@@ -1525,6 +1823,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_web(args.db, args.port)
         return 0
     if args.command == "watch":
+        if args.watch_command == "source":
+            if args.source_command == "add":
+                try:
+                    source = add_watch_source(args.db, args.watch, args.url, args.label, args.private_note)
+                except ValueError as error:
+                    print(str(error))
+                    return 1
+                print(f"Added source {source.id}: {source.label}")
+                return 0
+            if args.source_command == "list":
+                sources = list_watch_sources(args.db, args.watch, include_muted=args.include_muted)
+                print(watch_sources_to_json(sources) if args.json else render_watch_sources(sources))
+                return 0
+            if args.source_command == "remove":
+                removed = remove_watch_source(args.db, args.identifier)
+                print("Removed source." if removed else "Source not found.")
+                return 0 if removed else 1
         if args.watch_command == "add":
             watch = add_watch(args.db, args.keyword, args.tags, args.regions, args.venues)
             print(f"Added watch {watch.id}: {watch.keyword}")
