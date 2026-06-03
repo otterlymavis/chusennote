@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var store = ChusennoteStore()
+    @State private var artistKeyword = ""
+    @State private var eventKeyword = ""
 
     var body: some View {
         NavigationStack {
@@ -20,6 +22,14 @@ struct ContentView: View {
                 }
 
                 Section("Tracked Artists") {
+                    TextField("Artist keyword", text: $artistKeyword)
+                        .textInputAutocapitalization(.never)
+                    Button("Add Artist") {
+                        let keyword = artistKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !keyword.isEmpty else { return }
+                        artistKeyword = ""
+                        Task { await store.addWatch(keyword: keyword, kind: "artist") }
+                    }
                     if store.trackedArtists.isEmpty {
                         Text("No tracked artists yet.")
                     }
@@ -34,6 +44,17 @@ struct ContentView: View {
                 }
 
                 Section("Tracked Events") {
+                    TextField("Event keyword", text: $eventKeyword)
+                        .textInputAutocapitalization(.never)
+                    Button("Add Event") {
+                        let keyword = eventKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !keyword.isEmpty else { return }
+                        eventKeyword = ""
+                        Task { await store.addWatch(keyword: keyword, kind: "event") }
+                    }
+                    Button("Run Event Watches") {
+                        Task { await store.runEventWatches() }
+                    }
                     if store.trackedEvents.isEmpty {
                         Text("No tracked events yet.")
                     }

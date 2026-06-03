@@ -15,10 +15,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.OutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.net.URLEncoder;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -26,6 +28,8 @@ public class MainActivity extends Activity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private EditText baseUrlInput;
+    private EditText artistInput;
+    private EditText eventInput;
     private LinearLayout artistList;
     private LinearLayout eventList;
     private TextView statusText;
@@ -62,11 +66,31 @@ public class MainActivity extends Activity {
         root.addView(refresh);
 
         root.addView(section("Tracked Artists"));
+        artistInput = new EditText(this);
+        artistInput.setSingleLine(true);
+        artistInput.setHint("Artist keyword");
+        root.addView(artistInput);
+        Button addArtist = new Button(this);
+        addArtist.setText("Add Artist");
+        addArtist.setOnClickListener(view -> addWatch("artist", artistInput));
+        root.addView(addArtist);
         artistList = new LinearLayout(this);
         artistList.setOrientation(LinearLayout.VERTICAL);
         root.addView(artistList);
 
         root.addView(section("Tracked Events"));
+        eventInput = new EditText(this);
+        eventInput.setSingleLine(true);
+        eventInput.setHint("Event keyword");
+        root.addView(eventInput);
+        Button addEvent = new Button(this);
+        addEvent.setText("Add Event");
+        addEvent.setOnClickListener(view -> addWatch("event", eventInput));
+        root.addView(addEvent);
+        Button runEvents = new Button(this);
+        runEvents.setText("Run Event Watches");
+        runEvents.setOnClickListener(view -> runEventWatches());
+        root.addView(runEvents);
         eventList = new LinearLayout(this);
         eventList.setOrientation(LinearLayout.VERTICAL);
         root.addView(eventList);
@@ -87,6 +111,41 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void addWatch(String kind, EditText input) {
+        String keyword = input.getText().toString().trim();
+        if (keyword.isEmpty()) {
+            statusText.setText("Enter a keyword first.");
+            return;
+        }
+        statusText.setText("Adding " + kind + "...");
+        executor.execute(() -> {
+            try {
+                postForm("/api/watchlist", "keyword=" + encode(keyword) + "&kind=" + encode(kind));
+                mainHandler.post(() -> {
+                    input.setText("");
+                    refresh();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not add watch: " + error.getMessage()));
+            }
+        });
+    }
+
+    private void runEventWatches() {
+        statusText.setText("Running tracked events...");
+        executor.execute(() -> {
+            try {
+                JSONArray alerts = postJsonArray("/api/run", "kind=event");
+                mainHandler.post(() -> {
+                    statusText.setText("Run complete: " + alerts.length() + " alerts.");
+                    refresh();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not run watches: " + error.getMessage()));
+            }
+        });
+    }
+
     private JSONArray getJsonArray(String path) throws Exception {
         URL url = new URL(baseUrlInput.getText().toString().replaceAll("/+$", "") + path);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
@@ -101,6 +160,37 @@ public class MainActivity extends Activity {
             }
             return new JSONArray(body.toString());
         }
+    }
+
+    private String postForm(String path, String body) throws Exception {
+        byte[] data = body.getBytes(StandardCharsets.UTF_8);
+        URL url = new URL(baseUrlInput.getText().toString().replaceAll("/+$", "") + path);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setConnectTimeout(5000);
+        connection.setReadTimeout(30000);
+        connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+        connection.setRequestProperty("Content-Length", String.valueOf(data.length));
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(data);
+        }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+            StringBuilder response = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                response.append(line);
+            }
+            return response.toString();
+        }
+    }
+
+    private JSONArray postJsonArray(String path, String body) throws Exception {
+        return new JSONArray(postForm(path, body));
+    }
+
+    private String encode(String value) throws Exception {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
     }
 
     private void render(JSONArray watches, JSONArray events) {

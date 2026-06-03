@@ -58,3 +58,11 @@ struct TicketRound: Codable, Identifiable {
         case membershipRequired = "membership_required"
     }
 }
+
+struct AlertPayload: Codable, Identifiable {
+    var id: String { "\(type)-\(event ?? keyword ?? "")-\(round ?? "")" }
+    let type: String
+    let event: String?
+    let keyword: String?
+    let round: String?
+}

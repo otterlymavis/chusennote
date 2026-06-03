@@ -27,11 +27,49 @@ final class ChusennoteStore: ObservableObject {
         }
     }
 
+    func addWatch(keyword: String, kind: String) async {
+        do {
+            var fields = URLComponents()
+            fields.queryItems = [
+                URLQueryItem(name: "keyword", value: keyword),
+                URLQueryItem(name: "kind", value: kind)
+            ]
+            let _: Watch = try await post("/api/watchlist", body: fields.percentEncodedQuery ?? "")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func runEventWatches() async {
+        do {
+            let _: [AlertPayload] = try await post("/api/run", body: "kind=event")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func fetch<T: Decodable>(_ path: String) async throws -> T {
         guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
             throw URLError(.badURL)
         }
         let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func post<T: Decodable>(_ path: String, body: String) async throws -> T {
+        guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body.data(using: .utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw URLError(.badServerResponse)
         }
