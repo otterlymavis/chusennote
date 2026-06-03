@@ -37,11 +37,17 @@ struct ContentView: View {
                         Text("No tracked artists yet.")
                     }
                     ForEach(store.trackedArtists) { watch in
-                        VStack(alignment: .leading) {
-                            Text(watch.keyword).font(.headline)
-                            Text("Last checked: \(watch.lastCheckedAt ?? "never")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(watch.keyword).font(.headline)
+                                Text("Last checked: \(watch.lastCheckedAt ?? "never")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Remove") {
+                                Task { await store.removeWatch(id: watch.id) }
+                            }
                         }
                     }
                 }
@@ -62,11 +68,17 @@ struct ContentView: View {
                         Text("No tracked events yet.")
                     }
                     ForEach(store.trackedEvents) { watch in
-                        VStack(alignment: .leading) {
-                            Text(watch.keyword).font(.headline)
-                            Text("Watch #\(watch.id)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(watch.keyword).font(.headline)
+                                Text("Watch #\(watch.id)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Remove") {
+                                Task { await store.removeWatch(id: watch.id) }
+                            }
                         }
                     }
                 }
@@ -106,6 +118,26 @@ struct ContentView: View {
                         sourceURL = ""
                         sourceLabel = ""
                         Task { await store.addSource(watch: watch, url: url, label: label) }
+                    }
+                    if store.sources.isEmpty {
+                        Text("No manual sources.")
+                    }
+                    ForEach(store.sources) { source in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(source.label).font(.headline)
+                                Text("Watch #\(source.watchId) - \(source.platform)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(source.url)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Remove") {
+                                Task { await store.removeSource(id: source.id) }
+                            }
+                        }
                     }
                 }
 

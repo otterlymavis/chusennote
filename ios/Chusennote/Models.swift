@@ -93,3 +93,7 @@ struct WatchSource: Codable, Identifiable {
         case privateNote = "private_note"
     }
 }
+
+struct RemoveResponse: Codable {
+    let removed: Bool
+}

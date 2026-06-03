@@ -2,10 +2,15 @@ import Foundation
 
 @MainActor
 final class ChusennoteStore: ObservableObject {
-    @Published var baseURL = "http://127.0.0.1:8765"
+    @Published var baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? "http://127.0.0.1:8765" {
+        didSet {
+            UserDefaults.standard.set(baseURL, forKey: "baseURL")
+        }
+    }
     @Published var watches: [Watch] = []
     @Published var events: [EventSummary] = []
     @Published var alerts: [AlertPayload] = []
+    @Published var sources: [WatchSource] = []
     @Published var errorMessage: String?
 
     var trackedArtists: [Watch] {
@@ -21,9 +26,11 @@ final class ChusennoteStore: ObservableObject {
             async let fetchedWatches: [Watch] = fetch("/api/watchlist")
             async let fetchedEvents: [EventSummary] = fetch("/api/events")
             async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
+            async let fetchedSources: [WatchSource] = fetch("/api/sources")
             watches = try await fetchedWatches
             events = try await fetchedEvents
             alerts = try await fetchedAlerts
+            sources = try await fetchedSources
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -62,6 +69,24 @@ final class ChusennoteStore: ObservableObject {
                 URLQueryItem(name: "label", value: label)
             ]
             let _: WatchSource = try await post("/api/sources", body: fields.percentEncodedQuery ?? "")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeWatch(id: Int) async {
+        do {
+            let _: RemoveResponse = try await post("/api/watchlist/remove", body: "identifier=\(id)")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeSource(id: Int) async {
+        do {
+            let _: RemoveResponse = try await post("/api/sources/remove", body: "identifier=\(id)")
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

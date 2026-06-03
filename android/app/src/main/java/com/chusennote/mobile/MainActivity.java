@@ -1,6 +1,7 @@
 package com.chusennote.mobile;
 
 import android.app.Activity;
+import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -25,6 +26,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
+    private static final String PREFS_NAME = "chusennote";
+    private static final String PREF_BASE_URL = "base_url";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private EditText baseUrlInput;
@@ -35,6 +38,7 @@ public class MainActivity extends Activity {
     private EditText sourceLabelInput;
     private LinearLayout artistList;
     private LinearLayout eventList;
+    private LinearLayout sourceList;
     private LinearLayout alertList;
     private TextView statusText;
 
@@ -60,13 +64,16 @@ public class MainActivity extends Activity {
 
         baseUrlInput = new EditText(this);
         baseUrlInput.setSingleLine(true);
-        baseUrlInput.setText("http://10.0.2.2:8765");
+        baseUrlInput.setText(preferences().getString(PREF_BASE_URL, "http://10.0.2.2:8765"));
         baseUrlInput.setHint("API base URL");
         root.addView(baseUrlInput);
 
         Button refresh = new Button(this);
         refresh.setText("Refresh");
-        refresh.setOnClickListener(view -> refresh());
+        refresh.setOnClickListener(view -> {
+            saveBaseUrl();
+            refresh();
+        });
         root.addView(refresh);
 
         root.addView(section("Tracked Artists"));
@@ -116,6 +123,9 @@ public class MainActivity extends Activity {
         addSource.setText("Add Source");
         addSource.setOnClickListener(view -> addSource());
         root.addView(addSource);
+        sourceList = new LinearLayout(this);
+        sourceList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(sourceList);
 
         root.addView(section("Recent Alerts"));
         alertList = new LinearLayout(this);
@@ -126,17 +136,27 @@ public class MainActivity extends Activity {
     }
 
     private void refresh() {
+        saveBaseUrl();
         statusText.setText("Loading...");
         executor.execute(() -> {
             try {
                 JSONArray watches = getJsonArray("/api/watchlist");
                 JSONArray events = getJsonArray("/api/events");
                 JSONArray alerts = getJsonArray("/api/alerts");
-                mainHandler.post(() -> render(watches, events, alerts));
+                JSONArray sources = getJsonArray("/api/sources");
+                mainHandler.post(() -> render(watches, events, alerts, sources));
             } catch (Exception error) {
                 mainHandler.post(() -> statusText.setText("Could not load chusennote: " + error.getMessage()));
             }
         });
+    }
+
+    private SharedPreferences preferences() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    }
+
+    private void saveBaseUrl() {
+        preferences().edit().putString(PREF_BASE_URL, baseUrlInput.getText().toString().trim()).apply();
     }
 
     private void addWatch(String kind, EditText input) {
@@ -201,6 +221,30 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void removeWatch(int id) {
+        statusText.setText("Removing watch...");
+        executor.execute(() -> {
+            try {
+                postForm("/api/watchlist/remove", "identifier=" + encode(String.valueOf(id)));
+                mainHandler.post(this::refresh);
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not remove watch: " + error.getMessage()));
+            }
+        });
+    }
+
+    private void removeSource(int id) {
+        statusText.setText("Removing source...");
+        executor.execute(() -> {
+            try {
+                postForm("/api/sources/remove", "identifier=" + encode(String.valueOf(id)));
+                mainHandler.post(this::refresh);
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not remove source: " + error.getMessage()));
+            }
+        });
+    }
+
     private JSONArray getJsonArray(String path) throws Exception {
         URL url = new URL(baseUrlInput.getText().toString().replaceAll("/+$", "") + path);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
@@ -248,9 +292,10 @@ public class MainActivity extends Activity {
         return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
     }
 
-    private void render(JSONArray watches, JSONArray events, JSONArray alerts) {
+    private void render(JSONArray watches, JSONArray events, JSONArray alerts, JSONArray sources) {
         artistList.removeAllViews();
         eventList.removeAllViews();
+        sourceList.removeAllViews();
         alertList.removeAllViews();
         int artistCount = 0;
         int eventCount = 0;
@@ -262,10 +307,10 @@ public class MainActivity extends Activity {
             }
             String kind = watch.optString("kind", "event");
             if ("artist".equals(kind)) {
-                artistList.addView(card(watch.optString("keyword"), "Last checked: " + watch.optString("last_checked_at", "never")));
+                artistList.addView(removableCard(watch.optString("keyword"), "Last checked: " + watch.optString("last_checked_at", "never"), () -> removeWatch(watch.optInt("id"))));
                 artistCount++;
             } else {
-                eventList.addView(card(watch.optString("keyword"), "Watch #" + watch.optInt("id")));
+                eventList.addView(removableCard(watch.optString("keyword"), "Watch #" + watch.optInt("id"), () -> removeWatch(watch.optInt("id"))));
                 eventCount++;
             }
         }
@@ -285,6 +330,17 @@ public class MainActivity extends Activity {
         }
         if (eventCount == 0 && eventList.getChildCount() == 0) {
             eventList.addView(body("No tracked events yet."));
+        }
+        for (int i = 0; i < sources.length(); i++) {
+            JSONObject source = sources.optJSONObject(i);
+            if (source == null || source.optBoolean("muted")) {
+                continue;
+            }
+            String detail = "Watch #" + source.optInt("watch_id") + " - " + source.optString("platform", "manual") + "\n" + source.optString("url", "");
+            sourceList.addView(removableCard(source.optString("label", "Source"), detail, () -> removeSource(source.optInt("id"))));
+        }
+        if (sourceList.getChildCount() == 0) {
+            sourceList.addView(body("No manual sources."));
         }
         for (int i = 0; i < Math.min(alerts.length(), 10); i++) {
             JSONObject alert = alerts.optJSONObject(i);
@@ -326,5 +382,17 @@ public class MainActivity extends Activity {
         TextView view = body(title + "\n" + detail);
         view.setPadding(18, 18, 18, 18);
         return view;
+    }
+
+    private LinearLayout removableCard(String title, String detail, Runnable removeAction) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(18, 18, 18, 18);
+        row.addView(body(title + "\n" + detail));
+        Button remove = new Button(this);
+        remove.setText("Remove");
+        remove.setOnClickListener(view -> removeAction.run());
+        row.addView(remove);
+        return row;
     }
 }
