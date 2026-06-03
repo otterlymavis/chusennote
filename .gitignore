@@ -13,6 +13,3 @@ android/**/build/
 ios/DerivedData/
 ios/**/*.xcuserdata/
 ios/**/xcshareddata/WorkspaceSettings.xcsettings
-AGENT.md
-CLAUDE.md
-GEMINI.md
