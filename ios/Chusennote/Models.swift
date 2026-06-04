@@ -101,7 +101,9 @@ struct TicketRound: Codable, Identifiable {
 }
 
 struct AlertPayload: Codable, Identifiable {
-    var id: String { "\(type)-\(event ?? keyword ?? "")-\(round ?? "")" }
+    var id: String { alertId.map(String.init) ?? "\(type)-\(event ?? keyword ?? "")-\(round ?? "")" }
+    let alertId: Int?
+    let eventId: Int?
     let type: String
     let event: String?
     let keyword: String?
@@ -109,6 +111,8 @@ struct AlertPayload: Codable, Identifiable {
     let createdAt: String?
 
     enum CodingKeys: String, CodingKey {
+        case alertId = "alert_id"
+        case eventId = "event_id"
         case type
         case event
         case keyword

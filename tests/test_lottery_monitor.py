@@ -230,12 +230,16 @@ def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
 
     alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-03T09:00:00+00:00")
     alert_types = {alert["type"] for alert in alerts}
+    recent_alerts = lm.recent_alerts(str(db_path))
 
     assert "lottery_opened" in alert_types
     assert "lottery_closing_soon" in alert_types
     assert "results_today" in alert_types
     assert "general_sale_soon" in alert_types
     assert "payment_due_soon" in alert_types
+    assert recent_alerts[0]["alert_id"] >= 1
+    assert recent_alerts[0]["event_id"] >= 1
+    assert recent_alerts[0]["alert_type"] == recent_alerts[0]["type"]
 
 
 def test_save_blocks_does_not_repeat_lifecycle_alerts(tmp_path):
@@ -875,6 +879,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "evidence" in events[0]["rounds"][0]
         assert upcoming[0]["event_title"] == "Example Tour"
         assert alerts
+        assert alerts[0]["alert_id"] >= 1
+        assert alerts[0]["event_id"] >= 1
         assert "text/calendar" in calendar_response.headers["Content-Type"]
         assert "BEGIN:VCALENDAR" in calendar
     finally:

@@ -1506,7 +1506,7 @@ def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         init_db(connection)
         rows = connection.execute(
             """
-            SELECT alert_type, payload_json, created_at
+            SELECT id, event_id, alert_type, payload_json, created_at
             FROM alert_log
             ORDER BY created_at DESC, id DESC
             LIMIT ?
@@ -1514,8 +1514,10 @@ def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
             (limit,),
         ).fetchall()
         alerts: list[dict[str, object]] = []
-        for alert_type, payload_json, created_at in rows:
+        for alert_id, event_id, alert_type, payload_json, created_at in rows:
             payload = json.loads(payload_json)
+            payload["alert_id"] = alert_id
+            payload["event_id"] = event_id
             payload["created_at"] = created_at
             payload["alert_type"] = alert_type
             alerts.append(payload)

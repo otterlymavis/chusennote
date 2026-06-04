@@ -562,6 +562,9 @@ public class MainActivity extends Activity {
             }
             String title = alert.optString("type", "alert");
             String detail = alert.optString("event", alert.optString("keyword", "")) + " " + alert.optString("round", "");
+            if (alert.has("event_id")) {
+                detail = detail.trim() + "\nEvent #" + alert.optInt("event_id");
+            }
             alertList.addView(card(title, detail.trim()));
         }
         if (alertList.getChildCount() == 0) {
