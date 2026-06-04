@@ -232,6 +232,11 @@ struct EventDetailView: View {
                         Text("Type: \(round.roundType ?? "unknown") - membership: \(round.membershipRequired ?? "unknown")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let evidence = round.evidence, !evidence.isEmpty {
+                            Text("Evidence: \(evidence)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }

@@ -80,6 +80,7 @@ struct TicketRound: Codable, Identifiable {
     let confidence: Int?
     let roundType: String?
     let membershipRequired: String?
+    let evidence: String?
 
     enum CodingKeys: String, CodingKey {
         case name
@@ -89,6 +90,7 @@ struct TicketRound: Codable, Identifiable {
         case confidence
         case roundType = "round_type"
         case membershipRequired = "membership_required"
+        case evidence
     }
 }
 

@@ -373,6 +373,10 @@ public class MainActivity extends Activity {
             if (!clues.isEmpty()) {
                 detail = detail + "\n" + clues;
             }
+            String evidence = firstRoundEvidence(rounds);
+            if (!evidence.isEmpty()) {
+                detail = detail + "\nEvidence: " + evidence;
+            }
             String reasons = joinFirst(event.optJSONArray("match_reasons"));
             if (!reasons.isEmpty()) {
                 detail = detail + "\nWhy: " + reasons;
@@ -479,6 +483,19 @@ public class MainActivity extends Activity {
             detail.append("Venues: ").append(venues);
         }
         return detail.toString();
+    }
+
+    private String firstRoundEvidence(JSONArray rounds) {
+        if (rounds == null || rounds.length() == 0) {
+            return "";
+        }
+        for (int i = 0; i < rounds.length(); i++) {
+            JSONObject round = rounds.optJSONObject(i);
+            if (round != null && !round.optString("evidence", "").isEmpty()) {
+                return round.optString("evidence");
+            }
+        }
+        return "";
     }
 
     private String joinFirst(JSONArray values) {

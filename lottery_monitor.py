@@ -1320,7 +1320,7 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                 """
                 SELECT name, platform, url, application_start_at, application_end_at,
                        results_date, general_sale_date, payment_end_at, status, confidence,
-                       round_type, membership_required
+                       round_type, membership_required, evidence
                 FROM ticket_rounds
                 WHERE event_id = ?
                 ORDER BY platform, round_number, name
@@ -1354,6 +1354,7 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
                             "confidence": ticket[9],
                             "round_type": ticket[10],
                             "membership_required": ticket[11],
+                            "evidence": ticket[12],
                         }
                         for ticket in rounds
                     ],
@@ -2341,6 +2342,7 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
           <small>Apply: {html.escape(str(ticket.get('application_start_at') or 'unknown'))} to {html.escape(str(ticket.get('application_end_at') or 'unknown'))}</small><br>
           <small>Results: {html.escape(str(ticket.get('results_date') or 'unknown'))}</small><br>
           <small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))}</small><br>
+          <small>Evidence: {html.escape(str(ticket.get('evidence') or 'none'))}</small><br>
           <a href="{html.escape(str(ticket.get('url') or '#'))}">Source</a>
         </div>
         """

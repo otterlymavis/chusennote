@@ -223,6 +223,7 @@ def test_save_blocks_does_not_repeat_lifecycle_alerts(tmp_path):
                 name="第1次抽選先行",
                 lottery_start="2026-06-03",
                 lottery_end="2026-06-05",
+                evidence="受付期間 2026年6月3日 ～ 2026年6月5日",
             ),
         ),
     )
@@ -496,6 +497,7 @@ def test_source_provenance_and_round_metadata_are_exported(tmp_path):
     assert any(reason.startswith("venue clue:") for reason in events[0]["match_reasons"])
     assert events[0]["rounds"][0]["round_type"] == "platform"
     assert events[0]["rounds"][0]["membership_required"] == "unknown"
+    assert "evidence" in events[0]["rounds"][0]
 
 
 def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
@@ -663,6 +665,7 @@ def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path):
                 name="First lottery",
                 lottery_start="2026-06-03",
                 lottery_end="2026-06-05",
+                evidence="受付期間 2026年6月3日 ～ 2026年6月5日",
                 results_date="2026-06-08",
                 general_sale_date="2026-06-20",
                 payment_deadline="2026-06-10",
@@ -713,6 +716,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Needs Attention" in home
         assert "Dates:" in home
         assert "Venues:" in home
+        assert "Evidence:" in home
         assert "Example Tour" in detail
         assert health["status"] == "ok"
         assert health["tracked_events"] >= 1
@@ -721,6 +725,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert active_sources == []
         assert events[0]["title"] == "Example Tour"
         assert "match_reasons" in events[0]
+        assert "evidence" in events[0]["rounds"][0]
         assert upcoming[0]["event_title"] == "Example Tour"
         assert alerts
         assert "text/calendar" in calendar_response.headers["Content-Type"]
