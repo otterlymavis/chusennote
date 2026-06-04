@@ -173,7 +173,7 @@ struct ContentView: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            if let url = event.officialUrl.flatMap(URL.init(string:)) {
+                            if let url = webURL(event.officialUrl) {
                                 Button("Open") {
                                     openURL(url)
                                 }
@@ -195,7 +195,7 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if let url = item.url.flatMap(URL.init(string:)) {
+                            if let url = webURL(item.url) {
                                 Button("Open") {
                                     openURL(url)
                                 }
@@ -218,7 +218,7 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if let url = event.officialUrl.flatMap(URL.init(string:)) {
+                            if let url = webURL(event.officialUrl) {
                                 Button("Open") {
                                     openURL(url)
                                 }
@@ -262,7 +262,7 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if let url = URL(string: source.url) {
+                            if let url = webURL(source.url) {
                                 Button("Open") {
                                     openURL(url)
                                 }
@@ -290,7 +290,7 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if let url = URL(string: source.url) {
+                            if let url = webURL(source.url) {
                                 Button("Open") {
                                     openURL(url)
                                 }
@@ -344,6 +344,12 @@ struct ContentView: View {
     private func sourceMode(_ source: WatchSource) -> String {
         source.privateNote ? "private note" : source.platform
     }
+
+    private func webURL(_ value: String?) -> URL? {
+        guard let value, let url = URL(string: value) else { return nil }
+        guard url.scheme == "http" || url.scheme == "https" else { return nil }
+        return url
+    }
 }
 
 struct EventDetailView: View {
@@ -355,7 +361,7 @@ struct EventDetailView: View {
             Section("Event") {
                 Text(event.title ?? "Untitled event")
                 Text(event.status ?? "watching")
-                if let url = event.officialUrl.flatMap(URL.init(string:)) {
+                if let url = webURL(event.officialUrl) {
                     Button("Open Official Page") {
                         openURL(url)
                     }
@@ -391,5 +397,11 @@ struct EventDetailView: View {
             }
         }
         .navigationTitle("Event")
+    }
+
+    private func webURL(_ value: String?) -> URL? {
+        guard let value, let url = URL(string: value) else { return nil }
+        guard url.scheme == "http" || url.scheme == "https" else { return nil }
+        return url
     }
 }

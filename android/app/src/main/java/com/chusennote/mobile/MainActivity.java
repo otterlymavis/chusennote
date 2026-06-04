@@ -223,11 +223,19 @@ public class MainActivity extends Activity {
     }
 
     private void openUrl(String url) {
-        if (url == null || url.trim().isEmpty()) {
-            statusText.setText("No source URL available.");
+        if (!isWebUrl(url)) {
+            statusText.setText("No web URL available.");
             return;
         }
         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim())));
+    }
+
+    private boolean isWebUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        String normalized = url.trim().toLowerCase();
+        return normalized.startsWith("https://") || normalized.startsWith("http://");
     }
 
     private void addWatch(String kind, EditText input, EditText tagsInput, EditText regionsInput, EditText venuesInput, EditText alertsInput) {
@@ -517,7 +525,7 @@ public class MainActivity extends Activity {
                 detail = detail + "\nWhy: " + reasons;
             }
             String url = item.optString("url", "");
-            if (url.isEmpty()) {
+            if (!isWebUrl(url)) {
                 needsAttentionList.addView(card(item.optString("event_title", "Untitled event"), detail));
             } else {
                 needsAttentionList.addView(actionCard(item.optString("event_title", "Untitled event"), detail, "Open", () -> openUrl(url)));
@@ -655,7 +663,7 @@ public class MainActivity extends Activity {
     private void addEventCard(LinearLayout list, JSONObject event, String detail) {
         String title = event.optString("title", "Untitled event");
         String officialUrl = event.optString("official_url", "");
-        if (officialUrl.isEmpty()) {
+        if (!isWebUrl(officialUrl)) {
             list.addView(card(title, detail));
         } else {
             list.addView(actionCard(title, detail, "Open", () -> openUrl(officialUrl)));

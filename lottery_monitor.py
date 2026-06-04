@@ -271,6 +271,11 @@ def source_provenance(url: str, label: str = "") -> str:
     return "manual_public"
 
 
+def is_web_url(url: object) -> bool:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def platform_confidence(platform: str) -> int:
     if platform in TICKET_DOMAINS:
         return 90
@@ -2504,12 +2509,17 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
         """
         for ticket in rounds
     ) or "<p>No ticket rounds saved yet.</p>"
-    official = event.get("official_url") or "#"
+    official = event.get("official_url") or ""
+    official_link = (
+        f'<a href="{html.escape(str(official))}">Official page</a>'
+        if is_web_url(official)
+        else "<span>Official page unavailable</span>"
+    )
     ticket_section = "" if basic else f'<div class="rounds">{round_cards}</div>'
     return f"""
     <article class="event">
       <h3><a href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a></h3>
-      <p><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span> <a href="{html.escape(str(official))}">Official page</a> · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
+      <p><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span> {official_link} · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
       {metadata}
       {reason_section}
       {ticket_section}

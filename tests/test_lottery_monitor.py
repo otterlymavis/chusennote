@@ -104,6 +104,22 @@ def test_render_blocks_has_two_expected_app_blocks():
     assert "第1次抽選先行" in rendered
 
 
+def test_render_event_card_does_not_link_keyword_fallback_url():
+    rendered = lm.render_event_card(
+        {
+            "id": 1,
+            "title": "Example Tour",
+            "status": "watching",
+            "official_url": "keyword:Example Tour",
+            "updated_at": "2026-06-04T00:00:00+00:00",
+            "rounds": [],
+        }
+    )
+
+    assert 'href="keyword:Example Tour"' not in rendered
+    assert "Official page unavailable" in rendered
+
+
 def test_save_blocks_persists_initial_monitoring_state(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
