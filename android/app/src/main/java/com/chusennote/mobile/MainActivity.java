@@ -34,7 +34,14 @@ public class MainActivity extends Activity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private EditText baseUrlInput;
     private EditText artistInput;
+    private EditText artistTagsInput;
+    private EditText artistRegionsInput;
+    private EditText artistVenuesInput;
     private EditText eventInput;
+    private EditText eventTagsInput;
+    private EditText eventRegionsInput;
+    private EditText eventVenuesInput;
+    private EditText eventAlertsInput;
     private EditText sourceWatchInput;
     private EditText sourceUrlInput;
     private EditText sourceLabelInput;
@@ -91,9 +98,15 @@ public class MainActivity extends Activity {
         artistInput.setSingleLine(true);
         artistInput.setHint("Artist keyword");
         root.addView(artistInput);
+        artistTagsInput = singleLineInput("Tags");
+        root.addView(artistTagsInput);
+        artistRegionsInput = singleLineInput("Preferred regions");
+        root.addView(artistRegionsInput);
+        artistVenuesInput = singleLineInput("Preferred venues");
+        root.addView(artistVenuesInput);
         Button addArtist = new Button(this);
         addArtist.setText("Add Artist");
-        addArtist.setOnClickListener(view -> addWatch("artist", artistInput));
+        addArtist.setOnClickListener(view -> addWatch("artist", artistInput, artistTagsInput, artistRegionsInput, artistVenuesInput, null));
         root.addView(addArtist);
         artistList = new LinearLayout(this);
         artistList.setOrientation(LinearLayout.VERTICAL);
@@ -104,9 +117,17 @@ public class MainActivity extends Activity {
         eventInput.setSingleLine(true);
         eventInput.setHint("Event keyword");
         root.addView(eventInput);
+        eventTagsInput = singleLineInput("Tags");
+        root.addView(eventTagsInput);
+        eventRegionsInput = singleLineInput("Preferred regions");
+        root.addView(eventRegionsInput);
+        eventVenuesInput = singleLineInput("Preferred venues");
+        root.addView(eventVenuesInput);
+        eventAlertsInput = singleLineInput("Alert types");
+        root.addView(eventAlertsInput);
         Button addEvent = new Button(this);
         addEvent.setText("Add Event");
-        addEvent.setOnClickListener(view -> addWatch("event", eventInput));
+        addEvent.setOnClickListener(view -> addWatch("event", eventInput, eventTagsInput, eventRegionsInput, eventVenuesInput, eventAlertsInput));
         root.addView(addEvent);
         Button runEvents = new Button(this);
         runEvents.setText("Run Event Watches");
@@ -196,18 +217,42 @@ public class MainActivity extends Activity {
         startActivity(intent);
     }
 
-    private void addWatch(String kind, EditText input) {
+    private void addWatch(String kind, EditText input, EditText tagsInput, EditText regionsInput, EditText venuesInput, EditText alertsInput) {
         String keyword = input.getText().toString().trim();
         if (keyword.isEmpty()) {
             statusText.setText("Enter a keyword first.");
             return;
         }
+        String tags = tagsInput == null ? "" : tagsInput.getText().toString().trim();
+        String regions = regionsInput == null ? "" : regionsInput.getText().toString().trim();
+        String venues = venuesInput == null ? "" : venuesInput.getText().toString().trim();
+        String alerts = alertsInput == null ? "" : alertsInput.getText().toString().trim();
         statusText.setText("Adding " + kind + "...");
         executor.execute(() -> {
             try {
-                postForm("/api/watchlist", "keyword=" + encode(keyword) + "&kind=" + encode(kind));
+                String body = "keyword=" + encode(keyword)
+                    + "&kind=" + encode(kind)
+                    + "&tags=" + encode(tags)
+                    + "&regions=" + encode(regions)
+                    + "&venues=" + encode(venues);
+                if (!alerts.isEmpty()) {
+                    body = body + "&alerts=" + encode(alerts);
+                }
+                postForm("/api/watchlist", body);
                 mainHandler.post(() -> {
                     input.setText("");
+                    if (tagsInput != null) {
+                        tagsInput.setText("");
+                    }
+                    if (regionsInput != null) {
+                        regionsInput.setText("");
+                    }
+                    if (venuesInput != null) {
+                        venuesInput.setText("");
+                    }
+                    if (alertsInput != null) {
+                        alertsInput.setText("");
+                    }
                     refresh();
                 });
             } catch (Exception error) {
@@ -519,6 +564,13 @@ public class MainActivity extends Activity {
         view.setTextSize(16);
         view.setPadding(0, 6, 0, 6);
         return view;
+    }
+
+    private EditText singleLineInput(String hint) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(hint);
+        return input;
     }
 
     private TextView card(String title, String detail) {

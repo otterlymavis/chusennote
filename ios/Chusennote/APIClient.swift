@@ -59,13 +59,26 @@ final class ChusennoteStore: ObservableObject {
         }
     }
 
-    func addWatch(keyword: String, kind: String) async {
+    func addWatch(
+        keyword: String,
+        kind: String,
+        tags: String = "",
+        regions: String = "",
+        venues: String = "",
+        alerts: String = ""
+    ) async {
         do {
             var fields = URLComponents()
             fields.queryItems = [
                 URLQueryItem(name: "keyword", value: keyword),
-                URLQueryItem(name: "kind", value: kind)
+                URLQueryItem(name: "kind", value: kind),
+                URLQueryItem(name: "tags", value: tags),
+                URLQueryItem(name: "regions", value: regions),
+                URLQueryItem(name: "venues", value: venues)
             ]
+            if !alerts.isEmpty {
+                fields.queryItems?.append(URLQueryItem(name: "alerts", value: alerts))
+            }
             let _: Watch = try await post("/api/watchlist", body: fields.percentEncodedQuery ?? "")
             await refresh()
         } catch {

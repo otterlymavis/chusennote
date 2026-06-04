@@ -4,7 +4,14 @@ struct ContentView: View {
     @StateObject private var store = ChusennoteStore()
     @Environment(\.openURL) private var openURL
     @State private var artistKeyword = ""
+    @State private var artistTags = ""
+    @State private var artistRegions = ""
+    @State private var artistVenues = ""
     @State private var eventKeyword = ""
+    @State private var eventTags = ""
+    @State private var eventRegions = ""
+    @State private var eventVenues = ""
+    @State private var eventAlerts = ""
     @State private var sourceWatch = ""
     @State private var sourceURL = ""
     @State private var sourceLabel = ""
@@ -38,11 +45,23 @@ struct ContentView: View {
                 Section("Tracked Artists") {
                     TextField("Artist keyword", text: $artistKeyword)
                         .textInputAutocapitalization(.never)
+                    TextField("Tags", text: $artistTags)
+                        .textInputAutocapitalization(.never)
+                    TextField("Preferred regions", text: $artistRegions)
+                        .textInputAutocapitalization(.never)
+                    TextField("Preferred venues", text: $artistVenues)
+                        .textInputAutocapitalization(.never)
                     Button("Add Artist") {
                         let keyword = artistKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !keyword.isEmpty else { return }
+                        let tags = artistTags.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let regions = artistRegions.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let venues = artistVenues.trimmingCharacters(in: .whitespacesAndNewlines)
                         artistKeyword = ""
-                        Task { await store.addWatch(keyword: keyword, kind: "artist") }
+                        artistTags = ""
+                        artistRegions = ""
+                        artistVenues = ""
+                        Task { await store.addWatch(keyword: keyword, kind: "artist", tags: tags, regions: regions, venues: venues) }
                     }
                     if store.trackedArtists.isEmpty {
                         Text("No tracked artists yet.")
@@ -66,11 +85,27 @@ struct ContentView: View {
                 Section("Tracked Events") {
                     TextField("Event keyword", text: $eventKeyword)
                         .textInputAutocapitalization(.never)
+                    TextField("Tags", text: $eventTags)
+                        .textInputAutocapitalization(.never)
+                    TextField("Preferred regions", text: $eventRegions)
+                        .textInputAutocapitalization(.never)
+                    TextField("Preferred venues", text: $eventVenues)
+                        .textInputAutocapitalization(.never)
+                    TextField("Alert types", text: $eventAlerts)
+                        .textInputAutocapitalization(.never)
                     Button("Add Event") {
                         let keyword = eventKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !keyword.isEmpty else { return }
+                        let tags = eventTags.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let regions = eventRegions.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let venues = eventVenues.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let alerts = eventAlerts.trimmingCharacters(in: .whitespacesAndNewlines)
                         eventKeyword = ""
-                        Task { await store.addWatch(keyword: keyword, kind: "event") }
+                        eventTags = ""
+                        eventRegions = ""
+                        eventVenues = ""
+                        eventAlerts = ""
+                        Task { await store.addWatch(keyword: keyword, kind: "event", tags: tags, regions: regions, venues: venues, alerts: alerts) }
                     }
                     Button("Run Event Watches") {
                         Task { await store.runEventWatches() }
