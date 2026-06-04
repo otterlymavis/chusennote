@@ -41,11 +41,11 @@ final class ChusennoteStore: ObservableObject {
 
     func refresh() async {
         do {
-            async let fetchedWatches: [Watch] = fetch("/api/watchlist")
+            async let fetchedWatches: [Watch] = fetch("/api/watchlist?include_muted=1")
             async let fetchedEvents: [EventSummary] = fetch("/api/events")
             async let fetchedUpcoming: [UpcomingItem] = fetch("/api/upcoming")
             async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
-            async let fetchedSources: [WatchSource] = fetch("/api/sources")
+            async let fetchedSources: [WatchSource] = fetch("/api/sources?include_muted=1")
             async let fetchedHealth: HealthSummary = fetch("/api/health")
             watches = try await fetchedWatches
             events = try await fetchedEvents

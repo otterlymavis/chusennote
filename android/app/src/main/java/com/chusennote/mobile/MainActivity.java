@@ -185,11 +185,11 @@ public class MainActivity extends Activity {
         statusText.setText("Loading...");
         executor.execute(() -> {
             try {
-                JSONArray watches = getJsonArray("/api/watchlist");
+                JSONArray watches = getJsonArray("/api/watchlist?include_muted=1");
                 JSONArray events = getJsonArray("/api/events");
                 JSONArray upcoming = getJsonArray("/api/upcoming");
                 JSONArray alerts = getJsonArray("/api/alerts");
-                JSONArray sources = getJsonArray("/api/sources");
+                JSONArray sources = getJsonArray("/api/sources?include_muted=1");
                 JSONObject health = getJsonObject("/api/health");
                 mainHandler.post(() -> render(watches, events, upcoming, alerts, sources, health));
             } catch (Exception error) {

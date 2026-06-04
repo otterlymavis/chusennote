@@ -25,10 +25,11 @@ Check that the server is reachable:
 The mobile apps read:
 
 - `GET /api/health`
-- `GET /api/watchlist`
+- `GET /api/watchlist?include_muted=1`
 - `GET /api/events`
 - `GET /api/upcoming`
 - `GET /api/alerts`
+- `GET /api/sources?include_muted=1`
 - `GET /calendar.ics`
 - `POST /api/watchlist`
 - `POST /api/run`

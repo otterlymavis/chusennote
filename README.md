@@ -142,7 +142,7 @@ python3 lottery_monitor.py export calendar --db chusennote.sqlite3 > chusennote.
 
 The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8765/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
 
-Saved events include `match_reasons` explaining why chusennote kept them, ticket-round `evidence` snippets for public-page verification, and `export upcoming` / `/api/upcoming` show the highest-priority ticket dates first. Watch and manual source `remove` commands are soft mutes; use `event unmute ID_OR_KEYWORD`, `artist unmute ID_OR_KEYWORD`, or `watch source unmute ID_OR_URL` to restore them.
+Saved events include `match_reasons` explaining why chusennote kept them, ticket-round `evidence` snippets for public-page verification, and `export upcoming` / `/api/upcoming` show the highest-priority ticket dates first. Watch and manual source `remove` commands are soft mutes; use `event unmute ID_OR_KEYWORD`, `artist unmute ID_OR_KEYWORD`, or `watch source unmute ID_OR_URL` to restore them. API watch/source lists return active rows by default; pass `include_muted=1` to `/api/watchlist` or `/api/sources` to include muted rows.
 
 ## How the current pipeline works
 

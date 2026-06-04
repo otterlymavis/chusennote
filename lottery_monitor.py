@@ -2533,7 +2533,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/api/health":
                 json_response(self, api_health(db_path))
             elif path == "/api/watchlist":
-                json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=True)])
+                include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
+                json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=include_muted)])
             elif path == "/api/events":
                 json_response(self, recent_events(db_path))
             elif path == "/api/upcoming":
@@ -2541,7 +2542,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path))
             elif path == "/api/sources":
-                include_muted = query.get("include_muted", ["1"])[0].lower() not in {"0", "false", "no"}
+                include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=include_muted)])
             elif path == "/calendar.ics":
                 text_response(self, render_calendar_ics(db_path), "text/calendar; charset=utf-8")

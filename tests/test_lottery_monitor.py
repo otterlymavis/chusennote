@@ -913,7 +913,9 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
         assert removed_source["removed"] is True
         source_list = json_load_url(f"{base}/api/sources")
-        assert source_list[0]["muted"] is True
+        muted_source_list = json_load_url(f"{base}/api/sources?include_muted=1")
+        assert source_list == []
+        assert muted_source_list[0]["muted"] is True
 
         restored_source_home = post_text(f"{base}/source/unmute", {"identifier": "1"})
         assert "Muted Sources" in restored_source_home
@@ -921,7 +923,8 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
 
         removed = post_form(f"{base}/api/watchlist/remove", {"identifier": "Example"})
         assert removed["removed"] is True
-        assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is True
+        assert json_load_url(f"{base}/api/watchlist") == []
+        assert json_load_url(f"{base}/api/watchlist?include_muted=1")[0]["muted"] is True
 
         unmuted = post_form(f"{base}/api/watchlist/unmute", {"identifier": "Example"})
         assert unmuted["unmuted"] is True
@@ -929,7 +932,8 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
 
         muted = post_form(f"{base}/api/watchlist/mute", {"identifier": "Example"})
         assert muted["muted"] is True
-        assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is True
+        assert json_load_url(f"{base}/api/watchlist") == []
+        assert json_load_url(f"{base}/api/watchlist?include_muted=1")[0]["muted"] is True
 
         restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
         assert "Muted Watches" in restored_home
