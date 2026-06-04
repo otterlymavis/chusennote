@@ -27,6 +27,14 @@ final class ChusennoteStore: ObservableObject {
         watches.filter { $0.muted }
     }
 
+    var activeSources: [WatchSource] {
+        sources.filter { !$0.muted }
+    }
+
+    var mutedSources: [WatchSource] {
+        sources.filter { $0.muted }
+    }
+
     var calendarFeedURL: URL? {
         URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics")
     }
@@ -110,6 +118,15 @@ final class ChusennoteStore: ObservableObject {
     func removeSource(id: Int) async {
         do {
             let _: RemoveResponse = try await post("/api/sources/remove", body: "identifier=\(id)")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func restoreSource(id: Int) async {
+        do {
+            let _: UnmuteResponse = try await post("/api/sources/unmute", body: "identifier=\(id)")
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

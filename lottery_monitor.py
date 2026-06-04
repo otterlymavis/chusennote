@@ -2279,13 +2279,15 @@ def redirect_response(handler: http.server.BaseHTTPRequestHandler, location: str
 
 def render_web_page(db_path: str) -> str:
     watches = list_watches(db_path, include_muted=True)
-    sources = list_watch_sources(db_path)
+    sources = list_watch_sources(db_path, include_muted=True)
     events = recent_events(db_path)
     upcoming = upcoming_priority_rows(db_path, limit=8)
     alerts = recent_alerts(db_path, limit=20)
     active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
     muted_watches = [watch for watch in watches if watch.muted]
+    active_sources = [source for source in sources if not source.muted]
+    muted_sources = [source for source in sources if source.muted]
     artist_items = "\n".join(
         f"""
         <li>
@@ -2323,8 +2325,17 @@ def render_web_page(db_path: str) -> str:
           <form method="post" action="/source/remove"><input type="hidden" name="identifier" value="{source.id}"><button>Remove</button></form>
         </li>
         """
-        for source in sources
+        for source in active_sources
     ) or "<li>No manual sources.</li>"
+    muted_source_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} Â· {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small></span>
+          <form method="post" action="/source/unmute"><input type="hidden" name="identifier" value="{source.id}"><button>Restore</button></form>
+        </li>
+        """
+        for source in muted_sources
+    ) or "<li>No muted sources.</li>"
     artist_event_items = "\n".join(render_event_card(event, basic=True) for event in events if event.get("watch_kind") == WATCH_KIND_ARTIST) or "<p>No artist event info saved yet.</p>"
     ticket_event_items = "\n".join(render_event_card(event) for event in events if event.get("watch_kind") == WATCH_KIND_EVENT) or "<p>No tracked event ticket info saved yet.</p>"
     upcoming_items = "\n".join(
@@ -2406,6 +2417,10 @@ def render_web_page(db_path: str) -> str:
         <button>Add Source</button>
       </form>
       <ul style="margin-top: 14px;">{source_items}</ul>
+    </section>
+    <section>
+      <h2>Muted Sources</h2>
+      <ul>{muted_source_items}</ul>
     </section>
     <section>
       <h2>Needs Attention</h2>
@@ -2534,6 +2549,9 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 redirect_response(self)
             elif path == "/source/remove":
                 remove_watch_source(db_path, form.get("identifier", ""))
+                redirect_response(self)
+            elif path == "/source/unmute":
+                set_watch_source_muted(db_path, form.get("identifier", ""), False)
                 redirect_response(self)
             elif path == "/api/watchlist":
                 keyword = clean_text(form.get("keyword", ""))

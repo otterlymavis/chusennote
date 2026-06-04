@@ -834,6 +834,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
         assert "Muted Watches" in home
+        assert "Muted Sources" in home
         assert "Needs Attention" in home
         assert "Dates:" in home
         assert "Venues:" in home
@@ -884,6 +885,12 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
 
         removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
         assert removed_source["removed"] is True
+        source_list = json_load_url(f"{base}/api/sources")
+        assert source_list[0]["muted"] is True
+
+        restored_source_home = post_text(f"{base}/source/unmute", {"identifier": "1"})
+        assert "Muted Sources" in restored_source_home
+        assert json_load_url(f"{base}/api/sources")[0]["muted"] is False
 
         removed = post_form(f"{base}/api/watchlist/remove", {"identifier": "Example"})
         assert removed["removed"] is True

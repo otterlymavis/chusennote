@@ -182,10 +182,10 @@ struct ContentView: View {
                         sourceLabel = ""
                         Task { await store.addSource(watch: watch, url: url, label: label) }
                     }
-                    if store.sources.isEmpty {
+                    if store.activeSources.isEmpty {
                         Text("No manual sources.")
                     }
-                    ForEach(store.sources) { source in
+                    ForEach(store.activeSources) { source in
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(source.label).font(.headline)
@@ -199,6 +199,29 @@ struct ContentView: View {
                             Spacer()
                             Button("Remove") {
                                 Task { await store.removeSource(id: source.id) }
+                            }
+                        }
+                    }
+                }
+
+                Section("Muted Sources") {
+                    if store.mutedSources.isEmpty {
+                        Text("No muted sources.")
+                    }
+                    ForEach(store.mutedSources) { source in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(source.label).font(.headline)
+                                Text("Watch #\(source.watchId) - \(source.platform)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(source.url)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Restore") {
+                                Task { await store.restoreSource(id: source.id) }
                             }
                         }
                     }

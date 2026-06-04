@@ -118,6 +118,7 @@ struct WatchSource: Codable, Identifiable {
     let label: String
     let platform: String
     let privateNote: Bool
+    let muted: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -126,6 +127,7 @@ struct WatchSource: Codable, Identifiable {
         case label
         case platform
         case privateNote = "private_note"
+        case muted
     }
 }
 

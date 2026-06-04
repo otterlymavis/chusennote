@@ -45,7 +45,7 @@ Both mobile clients can add and remove tracked artists, add and remove tracked e
 
 The server also exposes a standard iCalendar ticket timeline feed at `/calendar.ics` for calendar apps that can subscribe to a local URL.
 
-Watch and source removal in the apps is a local soft mute. Muted tracked artists/events appear in the mobile "Muted Watches" section and can be restored there; muted sources remain in SQLite and can be restored from the CLI with `python lottery_monitor.py watch source unmute ID_OR_URL`.
+Watch and source removal in the apps is a local soft mute. Muted tracked artists/events appear in the mobile "Muted Watches" section, muted manual sources appear in "Muted Sources", and both can be restored there.
 
 Recurring checks run on the desktop/server side with `python lottery_monitor.py watch loop ...` or `scripts/start-chusennote-monitor.ps1`. On Windows, `scripts/install-chusennote-monitor-task.ps1` can also register a local Task Scheduler job that runs saved checks periodically. The mobile apps read the saved local state; they do not schedule scraping themselves.
 

@@ -43,6 +43,7 @@ public class MainActivity extends Activity {
     private LinearLayout mutedWatchList;
     private LinearLayout needsAttentionList;
     private LinearLayout sourceList;
+    private LinearLayout mutedSourceList;
     private LinearLayout alertList;
     private TextView statusText;
 
@@ -145,6 +146,10 @@ public class MainActivity extends Activity {
         sourceList = new LinearLayout(this);
         sourceList.setOrientation(LinearLayout.VERTICAL);
         root.addView(sourceList);
+        root.addView(section("Muted Sources"));
+        mutedSourceList = new LinearLayout(this);
+        mutedSourceList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(mutedSourceList);
 
         root.addView(section("Recent Alerts"));
         alertList = new LinearLayout(this);
@@ -289,6 +294,18 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void restoreSource(int id) {
+        statusText.setText("Restoring source...");
+        executor.execute(() -> {
+            try {
+                postForm("/api/sources/unmute", "identifier=" + encode(String.valueOf(id)));
+                mainHandler.post(this::refresh);
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not restore source: " + error.getMessage()));
+            }
+        });
+    }
+
     private JSONArray getJsonArray(String path) throws Exception {
         return new JSONArray(getText(path));
     }
@@ -350,10 +367,12 @@ public class MainActivity extends Activity {
         mutedWatchList.removeAllViews();
         needsAttentionList.removeAllViews();
         sourceList.removeAllViews();
+        mutedSourceList.removeAllViews();
         alertList.removeAllViews();
         int artistCount = 0;
         int eventCount = 0;
         int mutedCount = 0;
+        int mutedSourceCount = 0;
 
         for (int i = 0; i < watches.length(); i++) {
             JSONObject watch = watches.optJSONObject(i);
@@ -441,14 +460,22 @@ public class MainActivity extends Activity {
         }
         for (int i = 0; i < sources.length(); i++) {
             JSONObject source = sources.optJSONObject(i);
-            if (source == null || source.optBoolean("muted")) {
+            if (source == null) {
                 continue;
             }
             String detail = "Watch #" + source.optInt("watch_id") + " - " + source.optString("platform", "manual") + "\n" + source.optString("url", "");
+            if (source.optBoolean("muted")) {
+                mutedSourceList.addView(actionCard(source.optString("label", "Source"), detail, "Restore", () -> restoreSource(source.optInt("id"))));
+                mutedSourceCount++;
+                continue;
+            }
             sourceList.addView(removableCard(source.optString("label", "Source"), detail, () -> removeSource(source.optInt("id"))));
         }
         if (sourceList.getChildCount() == 0) {
             sourceList.addView(body("No manual sources."));
+        }
+        if (mutedSourceCount == 0) {
+            mutedSourceList.addView(body("No muted sources."));
         }
         for (int i = 0; i < Math.min(alerts.length(), 10); i++) {
             JSONObject alert = alerts.optJSONObject(i);
