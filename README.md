@@ -57,9 +57,11 @@ python3 lottery_monitor.py artist add "artist keyword"
 python3 lottery_monitor.py artist run
 python3 lottery_monitor.py event add "specific event keyword"
 python3 lottery_monitor.py event run --alerts-json
+python3 lottery_monitor.py event mute "specific event keyword"
+python3 lottery_monitor.py event unmute "specific event keyword"
 ```
 
-The older `watch add/list/run` commands still work as compatibility aliases for tracked events.
+The older `watch add/list/run` commands still work as compatibility aliases for tracked events. `remove` is a soft mute; use `mute` and `unmute` when you want that state change to be explicit.
 
 Run tracked events repeatedly in the foreground:
 
@@ -138,7 +140,7 @@ python3 lottery_monitor.py export calendar --db chusennote.sqlite3 > chusennote.
 
 The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8765/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
 
-Saved events include `match_reasons` explaining why chusennote kept them, ticket-round `evidence` snippets for public-page verification, and `export upcoming` / `/api/upcoming` show the highest-priority ticket dates first. Manual source `remove` is a soft mute; use `watch source mute ID_OR_URL` and `watch source unmute ID_OR_URL` when you want the action to be explicit.
+Saved events include `match_reasons` explaining why chusennote kept them, ticket-round `evidence` snippets for public-page verification, and `export upcoming` / `/api/upcoming` show the highest-priority ticket dates first. Watch and manual source `remove` commands are soft mutes; use `event unmute ID_OR_KEYWORD`, `artist unmute ID_OR_KEYWORD`, or `watch source unmute ID_OR_URL` to restore them.
 
 ## How the current pipeline works
 

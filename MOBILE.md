@@ -33,6 +33,8 @@ The mobile apps read:
 - `POST /api/watchlist`
 - `POST /api/run`
 - `POST /api/sources`
+- `POST /api/watchlist/mute`
+- `POST /api/watchlist/unmute`
 
 They display the same two product lanes as the web app:
 

@@ -1083,18 +1083,36 @@ def resolve_watch(connection: sqlite3.Connection, identifier: str) -> Watch | No
 
 
 def remove_watch(db_path: str, identifier: str, now: str | None = None) -> bool:
+    return set_watch_muted(db_path, identifier, True, now=now, only_if_changed=True)
+
+
+def set_watch_muted(
+    db_path: str,
+    identifier: str,
+    muted: bool,
+    now: str | None = None,
+    only_if_changed: bool = False,
+) -> bool:
     timestamp = now or utc_now_iso()
+    muted_value = 1 if muted else 0
+    changed_clause = " AND muted != ?" if only_if_changed else ""
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
         if identifier.isdigit():
+            params: tuple[object, ...] = (muted_value, timestamp, int(identifier))
+            if only_if_changed:
+                params += (muted_value,)
             cursor = connection.execute(
-                "UPDATE watched_keywords SET muted = 1, updated_at = ? WHERE id = ? AND muted = 0",
-                (timestamp, int(identifier)),
+                f"UPDATE watched_keywords SET muted = ?, updated_at = ? WHERE id = ?{changed_clause}",
+                params,
             )
         else:
+            params = (muted_value, timestamp, identifier)
+            if only_if_changed:
+                params += (muted_value,)
             cursor = connection.execute(
-                "UPDATE watched_keywords SET muted = 1, updated_at = ? WHERE keyword = ? AND muted = 0",
-                (timestamp, identifier),
+                f"UPDATE watched_keywords SET muted = ?, updated_at = ? WHERE keyword = ?{changed_clause}",
+                params,
             )
         return bool(cursor.rowcount)
 
@@ -2101,6 +2119,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     remove_parser.add_argument("identifier")
     remove_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
 
+    for watch_toggle in ("mute", "unmute"):
+        watch_toggle_parser = watch_subparsers.add_parser(watch_toggle, help=f"{watch_toggle.title()} a watch by id or keyword")
+        watch_toggle_parser.add_argument("identifier")
+        watch_toggle_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
     run_parser = watch_subparsers.add_parser("run", help="Run all active watched keywords")
     run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     run_parser.add_argument("--alerts-json", action="store_true")
@@ -2138,6 +2161,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         kind_remove_parser = kind_subparsers.add_parser("remove", help=f"Remove a tracked {kind}")
         kind_remove_parser.add_argument("identifier")
         kind_remove_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
+        for kind_toggle in ("mute", "unmute"):
+            kind_toggle_parser = kind_subparsers.add_parser(kind_toggle, help=f"{kind_toggle.title()} a tracked {kind}")
+            kind_toggle_parser.add_argument("identifier")
+            kind_toggle_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
 
         kind_run_parser = kind_subparsers.add_parser("run", help=f"Run all active tracked {kind}s")
         kind_run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
@@ -2498,6 +2526,10 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, dataclasses.asdict(add_watch(db_path, keyword, kind=form.get("kind", WATCH_KIND_EVENT))))
             elif path == "/api/watchlist/remove":
                 json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
+            elif path == "/api/watchlist/mute":
+                json_response(self, {"muted": set_watch_muted(db_path, form.get("identifier", ""), True)})
+            elif path == "/api/watchlist/unmute":
+                json_response(self, {"unmuted": set_watch_muted(db_path, form.get("identifier", ""), False)})
             elif path == "/api/run":
                 json_response(self, run_watches(db_path, kind=form.get("kind") or None))
             elif path == "/api/sources":
@@ -2577,6 +2609,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             removed = remove_watch(args.db, args.identifier)
             print(f"Removed tracked {args.kind}." if removed else f"Tracked {args.kind} not found.")
             return 0 if removed else 1
+        if args.kind_command == "mute":
+            muted = set_watch_muted(args.db, args.identifier, True)
+            print(f"Muted tracked {args.kind}." if muted else f"Tracked {args.kind} not found.")
+            return 0 if muted else 1
+        if args.kind_command == "unmute":
+            unmuted = set_watch_muted(args.db, args.identifier, False)
+            print(f"Unmuted tracked {args.kind}." if unmuted else f"Tracked {args.kind} not found.")
+            return 0 if unmuted else 1
         if args.kind_command == "run":
             alerts = run_watches(args.db, kind=args.kind)
             if args.alerts_json:
@@ -2629,6 +2669,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             removed = remove_watch(args.db, args.identifier)
             print("Removed watch." if removed else "Watch not found.")
             return 0 if removed else 1
+        if args.watch_command == "mute":
+            muted = set_watch_muted(args.db, args.identifier, True)
+            print("Muted watch." if muted else "Watch not found.")
+            return 0 if muted else 1
+        if args.watch_command == "unmute":
+            unmuted = set_watch_muted(args.db, args.identifier, False)
+            print("Unmuted watch." if unmuted else "Watch not found.")
+            return 0 if unmuted else 1
         if args.watch_command == "run":
             alerts = run_watches(args.db)
             if args.alerts_json:

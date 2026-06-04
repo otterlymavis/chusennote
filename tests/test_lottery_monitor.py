@@ -420,6 +420,40 @@ def test_watch_add_list_remove_cli(tmp_path, capsys):
     assert lm.main(["watch", "list", "--db", str(db_path)]) == 0
     assert "No active watches." in capsys.readouterr().out
 
+    assert lm.main(["watch", "unmute", "Example", "--db", str(db_path)]) == 0
+    unmute_output = capsys.readouterr().out
+    assert "Unmuted watch." in unmute_output
+
+    assert lm.main(["watch", "list", "--db", str(db_path), "--json"]) == 0
+    restored_output = capsys.readouterr().out
+    assert '"muted": false' in restored_output
+
+    assert lm.main(["watch", "mute", "Example", "--db", str(db_path)]) == 0
+    mute_output = capsys.readouterr().out
+    assert "Muted watch." in mute_output
+
+    assert lm.main(["watch", "list", "--db", str(db_path)]) == 0
+    assert "No active watches." in capsys.readouterr().out
+
+
+def test_kind_watch_mute_unmute_cli(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+
+    assert lm.main(["event", "add", "Example Event", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    assert lm.main(["event", "mute", "Example Event", "--db", str(db_path)]) == 0
+    assert "Muted tracked event." in capsys.readouterr().out
+
+    assert lm.main(["event", "list", "--db", str(db_path)]) == 0
+    assert "No active watches." in capsys.readouterr().out
+
+    assert lm.main(["event", "unmute", "Example Event", "--db", str(db_path)]) == 0
+    assert "Unmuted tracked event." in capsys.readouterr().out
+
+    assert lm.main(["event", "list", "--db", str(db_path), "--json"]) == 0
+    assert '"keyword": "Example Event"' in capsys.readouterr().out
+
 
 def test_watch_run_cli_outputs_alerts_json(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
@@ -852,6 +886,14 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
 
         removed = post_form(f"{base}/api/watchlist/remove", {"identifier": "Example"})
         assert removed["removed"] is True
+        assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is True
+
+        unmuted = post_form(f"{base}/api/watchlist/unmute", {"identifier": "Example"})
+        assert unmuted["unmuted"] is True
+        assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is False
+
+        muted = post_form(f"{base}/api/watchlist/mute", {"identifier": "Example"})
+        assert muted["muted"] is True
         assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is True
     finally:
         server.shutdown()
