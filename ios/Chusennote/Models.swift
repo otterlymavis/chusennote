@@ -133,6 +133,10 @@ struct RemoveResponse: Codable {
     let removed: Bool
 }
 
+struct UnmuteResponse: Codable {
+    let unmuted: Bool
+}
+
 struct HealthSummary: Codable {
     let app: String
     let status: String

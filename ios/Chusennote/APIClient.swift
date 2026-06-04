@@ -23,6 +23,10 @@ final class ChusennoteStore: ObservableObject {
         watches.filter { !$0.muted && ($0.kind ?? "event") == "event" }
     }
 
+    var mutedWatches: [Watch] {
+        watches.filter { $0.muted }
+    }
+
     var calendarFeedURL: URL? {
         URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics")
     }
@@ -88,6 +92,15 @@ final class ChusennoteStore: ObservableObject {
     func removeWatch(id: Int) async {
         do {
             let _: RemoveResponse = try await post("/api/watchlist/remove", body: "identifier=\(id)")
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func restoreWatch(id: Int) async {
+        do {
+            let _: UnmuteResponse = try await post("/api/watchlist/unmute", body: "identifier=\(id)")
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

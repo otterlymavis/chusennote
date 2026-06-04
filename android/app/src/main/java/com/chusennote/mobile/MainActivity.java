@@ -40,6 +40,7 @@ public class MainActivity extends Activity {
     private EditText sourceLabelInput;
     private LinearLayout artistList;
     private LinearLayout eventList;
+    private LinearLayout mutedWatchList;
     private LinearLayout needsAttentionList;
     private LinearLayout sourceList;
     private LinearLayout alertList;
@@ -113,6 +114,11 @@ public class MainActivity extends Activity {
         eventList = new LinearLayout(this);
         eventList.setOrientation(LinearLayout.VERTICAL);
         root.addView(eventList);
+
+        root.addView(section("Muted Watches"));
+        mutedWatchList = new LinearLayout(this);
+        mutedWatchList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(mutedWatchList);
 
         root.addView(section("Needs Attention"));
         needsAttentionList = new LinearLayout(this);
@@ -259,6 +265,18 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void restoreWatch(int id) {
+        statusText.setText("Restoring watch...");
+        executor.execute(() -> {
+            try {
+                postForm("/api/watchlist/unmute", "identifier=" + encode(String.valueOf(id)));
+                mainHandler.post(this::refresh);
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not restore watch: " + error.getMessage()));
+            }
+        });
+    }
+
     private void removeSource(int id) {
         statusText.setText("Removing source...");
         executor.execute(() -> {
@@ -329,18 +347,28 @@ public class MainActivity extends Activity {
     private void render(JSONArray watches, JSONArray events, JSONArray upcoming, JSONArray alerts, JSONArray sources, JSONObject health) {
         artistList.removeAllViews();
         eventList.removeAllViews();
+        mutedWatchList.removeAllViews();
         needsAttentionList.removeAllViews();
         sourceList.removeAllViews();
         alertList.removeAllViews();
         int artistCount = 0;
         int eventCount = 0;
+        int mutedCount = 0;
 
         for (int i = 0; i < watches.length(); i++) {
             JSONObject watch = watches.optJSONObject(i);
-            if (watch == null || watch.optBoolean("muted")) {
+            if (watch == null) {
                 continue;
             }
             String kind = watch.optString("kind", "event");
+            if (watch.optBoolean("muted")) {
+                String detail = "Watch #" + watch.optInt("id")
+                    + " - " + kind
+                    + "\nLast checked: " + watch.optString("last_checked_at", "never");
+                mutedWatchList.addView(actionCard(watch.optString("keyword"), detail, "Restore", () -> restoreWatch(watch.optInt("id"))));
+                mutedCount++;
+                continue;
+            }
             if ("artist".equals(kind)) {
                 artistList.addView(removableCard(watch.optString("keyword"), "Last checked: " + watch.optString("last_checked_at", "never"), () -> removeWatch(watch.optInt("id"))));
                 artistCount++;
@@ -389,6 +417,9 @@ public class MainActivity extends Activity {
         }
         if (eventCount == 0 && eventList.getChildCount() == 0) {
             eventList.addView(body("No tracked events yet."));
+        }
+        if (mutedCount == 0) {
+            mutedWatchList.addView(body("No muted watches."));
         }
         for (int i = 0; i < Math.min(upcoming.length(), 8); i++) {
             JSONObject item = upcoming.optJSONObject(i);
@@ -513,14 +544,18 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout removableCard(String title, String detail, Runnable removeAction) {
+        return actionCard(title, detail, "Remove", removeAction);
+    }
+
+    private LinearLayout actionCard(String title, String detail, String buttonLabel, Runnable action) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(18, 18, 18, 18);
         row.addView(body(title + "\n" + detail));
-        Button remove = new Button(this);
-        remove.setText("Remove");
-        remove.setOnClickListener(view -> removeAction.run());
-        row.addView(remove);
+        Button button = new Button(this);
+        button.setText(buttonLabel);
+        button.setOnClickListener(view -> action.run());
+        row.addView(button);
         return row;
     }
 }

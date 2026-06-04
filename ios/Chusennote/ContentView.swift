@@ -94,6 +94,29 @@ struct ContentView: View {
                     }
                 }
 
+                Section("Muted Watches") {
+                    if store.mutedWatches.isEmpty {
+                        Text("No muted watches.")
+                    }
+                    ForEach(store.mutedWatches) { watch in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(watch.keyword).font(.headline)
+                                Text("Watch #\(watch.id) - \(watch.kind ?? "event")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Last checked: \(watch.lastCheckedAt ?? "never")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Restore") {
+                                Task { await store.restoreWatch(id: watch.id) }
+                            }
+                        }
+                    }
+                }
+
                 Section("Ticket Timelines") {
                     let ticketEvents = store.events.filter { ($0.watchKind ?? "event") == "event" }
                     if ticketEvents.isEmpty {
