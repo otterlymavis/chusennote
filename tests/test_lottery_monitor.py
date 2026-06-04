@@ -1,11 +1,29 @@
 import datetime as dt
 import json
+import pathlib
 import sqlite3
 import threading
 import urllib.parse
 import urllib.request
 
 import lottery_monitor as lm
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def test_windows_task_scheduler_helpers_keep_expected_contract():
+    install_script = (ROOT / "scripts" / "install-chusennote-monitor-task.ps1").read_text()
+    show_script = (ROOT / "scripts" / "show-chusennote-monitor-task.ps1").read_text()
+    uninstall_script = (ROOT / "scripts" / "uninstall-chusennote-monitor-task.ps1").read_text()
+
+    assert "Register-ScheduledTask" in install_script
+    assert "New-ScheduledTaskTrigger" in install_script
+    assert '"event", "artist"' in install_script
+    assert "lottery_monitor.py" in install_script
+    assert '"run"' in install_script
+    assert "Get-ScheduledTaskInfo" in show_script
+    assert "Unregister-ScheduledTask" in uninstall_script
 
 
 def test_extract_ticket_links_from_official_page():

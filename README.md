@@ -73,6 +73,16 @@ On Windows:
 .\scripts\start-chusennote-monitor.ps1 -IntervalMinutes 60
 ```
 
+Or install a recurring Windows Task Scheduler job that runs one saved-check pass per interval:
+
+```powershell
+.\scripts\install-chusennote-monitor-task.ps1 -IntervalMinutes 60
+.\scripts\show-chusennote-monitor-task.ps1
+.\scripts\uninstall-chusennote-monitor-task.ps1
+```
+
+The scheduled task defaults to tracked events and runs `python lottery_monitor.py event run --db chusennote.sqlite3` from this repository. Use `-Kind artist`, `-Db`, `-TaskName`, or `-Python` when you need a different lane, database path, task name, or Python executable.
+
 Limit alert noise with preferences and venue/region filters:
 
 ```bash
@@ -211,6 +221,7 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - Saved events include local match reasons, and the web/API/mobile views include a “Needs Attention” ticket-date list.
 - Per-watch alert preferences and venue/region filters keep batch monitoring quieter.
 - The local web UI is intentionally standard-library only and runs on your machine.
+- Windows helper scripts can run checks in the foreground or register a local Task Scheduler job; neither mode installs a hosted worker or external notification service.
 - The best long-term approach is to keep this keyword-first pipeline and keep deepening dedicated public-page adapters for Pia, eplus, Lawson Ticket, Rakuten Ticket, Ticket Board, CN Playguide, official sites, and musical production sites.
 - The MVP does not send Discord, LINE, Slack, or email notifications and does not scrape private/login-only fan-club pages; use private manual sources for those notes.
 
@@ -219,4 +230,4 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - Add Discord/LINE/Slack notifications for newly opened or closing lotteries.
 - Deepen source-specific parsers with more site-specific evidence snippets and edge-case date labels.
 - Support multiple rounds explicitly (`1st lottery`, `2nd lottery`, `official presale`, `general sale`).
-- Turn the foreground monitor loop into optional OS-level service/task helpers.
+- Add optional OS service helpers for users who want chusennote to run outside their login session.
