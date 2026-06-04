@@ -833,6 +833,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Calendar feed" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
+        assert "Muted Watches" in home
         assert "Needs Attention" in home
         assert "Dates:" in home
         assert "Venues:" in home
@@ -895,6 +896,10 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         muted = post_form(f"{base}/api/watchlist/mute", {"identifier": "Example"})
         assert muted["muted"] is True
         assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is True
+
+        restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
+        assert "Muted Watches" in restored_home
+        assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is False
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -908,3 +913,9 @@ def post_form(url, values):
     data = urllib.parse.urlencode(values).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
     return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))
+
+
+def post_text(url, values):
+    data = urllib.parse.urlencode(values).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method="POST")
+    return urllib.request.urlopen(request, timeout=5).read().decode("utf-8")

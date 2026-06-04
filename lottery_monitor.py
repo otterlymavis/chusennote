@@ -2285,6 +2285,7 @@ def render_web_page(db_path: str) -> str:
     alerts = recent_alerts(db_path, limit=20)
     active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
+    muted_watches = [watch for watch in watches if watch.muted]
     artist_items = "\n".join(
         f"""
         <li>
@@ -2303,6 +2304,15 @@ def render_web_page(db_path: str) -> str:
         """
         for watch in active_event_watches
     ) or "<li>No tracked events.</li>"
+    muted_watch_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} Â· {html.escape(watch.kind)} Â· last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <form method="post" action="/watch/unmute"><input type="hidden" name="identifier" value="{watch.id}"><button>Restore</button></form>
+        </li>
+        """
+        for watch in muted_watches
+    ) or "<li>No muted watches.</li>"
     source_options = "\n".join(
         f'<option value="{watch.id}">{html.escape(watch.keyword)}</option>' for watch in active_event_watches
     )
@@ -2381,6 +2391,10 @@ def render_web_page(db_path: str) -> str:
       </form>
       <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="event"><button>Run Events</button></form>
       <ul style="margin-top: 14px;">{tracked_event_items}</ul>
+    </section>
+    <section>
+      <h2>Muted Watches</h2>
+      <ul>{muted_watch_items}</ul>
     </section>
     <section>
       <h2>Manual Sources</h2>
@@ -2498,6 +2512,9 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 redirect_response(self)
             elif path == "/watch/remove":
                 remove_watch(db_path, form.get("identifier", ""))
+                redirect_response(self)
+            elif path == "/watch/unmute":
+                set_watch_muted(db_path, form.get("identifier", ""), False)
                 redirect_response(self)
             elif path == "/watch/run":
                 run_watches(db_path, kind=form.get("kind") or None)
