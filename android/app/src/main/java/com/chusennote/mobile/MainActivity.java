@@ -9,6 +9,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -45,6 +46,7 @@ public class MainActivity extends Activity {
     private EditText sourceWatchInput;
     private EditText sourceUrlInput;
     private EditText sourceLabelInput;
+    private CheckBox sourcePrivateNoteInput;
     private LinearLayout artistList;
     private LinearLayout eventList;
     private LinearLayout mutedWatchList;
@@ -160,6 +162,9 @@ public class MainActivity extends Activity {
         sourceLabelInput.setSingleLine(true);
         sourceLabelInput.setHint("Label");
         root.addView(sourceLabelInput);
+        sourcePrivateNoteInput = new CheckBox(this);
+        sourcePrivateNoteInput.setText("Private note");
+        root.addView(sourcePrivateNoteInput);
         Button addSource = new Button(this);
         addSource.setText("Add Source");
         addSource.setOnClickListener(view -> addSource());
@@ -288,6 +293,7 @@ public class MainActivity extends Activity {
         String watch = sourceWatchInput.getText().toString().trim();
         String url = sourceUrlInput.getText().toString().trim();
         String label = sourceLabelInput.getText().toString().trim();
+        boolean privateNote = sourcePrivateNoteInput.isChecked();
         if (watch.isEmpty() || url.isEmpty()) {
             statusText.setText("Enter a watch id/keyword and source URL first.");
             return;
@@ -297,12 +303,16 @@ public class MainActivity extends Activity {
             try {
                 postForm(
                     "/api/sources",
-                    "watch=" + encode(watch) + "&url=" + encode(url) + "&label=" + encode(label)
+                    "watch=" + encode(watch)
+                        + "&url=" + encode(url)
+                        + "&label=" + encode(label)
+                        + (privateNote ? "&private_note=1" : "")
                 );
                 mainHandler.post(() -> {
                     sourceWatchInput.setText("");
                     sourceUrlInput.setText("");
                     sourceLabelInput.setText("");
+                    sourcePrivateNoteInput.setChecked(false);
                     refresh();
                 });
             } catch (Exception error) {
@@ -521,7 +531,8 @@ public class MainActivity extends Activity {
             if (source == null) {
                 continue;
             }
-            String detail = "Watch #" + source.optInt("watch_id") + " - " + source.optString("platform", "manual") + "\n" + source.optString("url", "");
+            String mode = source.optBoolean("private_note") ? "private note" : source.optString("platform", "manual");
+            String detail = "Watch #" + source.optInt("watch_id") + " - " + mode + "\n" + source.optString("url", "");
             String sourceUrl = source.optString("url", "");
             if (source.optBoolean("muted")) {
                 mutedSourceList.addView(twoActionCard(source.optString("label", "Source"), detail, "Open", () -> openUrl(sourceUrl), "Restore", () -> restoreSource(source.optInt("id"))));

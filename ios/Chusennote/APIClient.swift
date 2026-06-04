@@ -95,7 +95,7 @@ final class ChusennoteStore: ObservableObject {
         }
     }
 
-    func addSource(watch: String, url: String, label: String) async {
+    func addSource(watch: String, url: String, label: String, privateNote: Bool = false) async {
         do {
             var fields = URLComponents()
             fields.queryItems = [
@@ -103,6 +103,9 @@ final class ChusennoteStore: ObservableObject {
                 URLQueryItem(name: "url", value: url),
                 URLQueryItem(name: "label", value: label)
             ]
+            if privateNote {
+                fields.queryItems?.append(URLQueryItem(name: "private_note", value: "1"))
+            }
             let _: WatchSource = try await post("/api/sources", body: fields.percentEncodedQuery ?? "")
             await refresh()
         } catch {

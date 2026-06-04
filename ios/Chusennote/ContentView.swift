@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var sourceWatch = ""
     @State private var sourceURL = ""
     @State private var sourceLabel = ""
+    @State private var sourcePrivateNote = false
 
     var body: some View {
         NavigationStack {
@@ -233,15 +234,18 @@ struct ContentView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     TextField("Label", text: $sourceLabel)
+                    Toggle("Private note", isOn: $sourcePrivateNote)
                     Button("Add Source") {
                         let watch = sourceWatch.trimmingCharacters(in: .whitespacesAndNewlines)
                         let url = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
                         let label = sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let privateNote = sourcePrivateNote
                         guard !watch.isEmpty, !url.isEmpty else { return }
                         sourceWatch = ""
                         sourceURL = ""
                         sourceLabel = ""
-                        Task { await store.addSource(watch: watch, url: url, label: label) }
+                        sourcePrivateNote = false
+                        Task { await store.addSource(watch: watch, url: url, label: label, privateNote: privateNote) }
                     }
                     if store.activeSources.isEmpty {
                         Text("No manual sources.")
@@ -250,7 +254,7 @@ struct ContentView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(source.label).font(.headline)
-                                Text("Watch #\(source.watchId) - \(source.platform)")
+                                Text("Watch #\(source.watchId) - \(sourceMode(source))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Text(source.url)
@@ -278,7 +282,7 @@ struct ContentView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(source.label).font(.headline)
-                                Text("Watch #\(source.watchId) - \(source.platform)")
+                                Text("Watch #\(source.watchId) - \(sourceMode(source))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Text(source.url)
@@ -335,6 +339,10 @@ struct ContentView: View {
     private func emptyFallback(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "none" }
         return value
+    }
+
+    private func sourceMode(_ source: WatchSource) -> String {
+        source.privateNote ? "private note" : source.platform
     }
 }
 
