@@ -179,11 +179,19 @@ struct ContentView: View {
                         Text("No urgent ticket dates saved yet.")
                     }
                     ForEach(store.upcoming.prefix(8)) { item in
-                        VStack(alignment: .leading) {
-                            Text(item.eventTitle ?? "Untitled event").font(.headline)
-                            Text([item.status, item.platform, item.roundName, item.relevantDate].compactMap { $0 }.joined(separator: " - "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(item.eventTitle ?? "Untitled event").font(.headline)
+                                Text([item.status, item.platform, item.roundName, item.relevantDate].compactMap { $0 }.joined(separator: " - "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let url = item.url.flatMap(URL.init(string:)) {
+                                Button("Open") {
+                                    openURL(url)
+                                }
+                            }
                         }
                     }
                 }
@@ -235,6 +243,11 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if let url = URL(string: source.url) {
+                                Button("Open") {
+                                    openURL(url)
+                                }
+                            }
                             Button("Remove") {
                                 Task { await store.removeSource(id: source.id) }
                             }
@@ -258,6 +271,11 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if let url = URL(string: source.url) {
+                                Button("Open") {
+                                    openURL(url)
+                                }
+                            }
                             Button("Restore") {
                                 Task { await store.restoreSource(id: source.id) }
                             }

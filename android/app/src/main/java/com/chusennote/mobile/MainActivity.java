@@ -217,6 +217,14 @@ public class MainActivity extends Activity {
         startActivity(intent);
     }
 
+    private void openUrl(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            statusText.setText("No source URL available.");
+            return;
+        }
+        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim())));
+    }
+
     private void addWatch(String kind, EditText input, EditText tagsInput, EditText regionsInput, EditText venuesInput, EditText alertsInput) {
         String keyword = input.getText().toString().trim();
         if (keyword.isEmpty()) {
@@ -498,7 +506,12 @@ public class MainActivity extends Activity {
             if (!reasons.isEmpty()) {
                 detail = detail + "\nWhy: " + reasons;
             }
-            needsAttentionList.addView(card(item.optString("event_title", "Untitled event"), detail));
+            String url = item.optString("url", "");
+            if (url.isEmpty()) {
+                needsAttentionList.addView(card(item.optString("event_title", "Untitled event"), detail));
+            } else {
+                needsAttentionList.addView(actionCard(item.optString("event_title", "Untitled event"), detail, "Open", () -> openUrl(url)));
+            }
         }
         if (needsAttentionList.getChildCount() == 0) {
             needsAttentionList.addView(body("No urgent ticket dates saved yet."));
@@ -509,12 +522,13 @@ public class MainActivity extends Activity {
                 continue;
             }
             String detail = "Watch #" + source.optInt("watch_id") + " - " + source.optString("platform", "manual") + "\n" + source.optString("url", "");
+            String sourceUrl = source.optString("url", "");
             if (source.optBoolean("muted")) {
-                mutedSourceList.addView(actionCard(source.optString("label", "Source"), detail, "Restore", () -> restoreSource(source.optInt("id"))));
+                mutedSourceList.addView(twoActionCard(source.optString("label", "Source"), detail, "Open", () -> openUrl(sourceUrl), "Restore", () -> restoreSource(source.optInt("id"))));
                 mutedSourceCount++;
                 continue;
             }
-            sourceList.addView(removableCard(source.optString("label", "Source"), detail, () -> removeSource(source.optInt("id"))));
+            sourceList.addView(twoActionCard(source.optString("label", "Source"), detail, "Open", () -> openUrl(sourceUrl), "Remove", () -> removeSource(source.optInt("id"))));
         }
         if (sourceList.getChildCount() == 0) {
             sourceList.addView(body("No manual sources."));
@@ -654,6 +668,15 @@ public class MainActivity extends Activity {
         button.setText(buttonLabel);
         button.setOnClickListener(view -> action.run());
         row.addView(button);
+        return row;
+    }
+
+    private LinearLayout twoActionCard(String title, String detail, String firstLabel, Runnable firstAction, String secondLabel, Runnable secondAction) {
+        LinearLayout row = actionCard(title, detail, firstLabel, firstAction);
+        Button second = new Button(this);
+        second.setText(secondLabel);
+        second.setOnClickListener(view -> secondAction.run());
+        row.addView(second);
         return row;
     }
 }
