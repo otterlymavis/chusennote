@@ -61,7 +61,7 @@ python3 lottery_monitor.py event mute "specific event keyword"
 python3 lottery_monitor.py event unmute "specific event keyword"
 ```
 
-The older `watch add/list/run` commands still work as compatibility aliases for tracked events. `remove` is a soft mute; use `mute` and `unmute` when you want that state change to be explicit.
+The older `watch add/list/run` commands still work as compatibility aliases for tracked events. `remove` is a soft mute; use `mute` and `unmute` when you want that state change to be explicit. Use `--include-muted` on list commands to show muted rows in text or JSON output.
 
 Run tracked events repeatedly in the foreground:
 
@@ -96,7 +96,7 @@ Attach manual source URLs to a watch. Public sources are fetched during `watch r
 ```bash
 python3 lottery_monitor.py watch source add "your event keyword" "https://ticket.example/show" --label "Ticket page"
 python3 lottery_monitor.py watch source add "your event keyword" "https://fc.example/private" --label "Fan club note" --private-note
-python3 lottery_monitor.py watch source list "your event keyword"
+python3 lottery_monitor.py watch source list "your event keyword" --include-muted
 ```
 
 Run the local web UI:

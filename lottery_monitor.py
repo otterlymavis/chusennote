@@ -2223,7 +2223,8 @@ def render_watches(watches: Sequence[Watch]) -> str:
     lines = ["# Watchlist", ""]
     for watch in watches:
         checked = watch.last_checked_at or "never"
-        lines.append(f"- {watch.id}: {watch.keyword} (last checked: {checked})")
+        muted_label = " [muted]" if watch.muted else ""
+        lines.append(f"- {watch.id}: {watch.keyword}{muted_label} (last checked: {checked})")
     return "\n".join(lines)
 
 
@@ -2233,7 +2234,8 @@ def render_watch_sources(sources: Sequence[WatchSource]) -> str:
     lines = ["# Manual sources", ""]
     for source in sources:
         mode = "private note" if source.private_note else source.platform
-        lines.append(f"- {source.id}: watch {source.watch_id} · {source.label} ({mode}) {source.url}")
+        muted_label = " [muted]" if source.muted else ""
+        lines.append(f"- {source.id}: watch {source.watch_id} · {source.label}{muted_label} ({mode}) {source.url}")
     return "\n".join(lines)
 
 

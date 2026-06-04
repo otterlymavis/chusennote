@@ -435,6 +435,10 @@ def test_watch_add_list_remove_cli(tmp_path, capsys):
     assert lm.main(["watch", "list", "--db", str(db_path)]) == 0
     assert "No active watches." in capsys.readouterr().out
 
+    assert lm.main(["watch", "list", "--db", str(db_path), "--include-muted"]) == 0
+    muted_list_output = capsys.readouterr().out
+    assert "Example [muted]" in muted_list_output
+
 
 def test_kind_watch_mute_unmute_cli(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
@@ -714,6 +718,9 @@ def test_watch_source_cli_add_list_remove(tmp_path, capsys):
 
     assert lm.main(["watch", "source", "remove", "1", "--db", str(db_path)]) == 0
     assert "Removed source." in capsys.readouterr().out
+
+    assert lm.main(["watch", "source", "list", "Example", "--db", str(db_path), "--include-muted"]) == 0
+    assert "FC note [muted]" in capsys.readouterr().out
 
 
 def test_watch_source_cli_mute_unmute_preserves_source_row(tmp_path, capsys):
