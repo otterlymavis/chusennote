@@ -899,6 +899,10 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert created_watch["preferred_venues"] == "Example Hall"
         assert created_watch["alert_preferences"] == "new_lottery_round"
         assert json_load_url(f"{base}/api/watchlist")[0]["keyword"] == "Example"
+        home_with_preferences = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
+        assert "tags musical" in home_with_preferences
+        assert "venues Example Hall" in home_with_preferences
+        assert "alerts new_lottery_round" in home_with_preferences
 
         source = post_form(f"{base}/api/sources", {"watch": "Example", "url": "https://fan.example/private", "label": "FC", "private_note": "1"})
         assert source["private_note"] is True

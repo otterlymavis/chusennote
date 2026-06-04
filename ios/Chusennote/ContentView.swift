@@ -70,7 +70,7 @@ struct ContentView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(watch.keyword).font(.headline)
-                                Text("Last checked: \(watch.lastCheckedAt ?? "never")")
+                                Text(watchPreferenceText(watch))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -120,6 +120,9 @@ struct ContentView: View {
                                 Text("Watch #\(watch.id)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                Text(watchPreferenceText(watch, includeAlerts: true))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button("Remove") {
@@ -140,7 +143,7 @@ struct ContentView: View {
                                 Text("Watch #\(watch.id) - \(watch.kind ?? "event")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text("Last checked: \(watch.lastCheckedAt ?? "never")")
+                                Text(watchPreferenceText(watch, includeAlerts: (watch.kind ?? "event") == "event"))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -281,6 +284,24 @@ struct ContentView: View {
                 await store.refresh()
             }
         }
+    }
+
+    private func watchPreferenceText(_ watch: Watch, includeAlerts: Bool = false) -> String {
+        var parts = [
+            "Tags: \(emptyFallback(watch.tags))",
+            "Regions: \(emptyFallback(watch.preferredRegions))",
+            "Venues: \(emptyFallback(watch.preferredVenues))"
+        ]
+        if includeAlerts {
+            parts.append("Alerts: \(emptyFallback(watch.alertPreferences))")
+        }
+        parts.append("Last checked: \(watch.lastCheckedAt ?? "never")")
+        return parts.joined(separator: "\n")
+    }
+
+    private func emptyFallback(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "none" }
+        return value
     }
 }
 

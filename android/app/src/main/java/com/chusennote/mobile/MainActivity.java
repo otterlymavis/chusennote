@@ -428,16 +428,16 @@ public class MainActivity extends Activity {
             if (watch.optBoolean("muted")) {
                 String detail = "Watch #" + watch.optInt("id")
                     + " - " + kind
-                    + "\nLast checked: " + watch.optString("last_checked_at", "never");
+                    + "\n" + watchPreferences(watch, "event".equals(kind));
                 mutedWatchList.addView(actionCard(watch.optString("keyword"), detail, "Restore", () -> restoreWatch(watch.optInt("id"))));
                 mutedCount++;
                 continue;
             }
             if ("artist".equals(kind)) {
-                artistList.addView(removableCard(watch.optString("keyword"), "Last checked: " + watch.optString("last_checked_at", "never"), () -> removeWatch(watch.optInt("id"))));
+                artistList.addView(removableCard(watch.optString("keyword"), watchPreferences(watch, false), () -> removeWatch(watch.optInt("id"))));
                 artistCount++;
             } else {
-                eventList.addView(removableCard(watch.optString("keyword"), "Watch #" + watch.optInt("id"), () -> removeWatch(watch.optInt("id"))));
+                eventList.addView(removableCard(watch.optString("keyword"), "Watch #" + watch.optInt("id") + "\n" + watchPreferences(watch, true), () -> removeWatch(watch.optInt("id"))));
                 eventCount++;
             }
         }
@@ -577,6 +577,25 @@ public class MainActivity extends Activity {
         TextView view = body(title + "\n" + detail);
         view.setPadding(18, 18, 18, 18);
         return view;
+    }
+
+    private String watchPreferences(JSONObject watch, boolean includeAlerts) {
+        StringBuilder detail = new StringBuilder();
+        appendPreference(detail, "Tags", watch.optString("tags", ""));
+        appendPreference(detail, "Regions", watch.optString("preferred_regions", ""));
+        appendPreference(detail, "Venues", watch.optString("preferred_venues", ""));
+        if (includeAlerts) {
+            appendPreference(detail, "Alerts", watch.optString("alert_preferences", ""));
+        }
+        appendPreference(detail, "Last checked", watch.optString("last_checked_at", "never"));
+        return detail.toString();
+    }
+
+    private void appendPreference(StringBuilder detail, String label, String value) {
+        if (detail.length() > 0) {
+            detail.append("\n");
+        }
+        detail.append(label).append(": ").append(value == null || value.isEmpty() ? "none" : value);
     }
 
     private String eventClues(JSONObject event) {

@@ -5,6 +5,9 @@ struct Watch: Codable, Identifiable {
     let keyword: String
     let kind: String?
     let tags: String?
+    let preferredRegions: String?
+    let preferredVenues: String?
+    let alertPreferences: String?
     let muted: Bool
     let lastCheckedAt: String?
 
@@ -13,6 +16,9 @@ struct Watch: Codable, Identifiable {
         case keyword
         case kind
         case tags
+        case preferredRegions = "preferred_regions"
+        case preferredVenues = "preferred_venues"
+        case alertPreferences = "alert_preferences"
         case muted
         case lastCheckedAt = "last_checked_at"
     }

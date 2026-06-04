@@ -2291,6 +2291,18 @@ def add_watch_from_form(db_path: str, form: dict[str, str]) -> Watch:
     )
 
 
+def render_watch_preferences(watch: Watch, include_alerts: bool = False) -> str:
+    parts = [
+        f"tags {watch.tags or 'none'}",
+        f"regions {watch.preferred_regions or 'none'}",
+        f"venues {watch.preferred_venues or 'none'}",
+    ]
+    if include_alerts:
+        parts.append(f"alerts {watch.alert_preferences or 'none'}")
+    parts.append(f"last checked {watch.last_checked_at or 'never'}")
+    return " · ".join(parts)
+
+
 def render_web_page(db_path: str) -> str:
     watches = list_watches(db_path, include_muted=True)
     sources = list_watch_sources(db_path, include_muted=True)
@@ -2305,7 +2317,7 @@ def render_web_page(db_path: str) -> str:
     artist_items = "\n".join(
         f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · tags {html.escape(watch.tags or "none")} · last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · {html.escape(render_watch_preferences(watch))}</small></span>
           <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
         </li>
         """
@@ -2314,7 +2326,7 @@ def render_web_page(db_path: str) -> str:
     tracked_event_items = "\n".join(
         f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · alerts {html.escape(watch.alert_preferences or "none")} · last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · {html.escape(render_watch_preferences(watch, include_alerts=True))}</small></span>
           <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
         </li>
         """
@@ -2323,7 +2335,7 @@ def render_web_page(db_path: str) -> str:
     muted_watch_items = "\n".join(
         f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} Â· {html.escape(watch.kind)} Â· last checked {html.escape(watch.last_checked_at or "never")}</small></span>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · {html.escape(watch.kind)} · {html.escape(render_watch_preferences(watch, include_alerts=watch.kind == WATCH_KIND_EVENT))}</small></span>
           <form method="post" action="/watch/unmute"><input type="hidden" name="identifier" value="{watch.id}"><button>Restore</button></form>
         </li>
         """
