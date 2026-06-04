@@ -45,6 +45,8 @@ The server also exposes a standard iCalendar ticket timeline feed at `/calendar.
 
 Source removal in the apps is a local soft mute. The row remains in SQLite and can be restored from the CLI with `python lottery_monitor.py watch source unmute ID_OR_URL`.
 
+Recurring checks run on the desktop/server side with `python lottery_monitor.py watch loop ...` or `scripts/start-chusennote-monitor.ps1`. The mobile apps read the saved local state; they do not schedule scraping themselves.
+
 ## Android
 
 Open `android/` in Android Studio.

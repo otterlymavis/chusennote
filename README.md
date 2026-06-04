@@ -61,6 +61,18 @@ python3 lottery_monitor.py event run --alerts-json
 
 The older `watch add/list/run` commands still work as compatibility aliases for tracked events.
 
+Run tracked events repeatedly in the foreground:
+
+```bash
+python3 lottery_monitor.py watch loop --db chusennote.sqlite3 --interval-minutes 60
+```
+
+On Windows:
+
+```powershell
+.\scripts\start-chusennote-monitor.ps1 -IntervalMinutes 60
+```
+
 Limit alert noise with preferences and venue/region filters:
 
 ```bash
@@ -207,4 +219,4 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - Add Discord/LINE/Slack notifications for newly opened or closing lotteries.
 - Deepen source-specific parsers with more site-specific evidence snippets and edge-case date labels.
 - Support multiple rounds explicitly (`1st lottery`, `2nd lottery`, `official presale`, `general sale`).
-- Add recurring background scheduling outside the current one-shot `watch run` command.
+- Turn the foreground monitor loop into optional OS-level service/task helpers.

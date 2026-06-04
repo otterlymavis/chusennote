@@ -20,6 +20,7 @@ import json
 import re
 import sqlite3
 import sys
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Sequence
@@ -32,6 +33,7 @@ DEFAULT_DB_PATH = "chusennote.sqlite3"
 DB_SCHEMA_VERSION = 4
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
+WATCH_KINDS = (WATCH_KIND_ARTIST, WATCH_KIND_EVENT)
 UPCOMING_STATUS_ORDER = {
     "closing_soon": 0,
     "results_today": 1,
@@ -220,6 +222,20 @@ class WatchSource:
 
 def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
 
 
 def absolute_url(base_url: str, href: str) -> str:
@@ -1291,6 +1307,47 @@ def run_watches(db_path: str, now: str | None = None, kind: str | None = None) -
     return alerts
 
 
+def run_watch_loop(
+    db_path: str,
+    interval_minutes: int = 60,
+    kind: str | None = WATCH_KIND_EVENT,
+    alerts_json: bool = False,
+    max_runs: int | None = None,
+    run_immediately: bool = True,
+    stop_after_errors: int | None = None,
+    sleep_func=time.sleep,
+    run_func=run_watches,
+) -> int:
+    interval_seconds = interval_minutes * 60
+    run_count = 0
+    error_count = 0
+    first_run = True
+    try:
+        while max_runs is None or run_count < max_runs:
+            if not (first_run and run_immediately):
+                sleep_func(interval_seconds)
+            first_run = False
+            try:
+                alerts = run_func(db_path, kind=kind)
+                run_count += 1
+                error_count = 0
+                if alerts_json:
+                    print(json.dumps({"run": run_count, "alerts": alerts}, ensure_ascii=False))
+                else:
+                    scope = kind or "all"
+                    print(f"Run {run_count}: checked {scope} watches; {len(alerts)} alerts.")
+            except (OSError, ValueError, sqlite3.Error) as error:
+                run_count += 1
+                error_count += 1
+                print(f"Run {run_count}: watch loop failed: {error}")
+                if stop_after_errors is not None and error_count >= stop_after_errors:
+                    return 1
+    except KeyboardInterrupt:
+        print("Watch loop stopped.")
+        return 0
+    return 0
+
+
 def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
@@ -2048,6 +2105,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     run_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     run_parser.add_argument("--alerts-json", action="store_true")
 
+    loop_parser = watch_subparsers.add_parser("loop", help="Run active watches repeatedly in the foreground")
+    loop_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    loop_parser.add_argument("--interval-minutes", type=non_negative_int, default=60)
+    loop_parser.add_argument("--kind", choices=WATCH_KINDS, default=WATCH_KIND_EVENT)
+    loop_parser.add_argument("--alerts-json", action="store_true")
+    loop_parser.add_argument("--max-runs", type=positive_int)
+    loop_parser.add_argument("--run-immediately", action=argparse.BooleanOptionalAction, default=True)
+    loop_parser.add_argument("--stop-after-errors", type=positive_int)
+
     for command_name, kind, help_text in (
         ("artist", WATCH_KIND_ARTIST, "Manage tracked artists with basic event info"),
         ("event", WATCH_KIND_EVENT, "Manage tracked events with ticket and lottery info"),
@@ -2570,6 +2636,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(f"Ran {len(list_watches(args.db))} active watches; {len(alerts)} alerts.")
             return 0
+        if args.watch_command == "loop":
+            return run_watch_loop(
+                args.db,
+                interval_minutes=args.interval_minutes,
+                kind=args.kind,
+                alerts_json=args.alerts_json,
+                max_runs=args.max_runs,
+                run_immediately=args.run_immediately,
+                stop_after_errors=args.stop_after_errors,
+            )
 
     blocks = build_blocks(args.keyword)
     alerts: list[dict[str, str]] = []

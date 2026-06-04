@@ -435,6 +435,74 @@ def test_watch_run_continues_after_single_watch_failure(tmp_path, monkeypatch):
     assert all(watch.last_checked_at == "2026-06-03T00:00:00+00:00" for watch in watches)
 
 
+def test_watch_loop_runs_selected_kind_multiple_times(capsys):
+    calls = []
+
+    def fake_run(db_path, kind=None):
+        calls.append((db_path, kind))
+        return [{"type": "example"}]
+
+    assert lm.run_watch_loop(
+        "loop.sqlite3",
+        interval_minutes=0,
+        kind=lm.WATCH_KIND_ARTIST,
+        max_runs=2,
+        run_func=fake_run,
+        sleep_func=lambda seconds: None,
+    ) == 0
+
+    assert calls == [("loop.sqlite3", lm.WATCH_KIND_ARTIST), ("loop.sqlite3", lm.WATCH_KIND_ARTIST)]
+    output = capsys.readouterr().out
+    assert "Run 1: checked artist watches; 1 alerts." in output
+    assert "Run 2: checked artist watches; 1 alerts." in output
+
+
+def test_watch_loop_outputs_json_batches(capsys):
+    assert lm.run_watch_loop(
+        "loop.sqlite3",
+        interval_minutes=0,
+        kind=lm.WATCH_KIND_EVENT,
+        max_runs=1,
+        alerts_json=True,
+        run_func=lambda db_path, kind=None: [{"type": "example", "kind": kind}],
+        sleep_func=lambda seconds: None,
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert '"run": 1' in output
+    assert '"kind": "event"' in output
+
+
+def test_watch_loop_keyboard_interrupt_exits_cleanly(capsys):
+    def interrupt(seconds):
+        raise KeyboardInterrupt
+
+    assert lm.run_watch_loop(
+        "loop.sqlite3",
+        interval_minutes=1,
+        run_immediately=False,
+        max_runs=1,
+        sleep_func=interrupt,
+        run_func=lambda db_path, kind=None: [],
+    ) == 0
+
+    assert "Watch loop stopped." in capsys.readouterr().out
+
+
+def test_watch_loop_argparse_validation():
+    for args in (
+        ["watch", "loop", "--interval-minutes", "-1"],
+        ["watch", "loop", "--max-runs", "0"],
+        ["watch", "loop", "--stop-after-errors", "0"],
+    ):
+        try:
+            lm.parse_args(args)
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise AssertionError(f"expected argparse failure for {args}")
+
+
 def test_artist_and_event_commands_are_separate_lanes(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     monkeypatch.setattr(lm, "build_artist_blocks", lambda keyword: lm.AppBlocks(example_blocks(keyword).general_info, ()))
