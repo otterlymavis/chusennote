@@ -2279,6 +2279,18 @@ def redirect_response(handler: http.server.BaseHTTPRequestHandler, location: str
     handler.end_headers()
 
 
+def add_watch_from_form(db_path: str, form: dict[str, str]) -> Watch:
+    return add_watch(
+        db_path,
+        clean_text(form.get("keyword", "")),
+        kind=form.get("kind", WATCH_KIND_EVENT),
+        tags=form.get("tags", ""),
+        preferred_regions=form.get("regions", ""),
+        preferred_venues=form.get("venues", ""),
+        alert_preferences=form.get("alerts", DEFAULT_ALERT_PREFERENCES),
+    )
+
+
 def render_web_page(db_path: str) -> str:
     watches = list_watches(db_path, include_muted=True)
     sources = list_watch_sources(db_path, include_muted=True)
@@ -2390,6 +2402,9 @@ def render_web_page(db_path: str) -> str:
       <form method="post" action="/watch/add">
         <input type="hidden" name="kind" value="artist">
         <input name="keyword" placeholder="Artist or performer keyword" required>
+        <input name="tags" placeholder="Tags">
+        <input name="regions" placeholder="Preferred regions">
+        <input name="venues" placeholder="Preferred venues">
         <button>Add Artist</button>
       </form>
       <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="artist"><button>Run Artists</button></form>
@@ -2400,6 +2415,10 @@ def render_web_page(db_path: str) -> str:
       <form method="post" action="/watch/add">
         <input type="hidden" name="kind" value="event">
         <input name="keyword" placeholder="Specific event or musical keyword" required>
+        <input name="tags" placeholder="Tags">
+        <input name="regions" placeholder="Preferred regions">
+        <input name="venues" placeholder="Preferred venues">
+        <input name="alerts" placeholder="Alert types">
         <button>Add Event</button>
       </form>
       <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="event"><button>Run Events</button></form>
@@ -2525,7 +2544,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                add_watch(db_path, keyword, kind=form.get("kind", WATCH_KIND_EVENT))
+                add_watch_from_form(db_path, form)
                 redirect_response(self)
             elif path == "/watch/remove":
                 remove_watch(db_path, form.get("identifier", ""))
@@ -2560,7 +2579,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                json_response(self, dataclasses.asdict(add_watch(db_path, keyword, kind=form.get("kind", WATCH_KIND_EVENT))))
+                json_response(self, dataclasses.asdict(add_watch_from_form(db_path, form)))
             elif path == "/api/watchlist/remove":
                 json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
             elif path == "/api/watchlist/mute":

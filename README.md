@@ -107,7 +107,7 @@ python3 lottery_monitor.py web --db chusennote.sqlite3 --port 8765
 
 Then open <http://127.0.0.1:8765>.
 
-The web UI shows muted watches and muted sources in separate restore sections, so removing a tracked artist, event, or manual source is reversible without using the CLI.
+The web UI can set watch tags, preferred regions, preferred venues, and event alert filters when adding watches. It also shows muted watches and muted sources in separate restore sections, so removing a tracked artist, event, or manual source is reversible without using the CLI.
 
 On Windows, the helper script starts the same server and can open the browser:
 

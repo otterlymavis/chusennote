@@ -842,6 +842,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Tracked Events" in home
         assert "Muted Watches" in home
         assert "Muted Sources" in home
+        assert "Preferred regions" in home
+        assert "Alert types" in home
         assert "Needs Attention" in home
         assert "Dates:" in home
         assert "Venues:" in home
@@ -881,7 +883,21 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     try:
-        post_form(f"{base}/api/watchlist", {"keyword": "Example"})
+        created_watch = post_form(
+            f"{base}/api/watchlist",
+            {
+                "keyword": "Example",
+                "tags": "musical",
+                "regions": "",
+                "venues": "Example Hall",
+                "alerts": "new_lottery_round",
+            },
+        )
+        assert created_watch["keyword"] == "Example"
+        assert created_watch["tags"] == "musical"
+        assert created_watch["preferred_regions"] == ""
+        assert created_watch["preferred_venues"] == "Example Hall"
+        assert created_watch["alert_preferences"] == "new_lottery_round"
         assert json_load_url(f"{base}/api/watchlist")[0]["keyword"] == "Example"
 
         source = post_form(f"{base}/api/sources", {"watch": "Example", "url": "https://fan.example/private", "label": "FC", "private_note": "1"})
