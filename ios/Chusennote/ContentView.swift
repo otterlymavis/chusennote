@@ -161,14 +161,21 @@ struct ContentView: View {
                         Text("No ticket timelines saved yet.")
                     }
                     ForEach(ticketEvents) { event in
-                        NavigationLink {
-                            EventDetailView(event: event)
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(event.title ?? "Untitled event").font(.headline)
-                                Text("\(event.status ?? "watching") - \(event.rounds.count) rounds")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        HStack {
+                            NavigationLink {
+                                EventDetailView(event: event)
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(event.title ?? "Untitled event").font(.headline)
+                                    Text("\(event.status ?? "watching") - \(event.rounds.count) rounds")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            if let url = event.officialUrl.flatMap(URL.init(string:)) {
+                                Button("Open") {
+                                    openURL(url)
+                                }
                             }
                         }
                     }
@@ -202,11 +209,19 @@ struct ContentView: View {
                         Text("No artist event info saved yet.")
                     }
                     ForEach(artistEvents) { event in
-                        VStack(alignment: .leading) {
-                            Text(event.title ?? "Untitled event").font(.headline)
-                            Text([event.status, event.eventDates?.prefix(2).joined(separator: "; "), event.venues?.prefix(2).joined(separator: "; ")].compactMap { $0 }.joined(separator: " - "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(event.title ?? "Untitled event").font(.headline)
+                                Text([event.status, event.eventDates?.prefix(2).joined(separator: "; "), event.venues?.prefix(2).joined(separator: "; ")].compactMap { $0 }.joined(separator: " - "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let url = event.officialUrl.flatMap(URL.init(string:)) {
+                                Button("Open") {
+                                    openURL(url)
+                                }
+                            }
                         }
                     }
                 }
@@ -325,12 +340,18 @@ struct ContentView: View {
 
 struct EventDetailView: View {
     let event: EventSummary
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         List {
             Section("Event") {
                 Text(event.title ?? "Untitled event")
                 Text(event.status ?? "watching")
+                if let url = event.officialUrl.flatMap(URL.init(string:)) {
+                    Button("Open Official Page") {
+                        openURL(url)
+                    }
+                }
                 if let dates = event.eventDates, !dates.isEmpty {
                     Text("Dates: \(dates.prefix(2).joined(separator: "; "))")
                 }

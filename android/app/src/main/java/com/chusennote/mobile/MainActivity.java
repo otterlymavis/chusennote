@@ -465,7 +465,7 @@ public class MainActivity extends Activity {
                 if (!reasons.isEmpty()) {
                     detail = detail + "\nWhy: " + reasons;
                 }
-                artistList.addView(card(event.optString("title", "Untitled event"), detail));
+                addEventCard(artistList, event, detail);
                 continue;
             }
             JSONArray rounds = event.optJSONArray("rounds");
@@ -481,7 +481,7 @@ public class MainActivity extends Activity {
             if (!reasons.isEmpty()) {
                 detail = detail + "\nWhy: " + reasons;
             }
-            eventList.addView(card(event.optString("title", "Untitled event"), detail));
+            addEventCard(eventList, event, detail);
         }
 
         if (artistCount == 0) {
@@ -639,6 +639,16 @@ public class MainActivity extends Activity {
             }
         }
         return "";
+    }
+
+    private void addEventCard(LinearLayout list, JSONObject event, String detail) {
+        String title = event.optString("title", "Untitled event");
+        String officialUrl = event.optString("official_url", "");
+        if (officialUrl.isEmpty()) {
+            list.addView(card(title, detail));
+        } else {
+            list.addView(actionCard(title, detail, "Open", () -> openUrl(officialUrl)));
+        }
     }
 
     private String joinFirst(JSONArray values) {
