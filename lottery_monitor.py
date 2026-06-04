@@ -62,7 +62,7 @@ TICKET_DOMAINS = {
     "eplus": ("eplus.jp",),
     "lawson": ("l-tike.com",),
     "rakuten": ("r-t.jp", "ticket.rakuten.co.jp"),
-    "ticketboard": ("ticketboard.jp",),
+    "ticketboard": ("ticketboard.jp", "tickebo.jp"),
     "cnplayguide": ("cnplayguide.com",),
 }
 SOCIAL_OR_NOISY_DOMAINS = (
@@ -88,6 +88,32 @@ TICKET_LINK_HINTS = (
     "ローソン",
     "lawson",
     "l-tike",
+    "rakuten",
+    "ticketboard",
+    "ticket board",
+    "cnplayguide",
+    "cnプレイガイド",
+)
+ROUND_CONTEXT_HINTS = (
+    "受付期間",
+    "申込期間",
+    "申込み期間",
+    "申込受付期間",
+    "抽選申込期間",
+    "抽選受付期間",
+    "受付",
+    "当落",
+    "当選発表",
+    "抽選結果",
+    "結果発表",
+    "入金",
+    "支払",
+    "支払い",
+    "支払期限",
+    "入金締切",
+    "一般発売",
+    "発売日",
+    "発売開始",
 )
 ROUND_LABEL_PATTERNS = (
     r"第?\s*([0-9０-９一二三四五六七八九十]+)\s*次\s*(?:抽選)?\s*先行",
@@ -97,6 +123,10 @@ ROUND_LABEL_PATTERNS = (
 )
 DATE_TOKEN = r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
 RANGE_RE = re.compile(rf"(?P<start>{DATE_TOKEN})(?:(?!{DATE_TOKEN}).){{0,60}}(?:[〜～~–—]|から)(?:(?!{DATE_TOKEN}).){{0,60}}(?P<end>{DATE_TOKEN})")
+ROUND_LABEL_PATTERNS = ROUND_LABEL_PATTERNS + (
+    r"(?:CN|Rakuten|Ticket\s*Board|楽天|チケットボード|CNプレイガイド)?\s*(?:抽選|先行|プレオーダー|プレリクエスト|先着先行)",
+    r"一般発売",
+)
 DATE_RE = re.compile(DATE_TOKEN)
 
 
@@ -574,6 +604,7 @@ def round_name_from_context(context: str, fallback: str) -> str:
 
 def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     contexts = context_windows(page.text, ROUND_LABEL_PATTERNS + ("受付期間", "申込期間", "抽選結果", "当落", "一般発売"))
+    contexts = contexts + context_windows(page.text, ROUND_CONTEXT_HINTS)
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
     for index, context in enumerate(contexts, start=1):
@@ -581,6 +612,9 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = extract_first_date(context, ("一般発売", "発売日"))
         payment_deadline = extract_first_date(context, ("入金", "支払", "払込", "決済"))
+        results_date = results_date or extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
+        general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"))
+        payment_deadline = payment_deadline or extract_first_date(context, ("入金", "支払", "支払い", "支払期限", "入金締切"))
         if not any((start, end, results_date, general_sale_date, payment_deadline)):
             continue
         name = round_name_from_context(context, f"Lottery round {index}")
@@ -616,7 +650,7 @@ def adapt_ticket_rounds(page: Page, platform: str) -> tuple[TicketRound, ...]:
 
 def extract_ticket_rounds_for_page(page: Page) -> tuple[TicketRound, ...]:
     platform = source_name_for_url(page.url)
-    if platform in {"pia", "eplus", "lawson"}:
+    if platform in TICKET_DOMAINS:
         return adapt_ticket_rounds(page, platform)
     return dedupe_ticket_rounds(extract_ticket_rounds(page))
 

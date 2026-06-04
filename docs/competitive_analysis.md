@@ -101,8 +101,9 @@ Keep the generic parser, but add adapters in this order:
 2. Pia adapter
 3. eplus adapter
 4. Lawson Ticket adapter
-5. musical/stage production adapter for common Japanese production sites
-6. fan-club/manual-private source notes for login-only information, without scraping private pages
+5. Rakuten Ticket, Ticket Board, and CN Playguide adapters
+6. musical/stage production adapter for common Japanese production sites
+7. fan-club/manual-private source notes for login-only information, without scraping private pages
 
 ### 5. User-facing app blocks
 

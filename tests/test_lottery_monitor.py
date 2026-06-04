@@ -313,6 +313,32 @@ def test_adapter_dispatch_labels_ticket_platform():
     assert rounds[0].confidence == 90
 
 
+def test_adapter_dispatch_covers_additional_ticket_platforms():
+    html = """
+    <html><body>
+      <h2>先行抽選</h2>
+      <p>抽選申込期間 2026年6月10日 ～ 2026年6月18日</p>
+      <p>結果発表 2026年6月22日</p>
+      <p>支払期限 2026年6月25日</p>
+    </body></html>
+    """
+    cases = (
+        ("https://ticket.rakuten.co.jp/music/example", "rakuten"),
+        ("https://ticket.tickebo.jp/example", "ticketboard"),
+        ("https://www.cnplayguide.com/example", "cnplayguide"),
+    )
+
+    for url, platform in cases:
+        rounds = lm.extract_ticket_rounds_for_page(lm.parse_page(url, html))
+
+        assert rounds[0].platform == platform
+        assert rounds[0].source == platform
+        assert rounds[0].application_start_at == "2026-06-10"
+        assert rounds[0].application_end_at == "2026-06-18"
+        assert rounds[0].results_date == "2026-06-22"
+        assert rounds[0].payment_end_at == "2026-06-25"
+
+
 def example_blocks(keyword="Example"):
     return lm.AppBlocks(
         general_info=lm.EventInfo(

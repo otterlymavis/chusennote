@@ -199,12 +199,12 @@ See [`docs/competitive_analysis.md`](docs/competitive_analysis.md) for an analys
 - Saved events include local match reasons, and the web/API/mobile views include a “Needs Attention” ticket-date list.
 - Per-watch alert preferences and venue/region filters keep batch monitoring quieter.
 - The local web UI is intentionally standard-library only and runs on your machine.
-- The best long-term approach is to keep this keyword-first pipeline and add dedicated adapters for Pia, eplus, Lawson Ticket, official fan-club pages, and musical production sites.
+- The best long-term approach is to keep this keyword-first pipeline and keep deepening dedicated public-page adapters for Pia, eplus, Lawson Ticket, Rakuten Ticket, Ticket Board, CN Playguide, official sites, and musical production sites.
 - The MVP does not send Discord, LINE, Slack, or email notifications and does not scrape private/login-only fan-club pages; use private manual sources for those notes.
 
 ## Future upgrades
 
 - Add Discord/LINE/Slack notifications for newly opened or closing lotteries.
-- Deepen source-specific parsers for Pia/eplus/Lawson Ticket date fields.
+- Deepen source-specific parsers with more site-specific evidence snippets and edge-case date labels.
 - Support multiple rounds explicitly (`1st lottery`, `2nd lottery`, `official presale`, `general sale`).
 - Add recurring background scheduling outside the current one-shot `watch run` command.
