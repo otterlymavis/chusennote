@@ -2381,10 +2381,7 @@ def render_web_page(db_path: str) -> str:
         """
         for item in upcoming
     ) or "<li>No urgent ticket dates saved yet.</li>"
-    alert_items = "\n".join(
-        f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> {html.escape(str(alert.get('event', '')))} {html.escape(str(alert.get('round', '')))} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
-        for alert in alerts
-    ) or "<li>No alerts emitted yet.</li>"
+    alert_items = "\n".join(render_alert_item(alert) for alert in alerts) or "<li>No alerts emitted yet.</li>"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2481,6 +2478,21 @@ def render_web_page(db_path: str) -> str:
   </main>
 </body>
 </html>"""
+
+
+def render_alert_item(alert: dict[str, object]) -> str:
+    event_id = alert.get("event_id")
+    event_text = html.escape(str(alert.get("event", "")))
+    event_link = (
+        f'<a href="/events/{html.escape(str(event_id))}">{event_text}</a>'
+        if event_id and event_text
+        else event_text
+    )
+    return (
+        f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> "
+        f"{event_link} {html.escape(str(alert.get('round', '')))} "
+        f"<small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
+    )
 
 
 def render_event_card(event: dict[str, object], basic: bool = False) -> str:

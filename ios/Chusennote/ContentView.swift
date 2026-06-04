@@ -309,7 +309,7 @@ struct ContentView: View {
                     ForEach(store.alerts.prefix(10)) { alert in
                         VStack(alignment: .leading) {
                             Text(alert.type).font(.headline)
-                            Text([alert.event, alert.keyword, alert.round].compactMap { $0 }.joined(separator: " "))
+                            Text(alertText(alert))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -343,6 +343,14 @@ struct ContentView: View {
 
     private func sourceMode(_ source: WatchSource) -> String {
         source.privateNote ? "private note" : source.platform
+    }
+
+    private func alertText(_ alert: AlertPayload) -> String {
+        var parts = [alert.event, alert.keyword, alert.round].compactMap { $0 }.filter { !$0.isEmpty }
+        if let eventId = alert.eventId {
+            parts.append("Event #\(eventId)")
+        }
+        return parts.joined(separator: " ")
     }
 
     private func webURL(_ value: String?) -> URL? {
