@@ -459,6 +459,11 @@ def test_watch_add_list_remove_cli(tmp_path, capsys):
     muted_list_output = capsys.readouterr().out
     assert "Example [muted]" in muted_list_output
 
+    assert lm.main(["export", "tracked-events", "--db", str(db_path), "--include-muted"]) == 0
+    export_output = capsys.readouterr().out
+    assert '"keyword": "Example"' in export_output
+    assert '"muted": true' in export_output
+
 
 def test_kind_watch_mute_unmute_cli(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
@@ -647,6 +652,8 @@ def test_source_provenance_and_round_metadata_are_exported(tmp_path):
 def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.save_blocks(str(db_path), example_blocks("Example"), now="2026-06-03T00:00:00+00:00")
+    lm.add_watch_source(str(db_path), "Example", "https://fan.example/private", "FC", private_note=True)
+    assert lm.remove_watch_source(str(db_path), "https://fan.example/private") is True
 
     assert lm.main(["export", "events", "--db", str(db_path)]) == 0
     output = capsys.readouterr().out
@@ -655,6 +662,12 @@ def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
     assert '"status": "lottery_open"' in output
     assert '"event_dates": [' in output
     assert '"match_reasons": [' in output
+    assert '"manual_sources": []' in output
+
+    assert lm.main(["export", "events", "--db", str(db_path), "--include-muted"]) == 0
+    muted_output = capsys.readouterr().out
+    assert '"label": "FC"' in muted_output
+    assert '"muted": true' in muted_output
 
 
 def test_upcoming_export_sorts_urgent_ticket_rounds(tmp_path, capsys):

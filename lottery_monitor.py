@@ -2227,6 +2227,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events", "calendar", "upcoming"))
     export_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     export_parser.add_argument("--json", action="store_true", default=True)
+    export_parser.add_argument("--include-muted", action="store_true", help="Include muted watches or embedded manual sources where supported")
 
     return parser.parse_args(argv)
 
@@ -2686,13 +2687,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "export":
         if args.target == "events":
-            print(json.dumps(recent_events(args.db), ensure_ascii=False, indent=2))
+            print(json.dumps(recent_events(args.db, include_muted_sources=args.include_muted), ensure_ascii=False, indent=2))
         elif args.target == "alerts":
             print(json.dumps(recent_alerts(args.db), ensure_ascii=False, indent=2))
         elif args.target == "artists":
-            print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_ARTIST)))
+            print(watches_to_json(list_watches(args.db, include_muted=args.include_muted, kind=WATCH_KIND_ARTIST)))
         elif args.target == "tracked-events":
-            print(watches_to_json(list_watches(args.db, kind=WATCH_KIND_EVENT)))
+            print(watches_to_json(list_watches(args.db, include_muted=args.include_muted, kind=WATCH_KIND_EVENT)))
         elif args.target == "calendar":
             print(render_calendar_ics(args.db), end="")
         elif args.target == "upcoming":
