@@ -26,6 +26,14 @@ import urllib.request
 from collections.abc import Iterable, Sequence
 from html.parser import HTMLParser
 
+
+def configure_cli_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticket lottery monitor)"
 SEARCH_URL = "https://duckduckgo.com/html/"
 TIMEOUT_SECONDS = 20
@@ -2885,4 +2893,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    configure_cli_stdio()
     raise SystemExit(main())
