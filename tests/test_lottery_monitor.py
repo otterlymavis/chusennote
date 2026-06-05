@@ -790,6 +790,10 @@ def test_api_health_reports_database_counts(tmp_path):
     assert health["saved_events"] >= 1
     assert health["manual_sources"] == 1
 
+    assert lm.remove_watch(str(db_path), "Event") is True
+    muted_health = lm.api_health(str(db_path))
+    assert muted_health["manual_sources"] == 0
+
 
 def test_watch_source_cli_add_list_remove(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
@@ -842,6 +846,15 @@ def test_export_sources_respects_include_muted(tmp_path, capsys):
     muted_output = capsys.readouterr().out
     assert '"label": "FC private"' in muted_output
     assert '"muted": true' in muted_output
+
+    assert lm.remove_watch(str(db_path), "Example") is True
+    assert lm.main(["export", "sources", "--db", str(db_path)]) == 0
+    muted_watch_output = capsys.readouterr().out
+    assert muted_watch_output.strip() == "[]"
+
+    assert lm.main(["export", "sources", "--db", str(db_path), "--include-muted"]) == 0
+    included_muted_watch_output = capsys.readouterr().out
+    assert '"label": "Pia"' in included_muted_watch_output
 
 
 def test_private_note_sources_are_not_scraped(tmp_path, monkeypatch):
@@ -1070,6 +1083,8 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert muted["muted"] is True
         assert json_load_url(f"{base}/api/watchlist") == []
         assert json_load_url(f"{base}/api/watchlist?include_muted=1")[0]["muted"] is True
+        assert json_load_url(f"{base}/api/sources") == []
+        assert json_load_url(f"{base}/api/sources?include_muted=1")[0]["label"] == "FC"
         assert json_load_url(f"{base}/api/events") == []
         assert json_load_url(f"{base}/api/events?include_muted=1")[0]["title"] == "Example Tour"
         assert json_load_url(f"{base}/api/upcoming") == []

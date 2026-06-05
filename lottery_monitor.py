@@ -1177,17 +1177,19 @@ def list_watch_sources(db_path: str, watch_identifier: str | None = None, includ
             watch = resolve_watch(connection, watch_identifier)
             if not watch:
                 return []
-            clauses.append("watch_id = ?")
+            clauses.append("s.watch_id = ?")
             params.append(watch.id)
         if not include_muted:
-            clauses.append("muted = 0")
+            clauses.append("s.muted = 0")
+            clauses.append("w.muted = 0")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT id, watch_id, url, label, platform, confidence, private_note, muted
-            FROM watch_sources
+            SELECT s.id, s.watch_id, s.url, s.label, s.platform, s.confidence, s.private_note, s.muted
+            FROM watch_sources s
+            JOIN watched_keywords w ON w.id = s.watch_id
             {where}
-            ORDER BY watch_id, id
+            ORDER BY s.watch_id, s.id
             """,
             params,
         ).fetchall()
@@ -1646,7 +1648,14 @@ def api_health(db_path: str) -> dict[str, object]:
             (WATCH_KIND_EVENT,),
         ).fetchone()[0]
         saved_events = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        sources = connection.execute("SELECT COUNT(*) FROM watch_sources WHERE muted = 0").fetchone()[0]
+        sources = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM watch_sources s
+            JOIN watched_keywords w ON w.id = s.watch_id
+            WHERE s.muted = 0 AND w.muted = 0
+            """
+        ).fetchone()[0]
         alerts = connection.execute("SELECT COUNT(*) FROM alert_log").fetchone()[0]
     return {
         "app": "chusennote",
@@ -2346,7 +2355,8 @@ def render_web_page(db_path: str) -> str:
     active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
     muted_watches = [watch for watch in watches if watch.muted]
-    active_sources = [source for source in sources if not source.muted]
+    active_watch_ids = {watch.id for watch in watches if not watch.muted}
+    active_sources = [source for source in sources if not source.muted and source.watch_id in active_watch_ids]
     muted_sources = [source for source in sources if source.muted]
     artist_items = "\n".join(
         f"""
