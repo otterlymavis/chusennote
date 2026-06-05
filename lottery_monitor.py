@@ -2376,7 +2376,7 @@ def render_web_page(db_path: str) -> str:
         <li>
           <span><strong>{html.escape(str(item.get('event_title') or 'Untitled event'))}</strong><br>
           <small>{html.escape(str(item.get('status') or 'unknown'))} · {html.escape(str(item.get('platform') or 'unknown'))} · {html.escape(str(item.get('round_name') or 'Ticket round'))} · {html.escape(str(item.get('relevant_date') or 'date unknown'))}</small></span>
-          <a href="{html.escape(str(item.get('url') or '#'))}">Source</a>
+          {f'<a href="{html.escape(str(item.get("url")))}">Source</a>' if is_web_url(item.get("url")) else '<span>Source unavailable</span>'}
         </li>
         """
         for item in upcoming
@@ -2518,7 +2518,7 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
           <small>Results: {html.escape(str(ticket.get('results_date') or 'unknown'))}</small><br>
           <small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))}</small><br>
           <small>Evidence: {html.escape(str(ticket.get('evidence') or 'none'))}</small><br>
-          <a href="{html.escape(str(ticket.get('url') or '#'))}">Source</a>
+          {f'<a href="{html.escape(str(ticket.get("url")))}">Source</a>' if is_web_url(ticket.get("url")) else '<span>Source unavailable</span>'}
         </div>
         """
         for ticket in rounds

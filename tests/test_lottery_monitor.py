@@ -706,6 +706,36 @@ def test_upcoming_export_sorts_urgent_ticket_rounds(tmp_path, capsys):
     assert '"match_reasons": [' in output
 
 
+def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Tour",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="manual",
+                url="keyword:Example",
+                name="Manual reminder",
+                lottery_start="2026-06-03",
+                lottery_end="2026-06-05",
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-03T00:00:00+00:00")
+
+    home = lm.render_web_page(str(db_path))
+
+    assert 'href="keyword:Example"' not in home
+    assert "Source unavailable" in home
+
+
 def test_api_health_reports_database_counts(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Artist", kind=lm.WATCH_KIND_ARTIST)
