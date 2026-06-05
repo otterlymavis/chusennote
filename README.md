@@ -121,11 +121,13 @@ For testing from a physical phone on the same Wi-Fi, bind to your LAN interface:
 .\scripts\start-chusennote.ps1 -Lan
 ```
 
-Then use one of the printed `LAN URL` values in the mobile app. You can verify a running server with:
+Then use one of the printed `LAN URL` values in the mobile app. You can smoke-test a running server with:
 
 ```powershell
 .\scripts\check-chusennote.ps1
 ```
+
+The smoke check verifies the home page, `/api/health`, watchlist, events, upcoming rows, alerts, sources, and calendar feed.
 
 Native mobile client source is available in [`android/`](android/) and [`ios/`](ios/). See [`MOBILE.md`](MOBILE.md) for setup notes.
 
