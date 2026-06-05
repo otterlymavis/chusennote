@@ -971,8 +971,12 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert removed_source["removed"] is True
         source_list = json_load_url(f"{base}/api/sources")
         muted_source_list = json_load_url(f"{base}/api/sources?include_muted=1")
+        events_without_muted_sources = json_load_url(f"{base}/api/events")
+        events_with_muted_sources = json_load_url(f"{base}/api/events?include_muted=1")
         assert source_list == []
         assert muted_source_list[0]["muted"] is True
+        assert events_without_muted_sources[0]["manual_sources"] == []
+        assert events_with_muted_sources[0]["manual_sources"][0]["muted"] is True
 
         restored_source_home = post_text(f"{base}/source/unmute", {"identifier": "1"})
         assert "Muted Sources" in restored_source_home

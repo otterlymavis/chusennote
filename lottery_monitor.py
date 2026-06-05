@@ -1371,7 +1371,7 @@ def run_watch_loop(
     return 0
 
 
-def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+def recent_events(db_path: str, limit: int = 50, include_muted_sources: bool = False) -> list[dict[str, object]]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
         rows = connection.execute(
@@ -1387,11 +1387,12 @@ def recent_events(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         ).fetchall()
         events: list[dict[str, object]] = []
         for row in rows:
+            source_muted_clause = "" if include_muted_sources else " AND muted = 0"
             manual_sources = connection.execute(
-                """
+                f"""
                 SELECT id, watch_id, url, label, platform, confidence, private_note, muted
                 FROM watch_sources
-                WHERE watch_id = ? AND muted = 0
+                WHERE watch_id = ?{source_muted_clause}
                 ORDER BY id
                 """,
                 (row[1],),
@@ -2575,7 +2576,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=include_muted)])
             elif path == "/api/events":
-                json_response(self, recent_events(db_path))
+                include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
+                json_response(self, recent_events(db_path, include_muted_sources=include_muted))
             elif path == "/api/upcoming":
                 json_response(self, upcoming_priority_rows(db_path))
             elif path == "/api/alerts":
