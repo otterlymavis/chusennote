@@ -1089,6 +1089,9 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert json_load_url(f"{base}/api/events?include_muted=1")[0]["title"] == "Example Tour"
         assert json_load_url(f"{base}/api/upcoming") == []
         assert json_load_url(f"{base}/api/upcoming?include_muted=1")[0]["event_title"] == "Example Tour"
+        muted_detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
+        assert "Example Tour" in muted_detail
+        assert '<a href="https://fan.example/private">Open</a>' in muted_detail
 
         restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
         assert "Muted Watches" in restored_home

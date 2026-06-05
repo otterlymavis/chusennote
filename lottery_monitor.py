@@ -1671,7 +1671,12 @@ def api_health(db_path: str) -> dict[str, object]:
 
 
 def event_detail(db_path: str, event_id: int) -> dict[str, object] | None:
-    for event in recent_events(db_path, limit=500):
+    for event in recent_events(
+        db_path,
+        limit=500,
+        include_muted_sources=True,
+        include_muted_watches=True,
+    ):
         if int(event["id"]) == event_id:
             return event
     return None
