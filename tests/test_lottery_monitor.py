@@ -991,6 +991,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Venues:" in home
         assert "Evidence:" in home
         assert 'href="/events/1">Example Tour</a>' in home
+        assert "event Example" in home
         assert "Example Tour" in detail
         assert health["status"] == "ok"
         assert health["tracked_events"] >= 1

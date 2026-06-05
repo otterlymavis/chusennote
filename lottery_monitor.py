@@ -2533,16 +2533,24 @@ def render_web_page(db_path: str) -> str:
 
 def render_alert_item(alert: dict[str, object]) -> str:
     event_id = alert.get("event_id")
-    event_text = html.escape(str(alert.get("event", "")))
+    event_text = html.escape(str(alert.get("event") or alert.get("event_title") or ""))
     event_link = (
         f'<a href="/events/{html.escape(str(event_id))}">{event_text}</a>'
         if event_id and event_text
         else event_text
     )
+    watch_keyword = str(alert.get("watch_keyword") or "")
+    watch_context = ""
+    if watch_keyword:
+        watch_kind = str(alert.get("watch_kind") or "watch")
+        muted = " muted" if alert.get("watch_muted") is True else ""
+        watch_context = f" <small>{html.escape(watch_kind)} {html.escape(watch_keyword)}{muted}</small>"
+    elif alert.get("watch_id"):
+        watch_context = f" <small>watch #{html.escape(str(alert.get('watch_id')))}</small>"
     return (
         f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> "
         f"{event_link} {html.escape(str(alert.get('round', '')))} "
-        f"<small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
+        f"{watch_context} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
     )
 
 
