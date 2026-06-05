@@ -802,6 +802,24 @@ def test_watch_source_cli_mute_unmute_preserves_source_row(tmp_path, capsys):
     assert lm.list_watch_sources(str(db_path))[0].muted is False
 
 
+def test_export_sources_respects_include_muted(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    lm.add_watch_source(str(db_path), "Example", "https://t.pia.jp/example", "Pia")
+    lm.add_watch_source(str(db_path), "Example", "https://fan.example/private", "FC private", private_note=True)
+    assert lm.remove_watch_source(str(db_path), "https://fan.example/private") is True
+
+    assert lm.main(["export", "sources", "--db", str(db_path)]) == 0
+    output = capsys.readouterr().out
+    assert '"label": "Pia"' in output
+    assert "FC private" not in output
+
+    assert lm.main(["export", "sources", "--db", str(db_path), "--include-muted"]) == 0
+    muted_output = capsys.readouterr().out
+    assert '"label": "FC private"' in muted_output
+    assert '"muted": true' in muted_output
+
+
 def test_private_note_sources_are_not_scraped(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")

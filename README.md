@@ -136,11 +136,12 @@ python3 lottery_monitor.py export events --db chusennote.sqlite3
 python3 lottery_monitor.py export alerts --db chusennote.sqlite3
 python3 lottery_monitor.py export artists --db chusennote.sqlite3
 python3 lottery_monitor.py export tracked-events --db chusennote.sqlite3
+python3 lottery_monitor.py export sources --db chusennote.sqlite3
 python3 lottery_monitor.py export upcoming --db chusennote.sqlite3
 python3 lottery_monitor.py export calendar --db chusennote.sqlite3 > chusennote.ics
 ```
 
-Use `--include-muted` with `export events`, `export artists`, or `export tracked-events` when you want muted embedded sources or muted watches included in the JSON.
+Use `--include-muted` with `export events`, `export artists`, `export tracked-events`, or `export sources` when you want muted embedded sources, muted watches, or muted manual sources included in the JSON.
 
 The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8765/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
 
