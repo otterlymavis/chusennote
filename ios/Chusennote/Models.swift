@@ -34,6 +34,7 @@ struct EventSummary: Codable, Identifiable {
     let eventDates: [String]?
     let venues: [String]?
     let matchReasons: [String]?
+    let manualSources: [WatchSource]?
     let rounds: [TicketRound]
 
     enum CodingKeys: String, CodingKey {
@@ -46,6 +47,7 @@ struct EventSummary: Codable, Identifiable {
         case eventDates = "event_dates"
         case venues
         case matchReasons = "match_reasons"
+        case manualSources = "manual_sources"
         case rounds
     }
 }

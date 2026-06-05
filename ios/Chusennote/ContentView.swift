@@ -384,6 +384,31 @@ struct EventDetailView: View {
                     Text("Why: \(reasons.prefix(3).joined(separator: "; "))")
                 }
             }
+            Section("Manual Sources") {
+                let sources = event.manualSources ?? []
+                if sources.isEmpty {
+                    Text("No manual sources.")
+                }
+                ForEach(sources) { source in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(source.label).font(.headline)
+                            Text("Watch #\(source.watchId) - \(sourceMode(source))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(source.url)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if let url = webURL(source.url) {
+                            Button("Open") {
+                                openURL(url)
+                            }
+                        }
+                    }
+                }
+            }
             Section("Ticket Rounds") {
                 if event.rounds.isEmpty {
                     Text("No ticket rounds saved yet.")
@@ -411,5 +436,9 @@ struct EventDetailView: View {
         guard let value, let url = URL(string: value) else { return nil }
         guard url.scheme == "http" || url.scheme == "https" else { return nil }
         return url
+    }
+
+    private func sourceMode(_ source: WatchSource) -> String {
+        source.privateNote ? "private note" : source.platform
     }
 }
