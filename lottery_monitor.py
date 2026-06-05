@@ -1516,20 +1516,28 @@ def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
         init_db(connection)
         rows = connection.execute(
             """
-            SELECT id, event_id, alert_type, payload_json, created_at
-            FROM alert_log
-            ORDER BY created_at DESC, id DESC
+            SELECT a.id, a.event_id, a.alert_type, a.payload_json, a.created_at,
+                   e.canonical_title, w.id, w.keyword, w.kind, w.muted
+            FROM alert_log a
+            LEFT JOIN events e ON e.id = a.event_id
+            LEFT JOIN watched_keywords w ON w.id = e.watch_id
+            ORDER BY a.created_at DESC, a.id DESC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
         alerts: list[dict[str, object]] = []
-        for alert_id, event_id, alert_type, payload_json, created_at in rows:
+        for alert_id, event_id, alert_type, payload_json, created_at, event_title, watch_id, keyword, kind, muted in rows:
             payload = json.loads(payload_json)
             payload["alert_id"] = alert_id
             payload["event_id"] = event_id
             payload["created_at"] = created_at
             payload["alert_type"] = alert_type
+            payload["event_title"] = event_title
+            payload["watch_id"] = watch_id
+            payload["watch_keyword"] = keyword
+            payload["watch_kind"] = kind
+            payload["watch_muted"] = bool(muted) if muted is not None else None
             alerts.append(payload)
         return alerts
 

@@ -240,6 +240,11 @@ def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
     assert recent_alerts[0]["alert_id"] >= 1
     assert recent_alerts[0]["event_id"] >= 1
     assert recent_alerts[0]["alert_type"] == recent_alerts[0]["type"]
+    assert recent_alerts[0]["event_title"] == "Example Tour"
+    assert recent_alerts[0]["watch_id"] >= 1
+    assert recent_alerts[0]["watch_keyword"] == "Example"
+    assert recent_alerts[0]["watch_kind"] == lm.WATCH_KIND_EVENT
+    assert recent_alerts[0]["watch_muted"] is False
 
 
 def test_save_blocks_does_not_repeat_lifecycle_alerts(tmp_path):
@@ -999,6 +1004,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert alerts
         assert alerts[0]["alert_id"] >= 1
         assert alerts[0]["event_id"] >= 1
+        assert alerts[0]["event_title"] == "Example Tour"
+        assert alerts[0]["watch_keyword"] == "Example"
         assert "text/calendar" in calendar_response.headers["Content-Type"]
         assert "BEGIN:VCALENDAR" in calendar
         assert "Example Tour" in muted_calendar
