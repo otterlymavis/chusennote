@@ -543,11 +543,11 @@ public class MainActivity extends Activity {
             String detail = "Watch #" + source.optInt("watch_id") + " - " + mode + "\n" + source.optString("url", "");
             String sourceUrl = source.optString("url", "");
             if (source.optBoolean("muted")) {
-                mutedSourceList.addView(twoActionCard(source.optString("label", "Source"), detail, "Open", () -> openUrl(sourceUrl), "Restore", () -> restoreSource(source.optInt("id"))));
+                mutedSourceList.addView(sourceActionCard(source.optString("label", "Source"), detail, sourceUrl, "Restore", () -> restoreSource(source.optInt("id"))));
                 mutedSourceCount++;
                 continue;
             }
-            sourceList.addView(twoActionCard(source.optString("label", "Source"), detail, "Open", () -> openUrl(sourceUrl), "Remove", () -> removeSource(source.optInt("id"))));
+            sourceList.addView(sourceActionCard(source.optString("label", "Source"), detail, sourceUrl, "Remove", () -> removeSource(source.optInt("id"))));
         }
         if (sourceList.getChildCount() == 0) {
             sourceList.addView(body("No manual sources."));
@@ -710,5 +710,12 @@ public class MainActivity extends Activity {
         second.setOnClickListener(view -> secondAction.run());
         row.addView(second);
         return row;
+    }
+
+    private LinearLayout sourceActionCard(String title, String detail, String url, String actionLabel, Runnable action) {
+        if (!isWebUrl(url)) {
+            return actionCard(title, detail, actionLabel, action);
+        }
+        return twoActionCard(title, detail, "Open", () -> openUrl(url), actionLabel, action);
     }
 }
