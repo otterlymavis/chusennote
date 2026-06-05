@@ -962,6 +962,10 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
 
         run_alerts = post_form(f"{base}/api/run", {})
         assert any(alert["type"] == "new_lottery_round" for alert in run_alerts)
+        home_with_source = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
+        detail_with_source = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
+        assert '<a href="https://fan.example/private">Open</a>' in home_with_source
+        assert '<a href="https://fan.example/private">Open</a>' in detail_with_source
 
         removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
         assert removed_source["removed"] is True

@@ -1656,10 +1656,24 @@ def event_detail(db_path: str, event_id: int) -> dict[str, object] | None:
     return None
 
 
+def web_source_link(url: object, label: str = "Open") -> str:
+    return (
+        f'<a href="{html.escape(str(url))}">{html.escape(label)}</a>'
+        if is_web_url(url)
+        else "<span>Source unavailable</span>"
+    )
+
+
 def render_event_detail_page(db_path: str, event_id: int) -> str:
     event = event_detail(db_path, event_id)
     if not event:
         return "<!doctype html><title>Not found</title><h1>Event not found</h1>"
+    manual_source_items = "".join(
+        f"<li>{html.escape(str(source.get('label')))} - {html.escape(str(source.get('url')))} - "
+        f"{html.escape('private note' if source.get('private_note') else str(source.get('platform')))} - "
+        f"{web_source_link(source.get('url'))}</li>"
+        for source in event.get("manual_sources", [])
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(str(event.get('title') or 'Event'))}</title></head>
@@ -1670,7 +1684,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
   {render_event_card(event, basic=event.get('watch_kind') == WATCH_KIND_ARTIST)}
   <h2>Manual Sources</h2>
   <ul>
-    {''.join(f"<li>{html.escape(str(source.get('label')))} · {html.escape(str(source.get('url')))} · {html.escape('private note' if source.get('private_note') else str(source.get('platform')))}</li>" for source in event.get('manual_sources', []))}
+    {manual_source_items}
   </ul>
 </body>
 </html>"""
@@ -2355,6 +2369,7 @@ def render_web_page(db_path: str) -> str:
         f"""
         <li>
           <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} · {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small></span>
+          {web_source_link(source.url)}
           <form method="post" action="/source/remove"><input type="hidden" name="identifier" value="{source.id}"><button>Remove</button></form>
         </li>
         """
@@ -2363,7 +2378,7 @@ def render_web_page(db_path: str) -> str:
     muted_source_items = "\n".join(
         f"""
         <li>
-          <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} Â· {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small></span>
+          <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} Â· {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small><br>{web_source_link(source.url)}</span>
           <form method="post" action="/source/unmute"><input type="hidden" name="identifier" value="{source.id}"><button>Restore</button></form>
         </li>
         """
