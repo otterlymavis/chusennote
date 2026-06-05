@@ -1371,15 +1371,22 @@ def run_watch_loop(
     return 0
 
 
-def recent_events(db_path: str, limit: int = 50, include_muted_sources: bool = False) -> list[dict[str, object]]:
+def recent_events(
+    db_path: str,
+    limit: int = 50,
+    include_muted_sources: bool = False,
+    include_muted_watches: bool = False,
+) -> list[dict[str, object]]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
+        watch_muted_clause = "" if include_muted_watches else "WHERE w.muted = 0"
         rows = connection.execute(
-            """
+            f"""
             SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary,
                    e.event_dates_json, e.venues_json, e.status, e.updated_at
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
+            {watch_muted_clause}
             ORDER BY e.updated_at DESC
             LIMIT ?
             """,
@@ -1465,9 +1472,9 @@ def upcoming_relevant_date(round_info: dict[str, object]) -> str:
     )
 
 
-def upcoming_priority_rows(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+def upcoming_priority_rows(db_path: str, limit: int = 50, include_muted_watches: bool = False) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for event in recent_events(db_path, limit=500):
+    for event in recent_events(db_path, limit=500, include_muted_watches=include_muted_watches):
         if event.get("watch_kind") != WATCH_KIND_EVENT:
             continue
         for round_info in event.get("rounds", []):
@@ -2578,9 +2585,17 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=include_muted)])
             elif path == "/api/events":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                json_response(self, recent_events(db_path, include_muted_sources=include_muted))
+                json_response(
+                    self,
+                    recent_events(
+                        db_path,
+                        include_muted_sources=include_muted,
+                        include_muted_watches=include_muted,
+                    ),
+                )
             elif path == "/api/upcoming":
-                json_response(self, upcoming_priority_rows(db_path))
+                include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
+                json_response(self, upcoming_priority_rows(db_path, include_muted_watches=include_muted))
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path))
             elif path == "/api/sources":
@@ -2687,7 +2702,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "export":
         if args.target == "events":
-            print(json.dumps(recent_events(args.db, include_muted_sources=args.include_muted), ensure_ascii=False, indent=2))
+            print(
+                json.dumps(
+                    recent_events(
+                        args.db,
+                        include_muted_sources=args.include_muted,
+                        include_muted_watches=args.include_muted,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         elif args.target == "alerts":
             print(json.dumps(recent_alerts(args.db), ensure_ascii=False, indent=2))
         elif args.target == "artists":
@@ -2699,7 +2724,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.target == "calendar":
             print(render_calendar_ics(args.db), end="")
         elif args.target == "upcoming":
-            print(json.dumps(upcoming_priority_rows(args.db), ensure_ascii=False, indent=2))
+            print(json.dumps(upcoming_priority_rows(args.db, include_muted_watches=args.include_muted), ensure_ascii=False, indent=2))
         return 0
     if args.command in {"artist", "event"}:
         if args.kind_command == "add":

@@ -669,6 +669,15 @@ def test_export_cli_outputs_saved_events(tmp_path, monkeypatch, capsys):
     assert '"label": "FC"' in muted_output
     assert '"muted": true' in muted_output
 
+    assert lm.remove_watch(str(db_path), "Example") is True
+    assert lm.main(["export", "events", "--db", str(db_path)]) == 0
+    muted_watch_output = capsys.readouterr().out
+    assert muted_watch_output.strip() == "[]"
+
+    assert lm.main(["export", "events", "--db", str(db_path), "--include-muted"]) == 0
+    included_muted_watch_output = capsys.readouterr().out
+    assert '"title": "Example Tour"' in included_muted_watch_output
+
 
 def test_upcoming_export_sorts_urgent_ticket_rounds(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
@@ -717,6 +726,21 @@ def test_upcoming_export_sorts_urgent_ticket_rounds(tmp_path, capsys):
     output = capsys.readouterr().out
     assert '"event_title": "Closing Tour"' in output
     assert '"match_reasons": [' in output
+
+    assert lm.remove_watch(str(db_path), "Closing") is True
+    assert lm.remove_watch(str(db_path), "Payment") is True
+    assert lm.upcoming_priority_rows(str(db_path)) == []
+
+    muted_rows = lm.upcoming_priority_rows(str(db_path), include_muted_watches=True)
+    assert muted_rows[0]["event_title"] == "Closing Tour"
+
+    assert lm.main(["export", "upcoming", "--db", str(db_path)]) == 0
+    muted_output = capsys.readouterr().out
+    assert muted_output.strip() == "[]"
+
+    assert lm.main(["export", "upcoming", "--db", str(db_path), "--include-muted"]) == 0
+    included_muted_output = capsys.readouterr().out
+    assert '"event_title": "Closing Tour"' in included_muted_output
 
 
 def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
@@ -1026,6 +1050,10 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert muted["muted"] is True
         assert json_load_url(f"{base}/api/watchlist") == []
         assert json_load_url(f"{base}/api/watchlist?include_muted=1")[0]["muted"] is True
+        assert json_load_url(f"{base}/api/events") == []
+        assert json_load_url(f"{base}/api/events?include_muted=1")[0]["title"] == "Example Tour"
+        assert json_load_url(f"{base}/api/upcoming") == []
+        assert json_load_url(f"{base}/api/upcoming?include_muted=1")[0]["event_title"] == "Example Tour"
 
         restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
         assert "Muted Watches" in restored_home
