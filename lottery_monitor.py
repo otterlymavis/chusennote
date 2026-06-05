@@ -1549,9 +1549,9 @@ def ics_dtstamp(generated_at: dt.datetime | None = None) -> str:
     return stamp.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-def timeline_calendar_entries(db_path: str) -> list[dict[str, str]]:
+def timeline_calendar_entries(db_path: str, include_muted_watches: bool = False) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
-    for event in recent_events(db_path, limit=500):
+    for event in recent_events(db_path, limit=500, include_muted_watches=include_muted_watches):
         if event.get("watch_kind") != WATCH_KIND_EVENT:
             continue
         event_id = str(event.get("id") or "")
@@ -1600,7 +1600,11 @@ def timeline_calendar_entries(db_path: str) -> list[dict[str, str]]:
     return entries
 
 
-def render_calendar_ics(db_path: str, generated_at: dt.datetime | None = None) -> str:
+def render_calendar_ics(
+    db_path: str,
+    generated_at: dt.datetime | None = None,
+    include_muted_watches: bool = False,
+) -> str:
     stamp = ics_dtstamp(generated_at)
     lines = [
         "BEGIN:VCALENDAR",
@@ -1610,7 +1614,7 @@ def render_calendar_ics(db_path: str, generated_at: dt.datetime | None = None) -
         "METHOD:PUBLISH",
         "X-WR-CALNAME:chusennote ticket timeline",
     ]
-    for entry in timeline_calendar_entries(db_path):
+    for entry in timeline_calendar_entries(db_path, include_muted_watches=include_muted_watches):
         lines.extend(
             [
                 "BEGIN:VEVENT",
@@ -2602,7 +2606,12 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=include_muted)])
             elif path == "/calendar.ics":
-                text_response(self, render_calendar_ics(db_path), "text/calendar; charset=utf-8")
+                include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
+                text_response(
+                    self,
+                    render_calendar_ics(db_path, include_muted_watches=include_muted),
+                    "text/calendar; charset=utf-8",
+                )
             else:
                 json_response(self, {"error": "not found"}, status=404)
 
@@ -2722,7 +2731,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.target == "sources":
             print(watch_sources_to_json(list_watch_sources(args.db, include_muted=args.include_muted)))
         elif args.target == "calendar":
-            print(render_calendar_ics(args.db), end="")
+            print(render_calendar_ics(args.db, include_muted_watches=args.include_muted), end="")
         elif args.target == "upcoming":
             print(json.dumps(upcoming_priority_rows(args.db, include_muted_watches=args.include_muted), ensure_ascii=False, indent=2))
         return 0

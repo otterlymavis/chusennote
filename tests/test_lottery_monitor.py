@@ -886,7 +886,7 @@ def test_public_manual_source_adds_ticket_round(tmp_path, monkeypatch):
     assert blocks.ticket_info[0].application_end_at == "2026-06-18"
 
 
-def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path):
+def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
         general_info=example_blocks("Example").general_info,
@@ -918,6 +918,24 @@ def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path):
     assert "SUMMARY:General sale: Example Tour - First lottery" in calendar
     assert "URL:https://t.pia.jp/example" in calendar
 
+    assert lm.remove_watch(str(db_path), "Example") is True
+    active_calendar = lm.render_calendar_ics(str(db_path), generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC))
+    muted_calendar = lm.render_calendar_ics(
+        str(db_path),
+        generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC),
+        include_muted_watches=True,
+    )
+    assert "SUMMARY:Lottery application: Example Tour - First lottery" not in active_calendar
+    assert "SUMMARY:Lottery application: Example Tour - First lottery" in muted_calendar
+
+    assert lm.main(["export", "calendar", "--db", str(db_path)]) == 0
+    cli_active_calendar = capsys.readouterr().out
+    assert "Example Tour - First lottery" not in cli_active_calendar
+
+    assert lm.main(["export", "calendar", "--db", str(db_path), "--include-muted"]) == 0
+    cli_muted_calendar = capsys.readouterr().out
+    assert "Example Tour - First lottery" in cli_muted_calendar
+
 
 def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
@@ -940,6 +958,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         alerts = json_load_url(f"{base}/api/alerts")
         calendar_response = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5)
         calendar = calendar_response.read().decode("utf-8")
+        muted_calendar = urllib.request.urlopen(f"{base}/calendar.ics?include_muted=1", timeout=5).read().decode("utf-8")
 
         assert "chusennote" in home
         assert "Calendar feed" in home
@@ -969,6 +988,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert alerts[0]["event_id"] >= 1
         assert "text/calendar" in calendar_response.headers["Content-Type"]
         assert "BEGIN:VCALENDAR" in calendar
+        assert "Example Tour" in muted_calendar
     finally:
         server.shutdown()
         thread.join(timeout=5)
