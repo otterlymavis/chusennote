@@ -346,9 +346,21 @@ struct ContentView: View {
     }
 
     private func alertText(_ alert: AlertPayload) -> String {
-        var parts = [alert.event, alert.keyword, alert.round].compactMap { $0 }.filter { !$0.isEmpty }
+        var parts: [String] = []
+        for value in [alert.event, alert.eventTitle, alert.keyword, alert.round].compactMap({ $0 }).filter({ !$0.isEmpty }) {
+            if !parts.contains(value) {
+                parts.append(value)
+            }
+        }
         if let eventId = alert.eventId {
             parts.append("Event #\(eventId)")
+        }
+        if let watchKeyword = alert.watchKeyword, !watchKeyword.isEmpty {
+            let kind = alert.watchKind ?? "watch"
+            let muted = alert.watchMuted == true ? " muted" : ""
+            parts.append("\(kind) \(watchKeyword)\(muted)")
+        } else if let watchId = alert.watchId {
+            parts.append("Watch #\(watchId)")
         }
         return parts.joined(separator: " ")
     }

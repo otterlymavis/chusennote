@@ -106,6 +106,11 @@ struct AlertPayload: Codable, Identifiable {
     var id: String { alertId.map(String.init) ?? "\(type)-\(event ?? keyword ?? "")-\(round ?? "")" }
     let alertId: Int?
     let eventId: Int?
+    let eventTitle: String?
+    let watchId: Int?
+    let watchKeyword: String?
+    let watchKind: String?
+    let watchMuted: Bool?
     let type: String
     let event: String?
     let keyword: String?
@@ -115,6 +120,11 @@ struct AlertPayload: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case alertId = "alert_id"
         case eventId = "event_id"
+        case eventTitle = "event_title"
+        case watchId = "watch_id"
+        case watchKeyword = "watch_keyword"
+        case watchKind = "watch_kind"
+        case watchMuted = "watch_muted"
         case type
         case event
         case keyword

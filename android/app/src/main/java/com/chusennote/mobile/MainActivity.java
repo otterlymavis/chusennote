@@ -561,9 +561,16 @@ public class MainActivity extends Activity {
                 continue;
             }
             String title = alert.optString("type", "alert");
-            String detail = alert.optString("event", alert.optString("keyword", "")) + " " + alert.optString("round", "");
+            String detail = alert.optString("event", alert.optString("event_title", alert.optString("keyword", ""))) + " " + alert.optString("round", "");
             if (alert.has("event_id")) {
                 detail = detail.trim() + "\nEvent #" + alert.optInt("event_id");
+            }
+            String watchKeyword = alert.optString("watch_keyword", "");
+            if (!watchKeyword.isEmpty()) {
+                String muted = alert.optBoolean("watch_muted") ? " muted" : "";
+                detail = detail.trim() + "\n" + alert.optString("watch_kind", "watch") + " " + watchKeyword + muted;
+            } else if (alert.has("watch_id")) {
+                detail = detail.trim() + "\nWatch #" + alert.optInt("watch_id");
             }
             alertList.addView(card(title, detail.trim()));
         }
