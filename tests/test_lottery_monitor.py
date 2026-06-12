@@ -44,7 +44,56 @@ def test_extract_ticket_links_from_official_page():
     assert info.official_page == "https://official.example/stage"
     assert info.ticket_links[0].url == "https://eplus.jp/example-musical/"
     assert "公演日" in info.event_dates[0]
-    assert "会場" in info.venues[0]
+    assert "Example Hall" in info.venues[0]
+
+
+def test_extract_ticket_links_ignores_social_share_urls():
+    html = """
+    <html><body>
+      <a href="http://twitter.com/share?text=チケット">Xで投稿する</a>
+      <a href="http://line.me/R/msg/text/?チケット">LINEで送る</a>
+      <a href="https://www.shiki.jp/applause/lionking/ticket_schedule/">チケット＆スケジュール</a>
+    </body></html>
+    """
+    page = lm.parse_page("https://www.shiki.jp/applause/lionking/", html)
+
+    links = lm.extract_ticket_links(page)
+
+    assert [link.url for link in links] == ["https://www.shiki.jp/applause/lionking/ticket_schedule/"]
+
+
+def test_event_dates_and_venues_ignore_ticket_sales_noise():
+    text = """
+    SCHEDULE & TICKETS スケジュール＆チケット 群馬公演 【一般前売開始】 2025年4月5日(土)
+    ※車椅子席、介助席のご購入は、高崎芸術劇場チケットセンター（027-321-3900）まで電話でお問合せください。（6月10日追記）
+    【料金】 S席 17,500円 A席 11,000円
+    東宝ナビザーブ 先行抽選エントリー 3月18日(火)～3月21日(金)まで
+    会場のご案内 高崎芸術劇場 大劇場 〒370-7302 群馬県高崎市栄町9-1 MAP 座席表
+    """
+
+    assert lm.extract_event_dates(text) == ()
+    assert lm.extract_venues(text)[0] == "高崎芸術劇場 大劇場"
+
+
+def test_extract_venues_stops_at_organizer_and_contact_noise():
+    text = (
+        "出演（柿澤勇人、石井一孝） 会場 梅田芸術劇場メインホール 主催 梅田芸術劇場 "
+        "お問い合わせ 梅田芸術劇場 0570-077-0 ぜひ劇場でお楽しみください"
+    )
+
+    assert lm.extract_venues(text) == ("梅田芸術劇場メインホール",)
+
+
+def test_extract_event_dates_captures_performance_period_not_ticketing():
+    text = (
+        "ミュージカル『例』 期 間 2026年7月25日(土)～8月23日(日) 会 場 例ホール "
+        "【抽選先行】 受付 期間 2026年1月24日(土)～2月1日(日)"
+    )
+
+    dates = lm.extract_event_dates(text)
+
+    assert "2026年7月25日(土)～8月23日(日)" in dates
+    assert all("2026年1月24日" not in date for date in dates)
 
 
 def test_extract_ticket_rounds_with_japanese_lottery_dates():

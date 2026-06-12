@@ -674,21 +674,74 @@ def nearby_phrases(text: str, labels: Iterable[str], width: int = 90, limit: int
     return tuple(phrases)
 
 
+# Schedule pages often label a performance run as "（…）公演 期間 2026年…～…" or just
+# "期 間 2026年…" rather than with the compact labels below, and frequently space out
+# CJK characters (e.g. "会 場"). Capture the date range directly, then exclude any
+# whose lead context is a ticketing window such as "受付期間" / "抽選受付期間".
+_PERIOD_DATE = r"20\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日(?:\s*[(（][^)）]{1,5}[)）])?"
+_PERIOD_DATE_END = r"(?:20\d{2}\s*年\s*)?(?:\d{1,2}\s*月\s*)?\d{1,2}\s*日(?:\s*[(（][^)）]{1,5}[)）])?"
+PERFORMANCE_PERIOD_RE = re.compile(
+    r"期\s*間\s*(?P<range>" + _PERIOD_DATE + r"(?:\s*[～~〜\-]\s*" + _PERIOD_DATE_END + r")?)"
+)
+_PERIOD_LEAD_NOISE = ("受付", "申込", "抽選", "先行", "販売", "入金", "支払", "発売")
+
+
 def extract_event_dates(text: str) -> tuple[str, ...]:
-    candidates = nearby_phrases(text, ("公演日", "日程", "開催日", "開催日時", "日時"), limit=5)
-    if candidates:
-        return candidates
-    return tuple(match.group(0) for match in DATE_RE.finditer(text[:3000]))[:5]
+    dates: list[str] = []
+    seen: set[str] = set()
+    for candidate in nearby_phrases(text, ("公演日", "公演期間", "開催日", "開催日時"), limit=5):
+        keep = any(label in candidate for label in ("公演日", "公演期間", "開催日", "開催日時")) or not any(
+            noisy in candidate for noisy in ("一般前売", "発売", "先行", "抽選", "料金", "追記")
+        )
+        if keep and candidate not in seen:
+            dates.append(candidate)
+            seen.add(candidate)
+    for match in PERFORMANCE_PERIOD_RE.finditer(text):
+        lead = text[max(0, match.start() - 12):match.start()].replace(" ", "").replace("　", "")
+        if any(noisy in lead for noisy in _PERIOD_LEAD_NOISE):
+            continue
+        phrase = clean_text(match.group("range")).strip(" ：:、。")
+        if phrase and phrase not in seen:
+            dates.append(phrase)
+            seen.add(phrase)
+    return tuple(dates)
 
 
 def extract_venues(text: str) -> tuple[str, ...]:
-    return nearby_phrases(text, ("会場", "場所", "劇場", "ホール", "アリーナ"), limit=5)
+    venues: list[str] = []
+    seen: set[str] = set()
+    # Stop the venue capture at address/section markers and at ticket-sale noise,
+    # so a trailing "チケット抽選先行…" link does not get swallowed into the venue
+    # (which would then trip the noise filter below and drop the venue entirely).
+    boundary = r"(?=〒|MAP|座席表|【|チケット|抽選|先行|受付|申込|発売|公演日|出演|料金|開場|開演|主催|お問い?合せ|お問い合わせ|TEL|$)"
+    patterns = (
+        rf"会場のご案内\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
+        rf"会場\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
+        r"(?P<venue>[\w一-龥ぁ-んァ-ヶー・（）() ]{2,40}(?:劇場|ホール|アリーナ|ドーム|会館|大劇場|小劇場))",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            venue = clean_text(match.group("venue")).strip(" ：:、。")
+            venue = re.sub(r"^(?:のご案内|会場のご案内)\s*", "", venue).strip()
+            if not venue or venue in seen:
+                continue
+            if any(noisy in venue for noisy in ("チケット", "ご購入", "販売", "受付", "お問い合わせ", "お問合せ", "主催", "電話", "ぜひ", "グループ観劇")):
+                continue
+            if any(venue in existing or existing in venue for existing in seen):
+                continue
+            venues.append(venue)
+            seen.add(venue)
+            if len(venues) >= 5:
+                return tuple(venues)
+    return tuple(venues)
 
 
 def extract_ticket_links(page: Page) -> tuple[Link, ...]:
     links: list[Link] = []
     seen: set[str] = set()
     for link in page.links:
+        if is_noisy_url(link.url):
+            continue
         haystack = f"{link.label} {link.url}".lower()
         if is_ticket_url(link.url) or any(hint.lower() in haystack for hint in TICKET_LINK_HINTS):
             if link.url not in seen:
