@@ -96,6 +96,18 @@ def test_extract_event_dates_captures_performance_period_not_ticketing():
     assert all("2026年1月24日" not in date for date in dates)
 
 
+def test_extract_event_dates_captures_shiki_slash_performance_periods():
+    text = "劇団四季自動予約 2026/1/2～2026/6/30 公演 No. 3016 2026/7/1～2026/12/31 公演 No. 6118"
+
+    assert lm.extract_event_dates(text) == ("2026/1/2～2026/6/30", "2026/7/1～2026/12/31")
+
+
+def test_extract_venues_prefers_concise_shiki_theater_name():
+    text = "アラジン 東京 電通四季劇場［海］（汐留） 選択 北海道 青森 劇場アクセス 作品紹介"
+
+    assert lm.extract_venues(text)[0] == "電通四季劇場［海］（汐留）"
+
+
 def test_extract_ticket_rounds_with_japanese_lottery_dates():
     html = """
     <html><head><title>Ticket</title></head><body>
