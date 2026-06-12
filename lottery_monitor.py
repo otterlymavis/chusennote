@@ -13,11 +13,15 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import base64
 import hashlib
 import html
 import http.server
 import json
+import os
+import pathlib
 import re
+import shlex
 import sqlite3
 import sys
 import time
@@ -36,8 +40,15 @@ def configure_cli_stdio() -> None:
 
 USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticket lottery monitor)"
 SEARCH_URL = "https://duckduckgo.com/html/"
+BING_SEARCH_URL = "https://www.bing.com/search"
+# Optional managed search backend. HTML scraping of DuckDuckGo/Bing gets
+# bot-throttled and returns irrelevant results, so a real search API is the
+# reliable way to locate official pages. Set both env vars to enable it.
+SEARCH_PROVIDER_ENV = "CHUSENNOTE_SEARCH_PROVIDER"  # brave | bing | serpapi
+SEARCH_API_KEY_ENV = "CHUSENNOTE_SEARCH_API_KEY"
 TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
+DEFAULT_SESSION_LOG_DIR = "history_logs"
 DB_SCHEMA_VERSION = 4
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
@@ -80,10 +91,23 @@ SOCIAL_OR_NOISY_DOMAINS = (
     "twitter.com",
     "instagram.com",
     "facebook.com",
+    "line.me",
     "youtube.com",
     "wikipedia.org",
 )
 OFFICIAL_HINTS = ("公式", "official", "オフィシャル", "公演", "ライブ", "ミュージカル")
+# Hosts that frequently carry official Japanese stage/live information. Used as a
+# gentle ranking boost, never as a hard filter.
+OFFICIAL_HOST_HINTS = (
+    "tohostage.com",
+    "umegei.com",
+    "horipro-stage.jp",
+    "horipro.co.jp",
+    "stage.co.jp",
+    "marv.jp",
+    "tbs.co.jp",
+    "parco-play.com",
+)
 TICKET_LINK_HINTS = (
     "ticket",
     "チケット",
@@ -420,6 +444,16 @@ def request_html(url: str, params: dict[str, str] | None = None) -> str:
     return body.decode(content_type, errors="replace")
 
 
+def request_json(url: str, headers: dict[str, str] | None = None) -> object:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json", **(headers or {})},
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return json.loads(response.read().decode(charset, errors="replace"))
+
+
 def parse_page(url: str, html: str) -> Page:
     parser = EventHTMLParser(url)
     parser.feed(html)
@@ -443,8 +477,77 @@ def fetch_page(url: str) -> Page:
     return parse_page(url, request_html(url))
 
 
+def search_query(keyword: str) -> str:
+    return f"{keyword} 公式 チケット 抽選 先行"
+
+
+def search_api(keyword: str, limit: int = 8) -> list[SearchResult]:
+    """Query a managed search API when configured via env vars.
+
+    Returns ``[]`` when no provider/key is set or the call fails, so callers can
+    fall back to HTML scraping. Supported providers: brave, bing, serpapi.
+    """
+    provider = os.environ.get(SEARCH_PROVIDER_ENV, "").strip().lower()
+    api_key = os.environ.get(SEARCH_API_KEY_ENV, "").strip()
+    if not provider or not api_key:
+        return []
+    query = search_query(keyword)
+    try:
+        if provider == "brave":
+            url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode(
+                {"q": query, "count": limit, "search_lang": "jp", "country": "jp"}
+            )
+            data = request_json(url, {"X-Subscription-Token": api_key})
+            rows = (data.get("web") or {}).get("results", []) if isinstance(data, dict) else []
+            return parse_api_results(rows, "title", "url", "description", limit)
+        if provider == "bing":
+            url = "https://api.bing.microsoft.com/v7.0/search?" + urllib.parse.urlencode(
+                {"q": query, "count": limit, "mkt": "ja-JP"}
+            )
+            data = request_json(url, {"Ocp-Apim-Subscription-Key": api_key})
+            rows = (data.get("webPages") or {}).get("value", []) if isinstance(data, dict) else []
+            return parse_api_results(rows, "name", "url", "snippet", limit)
+        if provider == "serpapi":
+            url = "https://serpapi.com/search.json?" + urllib.parse.urlencode(
+                {"engine": "google", "q": query, "num": limit, "hl": "ja", "gl": "jp", "api_key": api_key}
+            )
+            data = request_json(url)
+            rows = data.get("organic_results", []) if isinstance(data, dict) else []
+            return parse_api_results(rows, "title", "link", "snippet", limit)
+    except (OSError, ValueError, TypeError):
+        return []
+    return []
+
+
+def parse_api_results(
+    rows: object, title_key: str, url_key: str, snippet_key: str, limit: int
+) -> list[SearchResult]:
+    results: list[SearchResult] = []
+    if not isinstance(rows, list):
+        return results
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = row.get(url_key, "")
+        if not is_web_url(url):
+            continue
+        results.append(
+            SearchResult(
+                title=clean_text(str(row.get(title_key, ""))),
+                url=url,
+                snippet=clean_text(str(row.get(snippet_key, ""))),
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
 def search_web(keyword: str, limit: int = 8) -> list[SearchResult]:
-    query = f"{keyword} 公式 チケット 抽選 先行"
+    api_results = search_api(keyword, limit=limit)
+    if api_results:
+        return api_results
+    query = search_query(keyword)
     html = request_html(SEARCH_URL, {"q": query})
     page = parse_page(SEARCH_URL, html)
     results: list[SearchResult] = []
@@ -458,29 +561,101 @@ def search_web(keyword: str, limit: int = 8) -> list[SearchResult]:
         results.append(SearchResult(title=link.label, url=href, snippet=""))
         if len(results) >= limit:
             break
+    return results or search_bing(keyword, limit=limit)
+
+
+def decode_bing_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(html.unescape(url))
+    query = urllib.parse.parse_qs(parsed.query)
+    encoded = query.get("u", [""])[0]
+    if encoded.startswith("a1"):
+        payload = encoded[2:]
+        padding = "=" * (-len(payload) % 4)
+        try:
+            return base64.urlsafe_b64decode(f"{payload}{padding}").decode("utf-8", "replace")
+        except (ValueError, UnicodeDecodeError):
+            return url
+    return url
+
+
+def strip_tags(value: str) -> str:
+    return clean_text(re.sub(r"<[^>]+>", " ", html.unescape(value)))
+
+
+def search_bing(keyword: str, limit: int = 8) -> list[SearchResult]:
+    query = search_query(keyword)
+    html_text = request_html(BING_SEARCH_URL, {"q": query})
+    results: list[SearchResult] = []
+    seen: set[str] = set()
+    for block in re.findall(r'<li class="b_algo".*?</li>', html_text, flags=re.DOTALL):
+        anchor = re.search(r"<h2[^>]*>\s*<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", block, flags=re.DOTALL)
+        if not anchor:
+            continue
+        url = decode_bing_url(anchor.group(1))
+        title = strip_tags(anchor.group(2))
+        snippet_match = re.search(r"<p[^>]*>(.*?)</p>", block, flags=re.DOTALL)
+        snippet = strip_tags(snippet_match.group(1)) if snippet_match else ""
+        if not title or not is_web_url(url):
+            continue
+        if urllib.parse.urlparse(url).netloc.endswith("bing.com"):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        results.append(SearchResult(title=title, url=url, snippet=snippet))
+        if len(results) >= limit:
+            break
     return results
 
 
-def official_score(result: SearchResult, keyword: str) -> int:
+def text_bigrams(value: str) -> set[str]:
+    """Whitespace/punctuation-insensitive character bigrams for CJK-aware matching."""
+    chars = re.sub(r"[\s　〜～・！？、。「」『』【】（）()\"'’”|/\\-]+", "", value.lower())
+    return {chars[index : index + 2] for index in range(len(chars) - 1)}
+
+
+def keyword_overlap(keyword: str, text: str) -> float:
+    """Fraction of the keyword's character bigrams that appear in ``text`` (0..1).
+
+    Japanese keywords have no spaces, so the old token split produced a single
+    token that never matched a result title. Character bigrams let a result like
+    ``ディア・エヴァン・ハンセン 公式`` score highly while unrelated pages stay near 0.
+    """
+    keyword_grams = text_bigrams(keyword)
+    if not keyword_grams:
+        return 0.0
+    return len(keyword_grams & text_bigrams(text)) / len(keyword_grams)
+
+
+def official_score(result: SearchResult, keyword: str) -> float:
     host = hostname(result.url)
     text = f"{result.title} {result.snippet} {result.url}".lower()
-    score = 0
+    score = 0.0
     if any(noisy in host for noisy in SOCIAL_OR_NOISY_DOMAINS):
         score -= 20
     if is_ticket_url(result.url):
         score -= 5
     if any(hint.lower() in text for hint in OFFICIAL_HINTS):
         score += 10
+    # CJK-aware relevance: reward results whose title/snippet share characters
+    # with the keyword. Worth up to +30 so a strong title match dominates noise.
+    score += 30 * keyword_overlap(keyword, f"{result.title} {result.snippet}")
+    # Latin keywords still benefit from token matching.
     for token in keyword.lower().split():
         if token and token in text:
             score += 2
+    if any(hint in host for hint in OFFICIAL_HOST_HINTS):
+        score += 6
+    if host.endswith((".co.jp", ".or.jp")):
+        score += 4
     if "news" in result.url or "live" in result.url or "stage" in result.url:
         score += 3
     return score
 
 
 def choose_official_results(results: Sequence[SearchResult], keyword: str, limit: int = 3) -> list[SearchResult]:
-    return sorted(results, key=lambda r: official_score(r, keyword), reverse=True)[:limit]
+    scored = [(official_score(result, keyword), result) for result in results]
+    return [result for score, result in sorted(scored, key=lambda item: item[0], reverse=True) if score > 0][:limit]
 
 
 def nearby_phrases(text: str, labels: Iterable[str], width: int = 90, limit: int = 4) -> tuple[str, ...]:

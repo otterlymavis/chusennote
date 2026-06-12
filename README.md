@@ -159,7 +159,27 @@ Saved events include `match_reasons` explaining why chusennote kept them, ticket
 <keyword> 公式 チケット 抽選 先行
 ```
 
-It scores results higher when they look official (`公式`, `official`, `オフィシャル`, `公演`) and lower when they are social/noisy pages or ticket portal pages. The top official-looking pages are fetched first.
+It scores results higher when they look official (`公式`, `official`, `オフィシャル`, `公演`, known official hosts, `.co.jp`) and lower when they are social/noisy pages or ticket portal pages. Relevance is measured with character-bigram overlap so Japanese keywords (which have no word spaces) rank correctly. The top official-looking pages are fetched first.
+
+#### Search backend (recommended)
+
+By default the app scrapes DuckDuckGo/Bing HTML. Those endpoints aggressively bot-throttle and often return irrelevant results, so for reliable discovery configure a managed search API via two environment variables:
+
+| Variable | Values |
+| --- | --- |
+| `CHUSENNOTE_SEARCH_PROVIDER` | `brave`, `bing`, or `serpapi` |
+| `CHUSENNOTE_SEARCH_API_KEY` | the API key for that provider |
+
+When set, the API is queried first and HTML scraping is used only as a fallback. Example (Brave, PowerShell — persists for your user account):
+
+```powershell
+[Environment]::SetEnvironmentVariable('CHUSENNOTE_SEARCH_PROVIDER','brave','User')
+[Environment]::SetEnvironmentVariable('CHUSENNOTE_SEARCH_API_KEY','<your-brave-key>','User')
+```
+
+Get a Brave key at <https://api-dashboard.search.brave.com/>. Without a key the app still runs; discovery just relies on the (throttled) HTML fallback.
+
+If discovery is unreliable for a specific title, attach the official URL manually instead (`watch source add`) and it will be scraped for lottery rounds directly.
 
 ### 2. Build the General event info block
 

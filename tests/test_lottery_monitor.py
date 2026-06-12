@@ -1123,3 +1123,107 @@ def post_text(url, values):
     data = urllib.parse.urlencode(values).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
     return urllib.request.urlopen(request, timeout=5).read().decode("utf-8")
+
+
+def test_official_score_ranks_cjk_official_above_noise():
+    keyword = "ミュージカル『ディア・エヴァン・ハンセン』"
+    official = lm.SearchResult(
+        "ミュージカル『ディア・エヴァン・ハンセン』公式サイト",
+        "https://dearevanhansen.jp/",
+        "公演情報・チケット抽選先行受付",
+    )
+    noise = lm.SearchResult("Stars : toute l'actu - Gala", "https://www.gala.fr/", "people")
+    gmail = lm.SearchResult("Вход в Gmail", "https://support.google.com/mail", "help")
+
+    assert lm.official_score(official, keyword) > lm.official_score(noise, keyword)
+    assert lm.official_score(noise, keyword) == 0
+    chosen = lm.choose_official_results([noise, gmail, official], keyword, limit=1)
+    assert chosen[0].url == "https://dearevanhansen.jp/"
+
+
+def test_choose_official_results_drops_unrelated_zero_score_results():
+    keyword = "帝国劇場"
+    results = [
+        lm.SearchResult("Pompes Funèbres Ruffieux & Fils Monuments", "https://pfruffieux.ch/", ""),
+        lm.SearchResult("CPU-Z | Softwares | CPUID", "https://www.cpuid.com/softwares/cpu-z.html", ""),
+    ]
+
+    assert lm.choose_official_results(results, keyword, limit=3) == []
+
+
+def test_build_blocks_does_not_fetch_unrelated_zero_score_search_results(monkeypatch):
+    keyword = "帝国劇場"
+    results = [lm.SearchResult("Blender Italia", "https://www.blender.it/", "")]
+
+    def fail_fetch(url):
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    monkeypatch.setattr(lm, "fetch_page", fail_fetch)
+
+    blocks = lm.build_blocks(keyword, search_results=results)
+
+    assert blocks.general_info.official_page is None
+    assert [link.label for link in blocks.general_info.ticket_links] == [
+        "Pia search",
+        "eplus search",
+        "Lawson Ticket search",
+    ]
+    assert blocks.ticket_info == ()
+
+
+def test_keyword_overlap_is_high_for_matching_japanese_and_low_for_unrelated():
+    keyword = "ディア・エヴァン・ハンセン"
+    assert lm.keyword_overlap(keyword, "ディア・エヴァン・ハンセン 公演") > 0.8
+    assert lm.keyword_overlap(keyword, "toute l'actu des stars Gala") == 0.0
+
+
+def test_search_api_disabled_without_env(monkeypatch):
+    monkeypatch.delenv(lm.SEARCH_PROVIDER_ENV, raising=False)
+    monkeypatch.delenv(lm.SEARCH_API_KEY_ENV, raising=False)
+    assert lm.search_api("any keyword") == []
+
+
+def test_search_api_parses_brave_payload(monkeypatch):
+    monkeypatch.setenv(lm.SEARCH_PROVIDER_ENV, "brave")
+    monkeypatch.setenv(lm.SEARCH_API_KEY_ENV, "test-key")
+    captured = {}
+
+    def fake_request_json(url, headers=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return {
+            "web": {
+                "results": [
+                    {
+                        "title": "公式サイト",
+                        "url": "https://official.example/stage",
+                        "description": "公演 チケット 抽選",
+                    },
+                    {"title": "no url"},
+                ]
+            }
+        }
+
+    monkeypatch.setattr(lm, "request_json", fake_request_json)
+    results = lm.search_api("ディア・エヴァン・ハンセン", limit=5)
+
+    assert "api.search.brave.com" in captured["url"]
+    assert captured["headers"]["X-Subscription-Token"] == "test-key"
+    assert [r.url for r in results] == ["https://official.example/stage"]
+    assert results[0].title == "公式サイト"
+
+
+def test_search_web_prefers_api_results_over_scraping(monkeypatch):
+    monkeypatch.setattr(
+        lm,
+        "search_api",
+        lambda keyword, limit=8: [lm.SearchResult("api hit", "https://api.example/", "")],
+    )
+
+    def fail_scrape(*args, **kwargs):
+        raise AssertionError("HTML scraping should not run when the API returns results")
+
+    monkeypatch.setattr(lm, "request_html", fail_scrape)
+    results = lm.search_web("any keyword")
+
+    assert [r.url for r in results] == ["https://api.example/"]
