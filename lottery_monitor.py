@@ -93,6 +93,9 @@ SOCIAL_OR_NOISY_DOMAINS = (
     "facebook.com",
     "line.me",
     "youtube.com",
+    "pornhub.com",
+    "xvideos.com",
+    "xnxx.com",
     "wikipedia.org",
 )
 OFFICIAL_HINTS = ("公式", "official", "オフィシャル", "公演", "ライブ", "ミュージカル")
@@ -706,6 +709,14 @@ def keyword_overlap(keyword: str, text: str) -> float:
 def official_score(result: SearchResult, keyword: str) -> float:
     host = hostname(result.url)
     text = f"{result.title} {result.snippet} {result.url}".lower()
+    title_snippet = f"{result.title} {result.snippet}"
+    overlap = keyword_overlap(keyword, title_snippet)
+    token_score = sum(2 for token in keyword.lower().split() if len(token) >= 3 and token in text)
+    trusted_host = any(hint in host for hint in OFFICIAL_HOST_HINTS)
+    has_keyword_relevance = overlap >= 0.2 or token_score > 0
+    if not trusted_host and not has_keyword_relevance:
+        return -20.0 if any(noisy in host for noisy in SOCIAL_OR_NOISY_DOMAINS) else 0.0
+
     score = 0.0
     if any(noisy in host for noisy in SOCIAL_OR_NOISY_DOMAINS):
         score -= 20
@@ -715,12 +726,10 @@ def official_score(result: SearchResult, keyword: str) -> float:
         score += 10
     # CJK-aware relevance: reward results whose title/snippet share characters
     # with the keyword. Worth up to +30 so a strong title match dominates noise.
-    score += 30 * keyword_overlap(keyword, f"{result.title} {result.snippet}")
+    score += 30 * overlap
     # Latin keywords still benefit from token matching.
-    for token in keyword.lower().split():
-        if token and token in text:
-            score += 2
-    if any(hint in host for hint in OFFICIAL_HOST_HINTS):
+    score += token_score
+    if trusted_host:
         score += 6
     if host.endswith((".co.jp", ".or.jp")):
         score += 4

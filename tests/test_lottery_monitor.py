@@ -1387,6 +1387,27 @@ def test_choose_official_results_drops_unrelated_zero_score_results():
     assert lm.choose_official_results(results, keyword, limit=3) == []
 
 
+def test_choose_official_results_requires_keyword_relevance_for_generic_hints():
+    keyword = "帝国劇場"
+    results = [
+        lm.SearchResult("News & Politics - Odysee", "https://odysee.com/$/news", ""),
+        lm.SearchResult("Live & TV - ZDF", "https://www.zdf.de/live-tv", ""),
+        lm.SearchResult("Official support page", "https://support.microsoft.com/en-us", ""),
+    ]
+
+    assert lm.choose_official_results(results, keyword, limit=3) == []
+
+
+def test_choose_official_results_ignores_incidental_low_overlap():
+    result = lm.SearchResult(
+        "AWS inaugura Gen AI Loft em São Paulo para impulsionar startups",
+        "https://itforum.com.br/noticias/aws-inaugura-gen-ai-loft-em-sao-paulo/",
+        "",
+    )
+
+    assert lm.choose_official_results([result], "YOASOBI ライブ 東京", limit=3) == []
+
+
 def test_build_blocks_does_not_fetch_unrelated_zero_score_search_results(monkeypatch):
     keyword = "帝国劇場"
     results = [lm.SearchResult("Blender Italia", "https://www.blender.it/", "")]
