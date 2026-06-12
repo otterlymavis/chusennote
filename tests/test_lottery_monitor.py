@@ -1393,6 +1393,7 @@ def test_choose_official_results_requires_keyword_relevance_for_generic_hints():
         lm.SearchResult("News & Politics - Odysee", "https://odysee.com/$/news", ""),
         lm.SearchResult("Live & TV - ZDF", "https://www.zdf.de/live-tv", ""),
         lm.SearchResult("Official support page", "https://support.microsoft.com/en-us", ""),
+        lm.SearchResult("Get started with Google Maps", "https://support.google.com/maps/answer/144349", ""),
     ]
 
     assert lm.choose_official_results(results, keyword, limit=3) == []
@@ -1425,6 +1426,33 @@ def test_build_blocks_does_not_fetch_unrelated_zero_score_search_results(monkeyp
         "eplus search",
         "Lawson Ticket search",
     ]
+    assert blocks.ticket_info == ()
+
+
+def test_build_blocks_rejects_fetched_page_that_does_not_match_keyword(monkeypatch):
+    keyword = "YOASOBI ライブ 東京"
+    results = [
+        lm.SearchResult(
+            "YOASOBI official live result",
+            "https://health.example/blood-pressure",
+            "YOASOBI ライブ 東京",
+        )
+    ]
+
+    monkeypatch.setattr(
+        lm,
+        "fetch_page",
+        lambda url: lm.Page(
+            url=url,
+            title="What is Normal Blood Pressure by Age and Gender?",
+            text="Health advice, diet, exercise, medical history, and appointments.",
+            links=(),
+        ),
+    )
+
+    blocks = lm.build_blocks(keyword, search_results=results)
+
+    assert blocks.general_info.official_page is None
     assert blocks.ticket_info == ()
 
 

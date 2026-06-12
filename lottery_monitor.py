@@ -50,6 +50,7 @@ TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
 DEFAULT_SESSION_LOG_DIR = "history_logs"
 DB_SCHEMA_VERSION = 4
+MIN_KEYWORD_OVERLAP = 0.45
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
 WATCH_KINDS = (WATCH_KIND_ARTIST, WATCH_KIND_EVENT)
@@ -713,7 +714,7 @@ def official_score(result: SearchResult, keyword: str) -> float:
     overlap = keyword_overlap(keyword, title_snippet)
     token_score = sum(2 for token in keyword.lower().split() if len(token) >= 3 and token in text)
     trusted_host = any(hint in host for hint in OFFICIAL_HOST_HINTS)
-    has_keyword_relevance = overlap >= 0.2 or token_score > 0
+    has_keyword_relevance = overlap >= MIN_KEYWORD_OVERLAP or token_score > 0
     if not trusted_host and not has_keyword_relevance:
         return -20.0 if any(noisy in host for noisy in SOCIAL_OR_NOISY_DOMAINS) else 0.0
 
@@ -741,6 +742,14 @@ def official_score(result: SearchResult, keyword: str) -> float:
 def choose_official_results(results: Sequence[SearchResult], keyword: str, limit: int = 3) -> list[SearchResult]:
     scored = [(official_score(result, keyword), result) for result in results]
     return [result for score, result in sorted(scored, key=lambda item: item[0], reverse=True) if score > 0][:limit]
+
+
+def page_matches_keyword(keyword: str, page: Page) -> bool:
+    title_and_intro = f"{page.title} {page.text[:1200]}"
+    if keyword_overlap(keyword, title_and_intro) >= MIN_KEYWORD_OVERLAP:
+        return True
+    haystack = title_and_intro.lower()
+    return any(len(token) >= 3 and token in haystack for token in keyword.lower().split())
 
 
 def nearby_phrases(text: str, labels: Iterable[str], width: int = 90, limit: int = 4) -> tuple[str, ...]:
@@ -1027,9 +1036,11 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
     official_pages: list[Page] = []
     for result in choose_official_results(results, keyword):
         try:
-            official_pages.append(fetch_page(result.url))
+            page = fetch_page(result.url)
         except (OSError, ValueError):
             continue
+        if page_matches_keyword(keyword, page):
+            official_pages.append(page)
 
     event_info = build_event_info(keyword, official_pages)
     rounds: list[TicketRound] = []
@@ -1066,9 +1077,11 @@ def build_artist_blocks(keyword: str, search_results: Sequence[SearchResult] | N
     official_pages: list[Page] = []
     for result in choose_official_results(results, keyword):
         try:
-            official_pages.append(fetch_page(result.url))
+            page = fetch_page(result.url)
         except (OSError, ValueError):
             continue
+        if page_matches_keyword(keyword, page):
+            official_pages.append(page)
     info = build_event_info(keyword, official_pages)
     return AppBlocks(general_info=dataclasses.replace(info, ticket_links=()), ticket_info=())
 
@@ -1083,6 +1096,8 @@ def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
         try:
             page = fetch_page(result.url)
         except (OSError, ValueError):
+            continue
+        if not page_matches_keyword(keyword, page):
             continue
         info = build_event_info(keyword, (page,))
         if not info.title:
