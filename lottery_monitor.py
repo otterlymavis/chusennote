@@ -270,6 +270,66 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def split_session_log_args(argv: Sequence[str]) -> tuple[list[str], bool, str]:
+    cleaned: list[str] = []
+    enabled = False
+    log_dir = DEFAULT_SESSION_LOG_DIR
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--session-log":
+            enabled = True
+        elif item == "--session-log-dir":
+            index += 1
+            if index >= len(argv):
+                raise SystemExit("--session-log-dir requires a value")
+            log_dir = argv[index]
+        elif item.startswith("--session-log-dir="):
+            log_dir = item.split("=", 1)[1]
+        else:
+            cleaned.append(item)
+        index += 1
+    return cleaned, enabled, log_dir
+
+
+def format_shell_args(argv: Sequence[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in argv)
+
+
+def session_log_path(log_dir: str = DEFAULT_SESSION_LOG_DIR, now: dt.datetime | None = None) -> pathlib.Path:
+    timestamp = now or dt.datetime.now().astimezone()
+    return pathlib.Path(log_dir) / f"session_{timestamp:%Y_%m_%d}.md"
+
+
+def append_session_log(
+    argv: Sequence[str],
+    args: argparse.Namespace,
+    exit_code: int,
+    started_at: dt.datetime,
+    ended_at: dt.datetime | None = None,
+) -> pathlib.Path:
+    ended_at = ended_at or dt.datetime.now().astimezone()
+    path = session_log_path(args.session_log_dir, ended_at)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    command = format_shell_args(("lottery_monitor.py", *argv))
+    db_path = getattr(args, "db", None)
+    target = getattr(args, "command", "unknown")
+    details = [
+        f"## {started_at.isoformat(timespec='seconds')}",
+        "",
+        f"- Command: `{command}`",
+        f"- Target: `{target}`",
+        f"- Exit code: `{exit_code}`",
+        f"- Duration seconds: `{(ended_at - started_at).total_seconds():.3f}`",
+    ]
+    if db_path:
+        details.append(f"- Database: `{db_path}`")
+    details.append("")
+    with path.open("a", encoding="utf-8") as log_file:
+        log_file.write("\n".join(details))
+    return path
+
+
 def absolute_url(base_url: str, href: str) -> str:
     return urllib.parse.urljoin(base_url, href)
 
@@ -278,9 +338,25 @@ def hostname(url: str) -> str:
     return urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
 
 
+def is_noisy_url(url: object) -> bool:
+    host = hostname(str(url or ""))
+    return any(noisy in host for noisy in SOCIAL_OR_NOISY_DOMAINS)
+
+
 def is_ticket_url(url: str) -> bool:
     host = hostname(url)
     return any(any(domain in host for domain in domains) for domains in TICKET_DOMAINS.values())
+
+
+def is_portal_search_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path.lower()
+    return (
+        (host == "t.pia.jp" and path.endswith("/search_all.do"))
+        or (host == "eplus.jp" and path.startswith("/sf/search"))
+        or (host == "l-tike.com" and path.startswith("/search/"))
+    )
 
 
 def source_name_for_url(url: str) -> str:
@@ -796,23 +872,46 @@ def infer_year(month: int, day: int, today: dt.date | None = None) -> int:
     return today.year
 
 
+def is_valid_month_day(month: int, day: int) -> bool:
+    return 1 <= month <= 12 and 1 <= day <= 31
+
+
 def normalize_date(value: str) -> str:
     value = clean_text(value)
     jp = re.search(r"(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日", value)
     if jp:
-        return f"{int(jp.group(1)):04d}-{int(jp.group(2)):02d}-{int(jp.group(3)):02d}"
+        month, day = int(jp.group(2)), int(jp.group(3))
+        return f"{int(jp.group(1)):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
     western = re.search(r"(20\d{2})[./-](\d{1,2})[./-](\d{1,2})", value)
     if western:
-        return f"{int(western.group(1)):04d}-{int(western.group(2)):02d}-{int(western.group(3)):02d}"
+        month, day = int(western.group(2)), int(western.group(3))
+        return f"{int(western.group(1)):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
     jp_short = re.search(r"(\d{1,2})月\s*(\d{1,2})日", value)
     if jp_short:
         month, day = int(jp_short.group(1)), int(jp_short.group(2))
-        return f"{infer_year(month, day):04d}-{month:02d}-{day:02d}"
+        return f"{infer_year(month, day):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
     short = re.search(r"(\d{1,2})[./-](\d{1,2})", value)
     if short:
         month, day = int(short.group(1)), int(short.group(2))
-        return f"{infer_year(month, day):04d}-{month:02d}-{day:02d}"
+        return f"{infer_year(month, day):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
     return value
+
+
+def normalized_iso_date(value: str) -> str | None:
+    normalized = normalize_date(value)
+    return normalized if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", normalized) else None
+
+
+def first_event_sort_date(event: dict[str, object]) -> dt.date | None:
+    date_items = event.get("event_dates", [])
+    if not isinstance(date_items, list):
+        return None
+    for item in date_items:
+        for match in DATE_RE.finditer(str(item)):
+            normalized = normalized_iso_date(match.group(0))
+            if normalized:
+                return parse_iso_date(normalized)
+    return None
 
 
 def context_windows(text: str, patterns: Sequence[str], width: int = 220) -> list[str]:
@@ -835,20 +934,22 @@ def extract_first_date(text: str, labels: Sequence[str]) -> str | None:
             window = text[match.start() : min(len(text), match.end() + 100)]
             date_match = DATE_RE.search(window)
             if date_match:
-                return normalize_date(date_match.group(0))
+                normalized = normalized_iso_date(date_match.group(0))
+                if normalized:
+                    return normalized
     return None
 
 
 def extract_range(text: str) -> tuple[str | None, str | None]:
     match = RANGE_RE.search(text)
     if not match:
-        dates = [normalize_date(m.group(0)) for m in DATE_RE.finditer(text)]
+        dates = [date for date in (normalized_iso_date(m.group(0)) for m in DATE_RE.finditer(text)) if date]
         if len(dates) >= 2:
             return dates[0], dates[1]
         if len(dates) == 1:
             return dates[0], None
         return None, None
-    return normalize_date(match.group("start")), normalize_date(match.group("end"))
+    return normalized_iso_date(match.group("start")), normalized_iso_date(match.group("end"))
 
 
 def round_name_from_context(context: str, fallback: str) -> str:
@@ -867,7 +968,7 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     for index, context in enumerate(contexts, start=1):
         start, end = extract_range(context)
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
-        general_sale_date = extract_first_date(context, ("一般発売", "発売日"))
+        general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
         payment_deadline = extract_first_date(context, ("入金", "支払", "払込", "決済"))
         results_date = results_date or extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"))
@@ -924,11 +1025,31 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
     event_info = build_event_info(keyword, official_pages)
     rounds: list[TicketRound] = []
     for link in event_info.ticket_links:
+        if is_portal_search_url(link.url):
+            continue
         try:
             rounds.extend(extract_ticket_rounds_for_page(fetch_page(link.url)))
         except (OSError, ValueError):
             rounds.append(TicketRound(source=source_name_for_url(link.url), url=link.url, name="Fetch failed", evidence=link.label))
     return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
+
+
+def build_exact_event_blocks(keyword: str, title: str, url: str, snippet: str = "") -> AppBlocks:
+    page = fetch_page(url)
+    event_info = build_event_info(keyword or title or page.title, (page,))
+    if not event_info.title:
+        event_info = dataclasses.replace(event_info, title=title or page.title)
+    rounds: list[TicketRound] = list(extract_ticket_rounds_for_page(page))
+    for link in event_info.ticket_links:
+        if is_portal_search_url(link.url):
+            continue
+        try:
+            rounds.extend(extract_ticket_rounds_for_page(fetch_page(link.url)))
+        except (OSError, ValueError):
+            rounds.append(TicketRound(source=source_name_for_url(link.url), url=link.url, name="Fetch failed", evidence=link.label))
+    if snippet and not event_info.summary:
+        event_info = dataclasses.replace(event_info, summary=snippet)
+    return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(tuple(rounds)))
 
 
 def build_artist_blocks(keyword: str, search_results: Sequence[SearchResult] | None = None) -> AppBlocks:
@@ -1588,9 +1709,19 @@ def run_watches(db_path: str, now: str | None = None, kind: str | None = None) -
     alerts: list[dict[str, str]] = []
     for watch in list_watches(db_path, kind=kind):
         try:
-            blocks = build_blocks_for_watch(db_path, watch)
-            saved_alerts = save_blocks(db_path, blocks, now=timestamp)
-            alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
+            if watch.kind == WATCH_KIND_ARTIST:
+                artist_blocks = build_artist_event_blocks(watch.keyword)
+                for blocks in artist_blocks:
+                    saved_alerts = save_blocks(db_path, blocks, now=timestamp, watch_id=watch.id)
+                    alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
+                if not artist_blocks:
+                    blocks = build_blocks_for_watch(db_path, watch)
+                    saved_alerts = save_blocks(db_path, blocks, now=timestamp, watch_id=watch.id)
+                    alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
+            else:
+                blocks = build_blocks_for_watch(db_path, watch)
+                saved_alerts = save_blocks(db_path, blocks, now=timestamp)
+                alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
         except (OSError, ValueError, sqlite3.Error) as error:
             alerts.append(
                 {
@@ -1690,6 +1821,15 @@ def recent_events(
                 """,
                 (row[0],),
             ).fetchall()
+            ticket_links = connection.execute(
+                """
+                SELECT label, url, platform, confidence, provenance
+                FROM sources
+                WHERE event_id = ?
+                ORDER BY confidence DESC, label
+                """,
+                (row[0],),
+            ).fetchall()
             event = {
                     "id": row[0],
                     "watch_id": row[1],
@@ -1702,6 +1842,17 @@ def recent_events(
                     "venues": json.loads(row[8] or "[]"),
                     "status": row[9],
                     "updated_at": row[10],
+                    "ticket_links": [
+                        {
+                            "label": link[0],
+                            "url": link[1],
+                            "platform": link[2],
+                            "confidence": link[3],
+                            "provenance": link[4],
+                        }
+                        for link in ticket_links
+                        if not is_noisy_url(link[1])
+                    ],
                     "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
                     "rounds": [
                         {
@@ -1720,6 +1871,7 @@ def recent_events(
                             "evidence": ticket[12],
                         }
                         for ticket in rounds
+                        if not is_noisy_url(ticket[2])
                     ],
                 }
             event["match_reasons"] = event_match_reasons(event)
@@ -1971,28 +2123,185 @@ def web_source_link(url: object, label: str = "Open") -> str:
     )
 
 
+def render_artist_detail_page(db_path: str, artist_id: int) -> str:
+    artist = next((watch for watch in list_watches(db_path, include_muted=True) if watch.id == artist_id and watch.kind == WATCH_KIND_ARTIST), None)
+    if not artist:
+        return "<!doctype html><title>Not found</title><h1>Artist not found</h1>"
+    artist_events = [
+        event
+        for event in recent_events(db_path, limit=500, include_muted_sources=True, include_muted_watches=True)
+        if int(event.get("watch_id") or 0) == artist.id
+    ]
+    artist_events.sort(key=lambda event: (first_event_sort_date(event) is None, first_event_sort_date(event) or dt.date.max, str(event.get("title") or "")))
+    def render_artist_event_item(event: dict[str, object]) -> str:
+        event_date = first_event_sort_date(event)
+        venue_items = event.get("venues", [])
+        venue_label = str(venue_items[0]) if isinstance(venue_items, list) and venue_items else "unknown"
+        ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
+        round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
+        return f"""
+        <li>
+          <span>
+            <a class="watch-title" href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a>
+            <span class="watch-meta">
+              <span class="mini-stat" title="Date">D {html.escape(str(event_date or 'unknown'))}</span>
+              <span class="mini-stat wide" title="Venue">V {html.escape(venue_label)}</span>
+              <span class="mini-stat" title="Ticket links">T {ticket_count}</span>
+              <span class="mini-stat" title="Lottery rounds">R {round_count}</span>
+            </span>
+          </span>
+          <a class="icon-link" href="/events/{html.escape(str(event.get('id')))}" title="Open event" aria-label="Open event">i</a>
+        </li>
+        """
+
+    event_items = "".join(render_artist_event_item(event) for event in artist_events) or "<li>No discovered events yet.</li>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(artist.keyword)}</title>
+  <style>
+    :root {{ --ink: #261c2c; --muted: #736a7b; --line: #eadde8; --shadow: 0 18px 40px rgba(81, 44, 72, 0.12); }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: linear-gradient(180deg, #fff8ee, #f7fbff); color: var(--ink); }}
+    a {{ color: #e2536d; font-weight: 850; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    header {{ background: rgba(255, 253, 248, 0.92); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
+    .topbar, main {{ max-width: 900px; margin: 0 auto; }}
+    .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
+    main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
+    .back, .icon-link {{ display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 8px; background: white; border: 1px solid var(--line); }}
+    section {{ background: rgba(255,255,255,0.94); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: var(--shadow); }}
+    h1, h2 {{ margin-top: 0; letter-spacing: 0; }}
+    small {{ display: block; color: var(--muted); line-height: 1.45; }}
+    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; padding: 12px; }}
+    .watch-title {{ color: var(--ink); }}
+    .watch-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }}
+    .mini-stat {{ display: inline-flex; align-items: center; max-width: 100%; min-height: 24px; padding: 3px 7px; border-radius: 999px; background: #fff3f6; border: 1px solid #f7d7e1; color: #5b3142; font-size: 12px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: #147047; }}
+    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: #315c9b; }}
+    .mini-stat.wide {{ max-width: min(100%, 360px); }}
+    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ align-items: flex-start; flex-direction: column; }} }}
+  </style>
+</head>
+<body>
+  <header><div class="topbar"><a class="back" href="/" title="Back" aria-label="Back">‹</a><strong>{html.escape(artist.keyword)}</strong></div></header>
+  <main>
+    <section>
+      <h1>{html.escape(artist.keyword)}</h1>
+      <small>{len(artist_events)} discovered events sorted by date</small>
+    </section>
+    <section>
+      <h2>Events</h2>
+      <ul>{event_items}</ul>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
 def render_event_detail_page(db_path: str, event_id: int) -> str:
     event = event_detail(db_path, event_id)
     if not event:
         return "<!doctype html><title>Not found</title><h1>Event not found</h1>"
+    date_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in event.get("event_dates", [])) or "<li>Unknown</li>"
+    venue_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in event.get("venues", [])) or "<li>Unknown</li>"
+    ticket_link_items = "".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(str(link.get('label') or link.get('platform') or 'Ticket link'))}</strong>
+          <small>{html.escape(str(link.get('platform') or 'unknown'))} · confidence {html.escape(str(link.get('confidence') or 'unknown'))}</small></span>
+          {web_source_link(link.get('url'), 'Open')}
+        </li>
+        """
+        for link in event.get("ticket_links", [])
+    ) or "<li>No ticket links saved yet.</li>"
+    round_items = "".join(
+        f"""
+        <article class="round-card">
+          <div class="round-head">
+            <h3>{html.escape(str(ticket.get('name') or 'Ticket round'))}</h3>
+            <span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span>
+          </div>
+          <div class="fact-grid">
+            <div><small>Platform</small><strong>{html.escape(str(ticket.get('platform') or 'unknown'))}</strong></div>
+            <div><small>Lottery opens</small><strong>{html.escape(str(ticket.get('application_start_at') or 'unknown'))}</strong></div>
+            <div><small>Lottery closes</small><strong>{html.escape(str(ticket.get('application_end_at') or 'unknown'))}</strong></div>
+            <div><small>Results</small><strong>{html.escape(str(ticket.get('results_date') or 'unknown'))}</strong></div>
+            <div><small>Payment due</small><strong>{html.escape(str(ticket.get('payment_end_at') or 'unknown'))}</strong></div>
+            <div><small>On sale</small><strong>{html.escape(str(ticket.get('general_sale_date') or 'unknown'))}</strong></div>
+          </div>
+          <p><small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))} · confidence {html.escape(str(ticket.get('confidence') or 'unknown'))}</small></p>
+          <p><small>Evidence: {html.escape(str(ticket.get('evidence') or 'none'))}</small></p>
+          {web_source_link(ticket.get('url'), 'Open source')}
+        </article>
+        """
+        for ticket in event.get("rounds", [])
+    ) or "<p>No lottery rounds saved yet.</p>"
     manual_source_items = "".join(
-        f"<li>{html.escape(str(source.get('label')))} - {html.escape(str(source.get('url')))} - "
-        f"{html.escape('private note' if source.get('private_note') else str(source.get('platform')))} - "
-        f"{web_source_link(source.get('url'))}</li>"
+        f"""
+        <li>
+          <span><strong>{html.escape(str(source.get('label')))}</strong>
+          <small>{html.escape('private note' if source.get('private_note') else str(source.get('platform')))}</small></span>
+          {web_source_link(source.get('url'))}
+        </li>
+        """
         for source in event.get("manual_sources", [])
-    )
+    ) or "<li>No manual sources.</li>"
+    official = event.get("official_url") or ""
+    official_link = web_source_link(official, "Open") if is_web_url(official) else "<span>Unavailable</span>"
     return f"""<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(str(event.get('title') or 'Event'))}</title></head>
-<body style="font-family: Arial, sans-serif; margin: 24px; max-width: 920px;">
-  <p><a href="/">Back to chusennote</a></p>
-  <h1>{html.escape(str(event.get('title') or 'Untitled event'))}</h1>
-  <p>Status: <strong>{html.escape(str(event.get('status') or 'watching'))}</strong></p>
-  {render_event_card(event, basic=event.get('watch_kind') == WATCH_KIND_ARTIST)}
-  <h2>Manual Sources</h2>
-  <ul>
-    {manual_source_items}
-  </ul>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(str(event.get('title') or 'Event'))}</title>
+  <style>
+    :root {{ --ink: #261c2c; --muted: #736a7b; --line: #eadde8; --peach: #ff8c7a; --rose: #ffd9e2; --mint: #bdf3da; --shadow: 0 18px 40px rgba(81, 44, 72, 0.12); }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: linear-gradient(180deg, #fff8ee, #f7fbff); color: var(--ink); }}
+    a {{ color: #e2536d; font-weight: 850; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    header {{ background: rgba(255, 253, 248, 0.92); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
+    .topbar, main {{ max-width: 1040px; margin: 0 auto; }}
+    .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
+    main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
+    .back {{ display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 8px; background: white; border: 1px solid var(--line); }}
+    .hero, section {{ background: rgba(255,255,255,0.94); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: var(--shadow); }}
+    h1, h2, h3, p {{ margin-top: 0; letter-spacing: 0; }}
+    h1 {{ margin-bottom: 10px; font-size: clamp(30px, 5vw, 52px); line-height: 1; }}
+    h2 {{ margin-bottom: 12px; font-size: 22px; }}
+    .status {{ display: inline-block; padding: 4px 9px; border-radius: 999px; background: #e9f9f1; color: #147047; font-size: 12px; font-weight: 900; }}
+    .summary-grid, .fact-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }}
+    .summary-grid > div, .fact-grid > div {{ padding: 12px; border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; }}
+    small {{ display: block; color: var(--muted); line-height: 1.45; }}
+    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; padding: 12px; }}
+    .rounds {{ display: grid; gap: 12px; }}
+    .round-card {{ border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; padding: 14px; }}
+    .round-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }}
+    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ align-items: flex-start; flex-direction: column; }} }}
+  </style>
+</head>
+<body>
+  <header><div class="topbar"><a class="back" href="/" title="Back" aria-label="Back">‹</a><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span></div></header>
+  <main>
+    <div class="hero">
+      <h1>{html.escape(str(event.get('title') or 'Untitled event'))}</h1>
+      <div class="summary-grid">
+        <div><small>Official page</small>{official_link}</div>
+        <div><small>Updated</small><strong>{html.escape(str(event.get('updated_at') or 'unknown'))}</strong></div>
+        <div><small>Watch keyword</small><strong>{html.escape(str(event.get('keyword') or 'unknown'))}</strong></div>
+      </div>
+    </div>
+    <section><h2>Dates</h2><ul>{date_items}</ul></section>
+    <section><h2>Venues</h2><ul>{venue_items}</ul></section>
+    <section><h2>Ticket Links</h2><ul>{ticket_link_items}</ul></section>
+    <section><h2>Lottery Rounds</h2><div class="rounds">{round_items}</div></section>
+    <section><h2>Manual Sources</h2><ul>{manual_source_items}</ul></section>
+  </main>
 </body>
 </html>"""
 
@@ -2390,12 +2699,12 @@ def save_snapshot(connection: sqlite3.Connection, event_id: int, blocks: AppBloc
     )
 
 
-def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None) -> list[dict[str, str]]:
+def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_id: int | None = None) -> list[dict[str, str]]:
     timestamp = now or utc_now_iso()
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
         info = blocks.general_info
-        watch_id = upsert_keyword(connection, info.keyword, timestamp)
+        watch_id = watch_id or upsert_keyword(connection, info.keyword, timestamp)
         normalized_rounds = dedupe_ticket_rounds(blocks.ticket_info, parse_iso_date(timestamp))
         event_id, new_event = upsert_event(connection, watch_id, info, normalized_rounds, timestamp)
         event_title = info.title or info.keyword
@@ -2410,14 +2719,18 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None) -> list
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    if argv and argv[0] not in {"search", "watch", "artist", "event", "export", "web", "-h", "--help"}:
+    cleaned_argv, session_log, session_log_dir = split_session_log_args(argv)
+    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "-h", "--help"}:
         parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
         parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
         parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
         parser.add_argument("--db", default=None, help="SQLite database path for saving watch/event/ticket history")
         parser.add_argument("--alerts-json", action="store_true", help="With --db, output only detected alert changes as JSON")
         parser.set_defaults(command="legacy")
-        return parser.parse_args(argv)
+        args = parser.parse_args(cleaned_argv)
+        args.session_log = session_log
+        args.session_log_dir = session_log_dir
+        return args
 
     parser = argparse.ArgumentParser(description="Monitor Japanese event ticket lotteries.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2535,7 +2848,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     export_parser.add_argument("--json", action="store_true", default=True)
     export_parser.add_argument("--include-muted", action="store_true", help="Include muted watches or embedded manual sources where supported")
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(cleaned_argv)
+    args.session_log = session_log
+    args.session_log_dir = session_log_dir
+    return args
 
 
 def watches_to_json(watches: Sequence[Watch]) -> str:
@@ -2629,83 +2945,90 @@ def render_watch_preferences(watch: Watch, include_alerts: bool = False) -> str:
     if include_alerts:
         parts.append(f"alerts {watch.alert_preferences or 'none'}")
     parts.append(f"last checked {watch.last_checked_at or 'never'}")
-    return " · ".join(parts)
+    return " | ".join(parts)
 
 
-def render_web_page(db_path: str) -> str:
+def render_web_page(
+    db_path: str,
+    event_search_keyword: str = "",
+    event_search_results: Sequence[SearchResult] = (),
+    event_search_error: str = "",
+) -> str:
     watches = list_watches(db_path, include_muted=True)
-    sources = list_watch_sources(db_path, include_muted=True)
     events = recent_events(db_path)
-    upcoming = upcoming_priority_rows(db_path, limit=8)
-    alerts = recent_alerts(db_path, limit=20)
+    latest_event_by_watch_id = {
+        int(event["watch_id"]): event
+        for event in reversed(events)
+        if event.get("watch_kind") == WATCH_KIND_EVENT and event.get("watch_id")
+    }
     active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
-    muted_watches = [watch for watch in watches if watch.muted]
-    active_watch_ids = {watch.id for watch in watches if not watch.muted}
-    active_sources = [source for source in sources if not source.muted and source.watch_id in active_watch_ids]
-    muted_sources = [source for source in sources if source.muted]
     artist_items = "\n".join(
         f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · {html.escape(render_watch_preferences(watch))}</small></span>
-          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
+          <span><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | last checked {html.escape(watch.last_checked_at or 'never')}</small></span>
+          <span class="row-actions"><a class="icon-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">i</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
         for watch in active_artist_watches
     ) or "<li>No tracked artists.</li>"
-    tracked_event_items = "\n".join(
-        f"""
+    def render_tracked_event_item(watch: Watch) -> str:
+        event = latest_event_by_watch_id.get(watch.id)
+        if not event:
+            return f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · {html.escape(render_watch_preferences(watch, include_alerts=True))}</small></span>
-          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button>Remove</button></form>
+          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} | not searched yet</small></span>
+          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form>
         </li>
         """
-        for watch in active_event_watches
-    ) or "<li>No tracked events.</li>"
-    muted_watch_items = "\n".join(
-        f"""
+        detail_url = f"/events/{html.escape(str(event.get('id')))}"
+        ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
+        round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
+        date_items = event.get("event_dates", [])
+        date_label = str(date_items[0]) if isinstance(date_items, list) and date_items else "no date"
+        official_label = "yes" if is_web_url(event.get("official_url")) else "no"
+        return f"""
         <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} · {html.escape(watch.kind)} · {html.escape(render_watch_preferences(watch, include_alerts=watch.kind == WATCH_KIND_EVENT))}</small></span>
-          <form method="post" action="/watch/unmute"><input type="hidden" name="identifier" value="{watch.id}"><button>Restore</button></form>
+          <span>
+            <a class="watch-title" href="{detail_url}" title="Open event details">{html.escape(str(event.get('title') or watch.keyword))}</a>
+            <small>{html.escape(watch.keyword)}</small>
+            <span class="watch-meta">
+              <span class="mini-stat" title="Official page">O {html.escape(official_label)}</span>
+              <span class="mini-stat" title="Ticket links">T {ticket_count}</span>
+              <span class="mini-stat" title="Lottery rounds">R {round_count}</span>
+              <span class="mini-stat wide" title="First date clue">D {html.escape(date_label)}</span>
+            </span>
+          </span>
+          <span class="row-actions"><a class="icon-link" href="{detail_url}" title="Open event details" aria-label="Open event details">i</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
-        for watch in muted_watches
-    ) or "<li>No muted watches.</li>"
-    source_options = "\n".join(
-        f'<option value="{watch.id}">{html.escape(watch.keyword)}</option>' for watch in active_event_watches
+
+    tracked_event_items = "\n".join(render_tracked_event_item(watch) for watch in active_event_watches) or "<li>No tracked events.</li>"
+    event_result_items = "\n".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(result.title or result.url)}</strong><small>{html.escape(result.url)}</small></span>
+          <form method="post" action="/event/add">
+            <input type="hidden" name="keyword" value="{html.escape(event_search_keyword)}">
+            <input type="hidden" name="title" value="{html.escape(result.title)}">
+            <input type="hidden" name="url" value="{html.escape(result.url)}">
+            <input type="hidden" name="snippet" value="{html.escape(result.snippet)}">
+            <button class="icon-button" title="Add exact event" aria-label="Add exact event"><span aria-hidden="true">+</span><span class="button-text">Add exact event</span></button>
+          </form>
+        </li>
+        """
+        for result in event_search_results
     )
-    source_items = "\n".join(
-        f"""
-        <li>
-          <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} · {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small></span>
-          {web_source_link(source.url)}
-          <form method="post" action="/source/remove"><input type="hidden" name="identifier" value="{source.id}"><button>Remove</button></form>
-        </li>
+    event_search_panel = ""
+    if event_search_error:
+        event_search_panel = f'<p class="message">{html.escape(event_search_error)}</p>'
+    elif event_search_keyword:
+        event_search_panel = f"""
+        <div class="results-panel">
+          <div class="subhead"><span>Results</span><small>{html.escape(event_search_keyword)}</small></div>
+          <ul>{event_result_items or '<li>No matching event pages found.</li>'}</ul>
+        </div>
         """
-        for source in active_sources
-    ) or "<li>No manual sources.</li>"
-    muted_source_items = "\n".join(
-        f"""
-        <li>
-          <span><strong>{html.escape(source.label)}</strong> <small>watch #{source.watch_id} Â· {html.escape('private note' if source.private_note else source.platform)}</small><br><small>{html.escape(source.url)}</small><br>{web_source_link(source.url)}</span>
-          <form method="post" action="/source/unmute"><input type="hidden" name="identifier" value="{source.id}"><button>Restore</button></form>
-        </li>
-        """
-        for source in muted_sources
-    ) or "<li>No muted sources.</li>"
-    artist_event_items = "\n".join(render_event_card(event, basic=True) for event in events if event.get("watch_kind") == WATCH_KIND_ARTIST) or "<p>No artist event info saved yet.</p>"
-    ticket_event_items = "\n".join(render_event_card(event) for event in events if event.get("watch_kind") == WATCH_KIND_EVENT) or "<p>No tracked event ticket info saved yet.</p>"
-    upcoming_items = "\n".join(
-        f"""
-        <li>
-          <span><strong>{html.escape(str(item.get('event_title') or 'Untitled event'))}</strong><br>
-          <small>{html.escape(str(item.get('status') or 'unknown'))} · {html.escape(str(item.get('platform') or 'unknown'))} · {html.escape(str(item.get('round_name') or 'Ticket round'))} · {html.escape(str(item.get('relevant_date') or 'date unknown'))}</small></span>
-          {f'<a href="{html.escape(str(item.get("url")))}">Source</a>' if is_web_url(item.get("url")) else '<span>Source unavailable</span>'}
-        </li>
-        """
-        for item in upcoming
-    ) or "<li>No urgent ticket dates saved yet.</li>"
-    alert_items = "\n".join(render_alert_item(alert) for alert in alerts) or "<li>No alerts emitted yet.</li>"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2713,92 +3036,209 @@ def render_web_page(db_path: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>chusennote</title>
   <style>
-    body {{ margin: 0; font-family: Arial, sans-serif; background: #f6f7f9; color: #20242a; }}
-    header {{ background: #1f2933; color: white; padding: 18px 24px; }}
-    header a {{ color: white; }}
-    .topbar {{ display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }}
-    main {{ max-width: 1120px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }}
-    section {{ background: white; border: 1px solid #d8dde3; border-radius: 6px; padding: 16px; }}
-    h1, h2, h3 {{ margin: 0 0 12px; }}
-    form {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
-    input, select {{ padding: 8px 10px; border: 1px solid #b9c1cb; border-radius: 4px; min-width: 220px; }}
-    input[type="checkbox"] {{ min-width: 0; }}
-    button {{ padding: 8px 12px; border: 1px solid #1f2933; border-radius: 4px; background: #1f2933; color: white; cursor: pointer; }}
-    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border-bottom: 1px solid #edf0f3; padding-bottom: 8px; }}
-    small {{ color: #66717f; }}
-    .event {{ border-top: 1px solid #edf0f3; padding-top: 12px; margin-top: 12px; }}
-    .rounds {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }}
-    .round {{ border: 1px solid #d8dde3; border-radius: 6px; padding: 10px; background: #fbfcfd; }}
-    .status {{ display: inline-block; padding: 2px 6px; border-radius: 4px; background: #e8f0fe; color: #174ea6; font-size: 12px; }}
-    .reasons {{ margin: 6px 0; padding-left: 18px; color: #4d5967; }}
+    :root {{
+      --ink: #261c2c;
+      --muted: #736a7b;
+      --line: #eadde8;
+      --paper: #fffdf8;
+      --peach: #ff8c7a;
+      --rose: #ffd9e2;
+      --mint: #bdf3da;
+      --shadow: 0 18px 40px rgba(81, 44, 72, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(255, 217, 226, 0.72), transparent 30%),
+        radial-gradient(circle at 88% 4%, rgba(189, 243, 218, 0.72), transparent 28%),
+        linear-gradient(180deg, #fff8ee 0%, #fffdf8 50%, #f7fbff 100%);
+      color: var(--ink);
+    }}
+    a {{ color: #e2536d; font-weight: 850; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .watch-title {{ color: var(--ink); }}
+    header {{
+      background: rgba(255, 253, 248, 0.92);
+      border-bottom: 1px solid rgba(234, 221, 232, 0.9);
+      backdrop-filter: blur(16px);
+      padding: 16px 24px;
+    }}
+    .topbar {{
+      max-width: 1120px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }}
+    .brand {{ display: flex; gap: 10px; align-items: center; color: var(--ink); font-size: 24px; font-weight: 950; }}
+    .brand:hover {{ text-decoration: none; }}
+    .brand-mark {{
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--peach), #ffbfd0);
+      color: white;
+      box-shadow: 0 10px 24px rgba(255, 140, 122, 0.28);
+    }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 28px 24px 56px; }}
+    .grid-two {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }}
+    section {{
+      min-width: 0;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }}
+    .section-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }}
+    h1, h2 {{ margin: 0; letter-spacing: 0; }}
+    h2 {{ font-size: 22px; }}
+    .status {{ display: inline-block; padding: 3px 8px; border-radius: 999px; background: #e9f9f1; color: #147047; font-size: 12px; font-weight: 900; white-space: nowrap; }}
+    form {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 8px; align-items: center; }}
+    input {{
+      min-width: 0;
+      min-height: 42px;
+      padding: 10px 12px;
+      border: 1px solid #e5c9d8;
+      border-radius: 8px;
+      background: #fffafc;
+      color: var(--ink);
+      font: inherit;
+    }}
+    input[name="keyword"] {{ grid-column: 1 / -2; }}
+    button {{
+      min-height: 40px;
+      padding: 10px 14px;
+      border: 1px solid var(--ink);
+      border-radius: 8px;
+      background: var(--ink);
+      color: white;
+      cursor: pointer;
+      font-weight: 850;
+      box-shadow: 0 8px 18px rgba(81, 44, 72, 0.08);
+    }}
+    button:hover {{ transform: translateY(-1px); }}
+    .icon-button {{
+      width: 42px;
+      min-width: 42px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      font-size: 22px;
+      line-height: 1;
+    }}
+    .icon-button.soft {{ background: #fff; border-color: #f0b8c7; color: var(--ink); }}
+    .icon-button.danger {{ background: #fff3f6; border-color: #ffc1d0; color: #b9284a; box-shadow: none; }}
+    .icon-link {{
+      width: 34px;
+      min-width: 34px;
+      min-height: 34px;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid #cfe9dc;
+      border-radius: 8px;
+      background: #effbf5;
+      color: #147047;
+      font-weight: 950;
+      box-shadow: 0 8px 18px rgba(81, 44, 72, 0.06);
+    }}
+    .icon-link:hover {{ text-decoration: none; transform: translateY(-1px); }}
+    .button-text {{
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }}
+    ul {{ list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 10px; }}
+    .results-panel {{ margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }}
+    .subhead {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 900; }}
+    .message {{ margin: 12px 0 0; color: #b9284a; font-weight: 800; }}
+    li {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid #f1e4ed;
+      border-radius: 8px;
+      background: #fffdfd;
+      padding: 12px;
+    }}
+    small {{ color: var(--muted); line-height: 1.45; }}
+    li form {{ display: block; flex: 0 0 auto; }}
+    .row-actions {{ display: inline-flex; gap: 8px; align-items: center; }}
+    .watch-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }}
+    .mini-stat {{
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 24px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #fff3f6;
+      border: 1px solid #f7d7e1;
+      color: #5b3142;
+      font-size: 12px;
+      font-weight: 900;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: #147047; }}
+    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: #315c9b; }}
+    .mini-stat.wide {{ max-width: min(100%, 320px); }}
+    li .icon-button {{ width: 34px; min-width: 34px; min-height: 34px; font-size: 18px; }}
+    .run-form {{ display: flex; margin-top: 10px; }}
+    @media (max-width: 820px) {{
+      header {{ padding: 12px 16px; }}
+      main {{ padding: 18px 16px 42px; }}
+      .grid-two {{ grid-template-columns: 1fr; }}
+      form {{ grid-template-columns: 1fr auto; }}
+      input {{ grid-column: 1 / -1; }}
+      input[name="keyword"] {{ grid-column: 1 / 2; }}
+      li {{ align-items: flex-start; flex-direction: column; }}
+    }}
   </style>
 </head>
 <body>
-  <header><div class="topbar"><h1>chusennote</h1><a href="/calendar.ics">Calendar feed</a></div></header>
+  <header>
+    <div class="topbar">
+      <a class="brand" href="/"><span class="brand-mark">cn</span><span>chusennote</span></a>
+    </div>
+  </header>
   <main>
-    <section>
-      <h2>Tracked Artists</h2>
-      <form method="post" action="/watch/add">
-        <input type="hidden" name="kind" value="artist">
-        <input name="keyword" placeholder="Artist or performer keyword" required>
-        <input name="tags" placeholder="Tags">
-        <input name="regions" placeholder="Preferred regions">
-        <input name="venues" placeholder="Preferred venues">
-        <button>Add Artist</button>
-      </form>
-      <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="artist"><button>Run Artists</button></form>
-      <ul style="margin-top: 14px;">{artist_items}</ul>
-    </section>
-    <section>
-      <h2>Tracked Events</h2>
-      <form method="post" action="/watch/add">
-        <input type="hidden" name="kind" value="event">
-        <input name="keyword" placeholder="Specific event or musical keyword" required>
-        <input name="tags" placeholder="Tags">
-        <input name="regions" placeholder="Preferred regions">
-        <input name="venues" placeholder="Preferred venues">
-        <input name="alerts" placeholder="Alert types">
-        <button>Add Event</button>
-      </form>
-      <form method="post" action="/watch/run" style="margin-top: 10px;"><input type="hidden" name="kind" value="event"><button>Run Events</button></form>
-      <ul style="margin-top: 14px;">{tracked_event_items}</ul>
-    </section>
-    <section>
-      <h2>Muted Watches</h2>
-      <ul>{muted_watch_items}</ul>
-    </section>
-    <section>
-      <h2>Manual Sources</h2>
-      <form method="post" action="/source/add">
-        <select name="watch" required>{source_options}</select>
-        <input name="url" placeholder="Public ticket URL or private note URL" required>
-        <input name="label" placeholder="Label">
-        <label><input type="checkbox" name="private_note" value="1"> Private note</label>
-        <button>Add Source</button>
-      </form>
-      <ul style="margin-top: 14px;">{source_items}</ul>
-    </section>
-    <section>
-      <h2>Muted Sources</h2>
-      <ul>{muted_source_items}</ul>
-    </section>
-    <section>
-      <h2>Needs Attention</h2>
-      <ul>{upcoming_items}</ul>
-    </section>
-    <section>
-      <h2>Artist Event Info</h2>
-      {artist_event_items}
-    </section>
-    <section>
-      <h2>Tracked Event Tickets</h2>
-      {ticket_event_items}
-    </section>
-    <section>
-      <h2>Recent Alerts</h2>
-      <ul>{alert_items}</ul>
-    </section>
+    <div class="grid-two">
+      <section>
+        <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>
+        <form method="post" action="/watch/add">
+          <input type="hidden" name="kind" value="artist">
+          <input name="keyword" placeholder="Artist" required>
+          <button class="icon-button" title="Add artist" aria-label="Add artist"><span aria-hidden="true">+</span><span class="button-text">Add Artist</span></button>
+        </form>
+        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="icon-button soft" title="Run artists" aria-label="Run artists"><span aria-hidden="true">></span><span class="button-text">Run Artists</span></button></form>
+        <ul>{artist_items}</ul>
+      </section>
+      <section>
+        <div class="section-head"><h2>Tracked Events</h2><span class="status">{len(active_event_watches)} active</span></div>
+        <form method="post" action="/event/search">
+          <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" required>
+          <button class="icon-button" title="Search events" aria-label="Search events"><span aria-hidden="true">?</span><span class="button-text">Search events</span></button>
+        </form>
+        {event_search_panel}
+        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="icon-button soft" title="Run events" aria-label="Run events"><span aria-hidden="true">></span><span class="button-text">Run Events</span></button></form>
+        <ul>{tracked_event_items}</ul>
+      </section>
+    </div>
   </main>
 </body>
 </html>"""
@@ -2884,6 +3324,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             query = urllib.parse.parse_qs(parsed_url.query)
             if path == "/":
                 html_response(self, render_web_page(db_path))
+            elif re.fullmatch(r"/artists/\d+", path):
+                html_response(self, render_artist_detail_page(db_path, int(path.rsplit("/", 1)[1])))
             elif re.fullmatch(r"/events/\d+", path):
                 html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1])))
             elif path == "/api/health":
@@ -2937,6 +3379,32 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 redirect_response(self)
             elif path == "/watch/run":
                 run_watches(db_path, kind=form.get("kind") or None)
+                redirect_response(self)
+            elif path == "/event/search":
+                keyword = clean_text(form.get("keyword", ""))
+                if not keyword:
+                    html_response(self, render_web_page(db_path, event_search_error="Keyword is required."))
+                    return
+                try:
+                    results = search_web(keyword, limit=6)
+                except (OSError, ValueError) as error:
+                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error=str(error)))
+                    return
+                html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_results=results))
+            elif path == "/event/add":
+                keyword = clean_text(form.get("keyword", ""))
+                title = clean_text(form.get("title", ""))
+                url = clean_text(form.get("url", ""))
+                snippet = clean_text(form.get("snippet", ""))
+                if not is_web_url(url):
+                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error="Pick a valid event page."))
+                    return
+                try:
+                    blocks = build_exact_event_blocks(keyword or title, title, url, snippet)
+                    save_blocks(db_path, blocks)
+                except (OSError, ValueError) as error:
+                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error=str(error)))
+                    return
                 redirect_response(self)
             elif path == "/source/add":
                 try:
@@ -3008,8 +3476,7 @@ def run_web(db_path: str, port: int, host: str = "127.0.0.1") -> None:
     server.serve_forever()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+def run_command(args: argparse.Namespace) -> int:
     if args.command == "web":
         run_web(args.db, args.port, args.host)
         return 0
@@ -3155,6 +3622,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(blocks_to_json(blocks) if args.json else render_blocks(blocks))
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = list(argv or sys.argv[1:])
+    started_at = dt.datetime.now().astimezone()
+    args = parse_args(raw_argv)
+    exit_code = run_command(args)
+    if args.session_log:
+        append_session_log(raw_argv, args, exit_code, started_at)
+    return exit_code
 
 
 if __name__ == "__main__":

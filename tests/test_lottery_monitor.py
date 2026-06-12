@@ -475,6 +475,30 @@ def test_search_cli_json_outputs_blocks(monkeypatch, capsys):
     assert '"ticket_info"' in output
 
 
+def test_session_log_flag_writes_daily_markdown_log(tmp_path, monkeypatch, capsys):
+    log_dir = tmp_path / "history_logs"
+    monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    assert lm.main(["search", "Example", "--json", "--session-log", "--session-log-dir", str(log_dir)]) == 0
+    capsys.readouterr()
+
+    logs = list(log_dir.glob("session_*.md"))
+    assert len(logs) == 1
+    content = logs[0].read_text(encoding="utf-8")
+    assert "lottery_monitor.py search Example --json --session-log --session-log-dir" in content
+    assert "- Target: `search`" in content
+    assert "- Exit code: `0`" in content
+
+
+def test_session_log_args_work_before_legacy_keyword():
+    args = lm.parse_args(["--session-log", "--session-log-dir=logs", "Example"])
+
+    assert args.command == "legacy"
+    assert args.keyword == "Example"
+    assert args.session_log is True
+    assert args.session_log_dir == "logs"
+
+
 def test_watch_add_list_remove_cli(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
 
@@ -824,7 +848,9 @@ def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
     home = lm.render_web_page(str(db_path))
 
     assert 'href="keyword:Example"' not in home
-    assert "Source unavailable" in home
+    assert "Tracked Artists" in home
+    assert "Tracked Events" in home
+    assert "Source unavailable" not in home
 
 
 def test_api_health_reports_database_counts(tmp_path):
@@ -1054,20 +1080,22 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         muted_calendar = urllib.request.urlopen(f"{base}/calendar.ics?include_muted=1", timeout=5).read().decode("utf-8")
 
         assert "chusennote" in home
-        assert "Calendar feed" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
-        assert "Muted Watches" in home
-        assert "Muted Sources" in home
-        assert "Preferred regions" in home
-        assert "Alert types" in home
-        assert "Needs Attention" in home
-        assert "Dates:" in home
-        assert "Venues:" in home
-        assert "Evidence:" in home
-        assert 'href="/events/1">Example Tour</a>' in home
-        assert "event Example" in home
+        assert "Search exact event" in home
+        assert "Search events" in home
+        assert 'href="/events/1"' in home
+        assert "Calendar feed" not in home
+        assert "Muted Watches" not in home
+        assert "Muted Sources" not in home
+        assert "Needs Attention" not in home
         assert "Example Tour" in detail
+        assert "Dates" in detail
+        assert "Venues" in detail
+        assert "Ticket Links" in detail
+        assert "Lottery Rounds" in detail
+        assert "Evidence:" in detail
+        assert "event Example" not in home
         assert health["status"] == "ok"
         assert health["tracked_events"] >= 1
         assert watchlist[0]["keyword"] == "Example"
@@ -1099,6 +1127,136 @@ def test_web_command_parses_explicit_host():
     assert args.host == "0.0.0.0"
 
 
+def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    monkeypatch.setattr(
+        lm,
+        "search_web",
+        lambda keyword, limit=8: (
+            lm.SearchResult("Example Musical Official", "https://official.example/stage", "official event page"),
+        ),
+    )
+    monkeypatch.setattr(
+        lm,
+        "build_exact_event_blocks",
+        lambda keyword, title, url, snippet="": example_blocks("Example Musical"),
+    )
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        search_home = post_text(f"{base}/event/search", {"keyword": "Example Musical"})
+        assert "Example Musical Official" in search_home
+        assert "https://official.example/stage" in search_home
+        assert 'title="Add exact event"' in search_home
+
+        added_home = post_text(
+            f"{base}/event/add",
+            {
+                "keyword": "Example Musical",
+                "title": "Example Musical Official",
+                "url": "https://official.example/stage",
+                "snippet": "official event page",
+            },
+        )
+        assert "Example Musical" in added_home
+        assert 'href="/events/1"' in added_home
+        assert "T 1" in added_home
+        assert "R 1" in added_home
+        detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
+        assert "Official page" in detail
+        assert "https://t.pia.jp/example" in detail
+        assert "第1次抽選先行" in detail
+        assert "Lottery opens" in detail
+        assert "Lottery closes" in detail
+        assert "Payment due" in detail
+        assert "On sale" in detail
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_artist_detail_lists_discovered_events_sorted_by_date(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    artist = lm.add_watch(str(db_path), "Example Artist", kind=lm.WATCH_KIND_ARTIST, now="2026-06-01T00:00:00+00:00")
+    later = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example Artist",
+            official_page="https://official.example/later",
+            title="Later Show",
+            summary="",
+            event_dates=("公演日 2026年9月20日",),
+            venues=("会場 Later Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    earlier = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example Artist",
+            official_page="https://official.example/earlier",
+            title="Earlier Show",
+            summary="",
+            event_dates=("公演日 2026年7月10日",),
+            venues=("会場 Earlier Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    lm.save_blocks(str(db_path), later, now="2026-06-02T00:00:00+00:00")
+    lm.save_blocks(str(db_path), earlier, now="2026-06-03T00:00:00+00:00")
+
+    home = lm.render_web_page(str(db_path))
+    detail = lm.render_artist_detail_page(str(db_path), artist.id)
+
+    assert f'href="/artists/{artist.id}"' in home
+    assert detail.index("Earlier Show") < detail.index("Later Show")
+    assert "D 2026-07-10" in detail
+    assert "D 2026-09-20" in detail
+    assert "V 会場 Earlier Hall" in detail
+    assert "T 0" in detail
+    assert "R 0" in detail
+
+
+def test_artist_run_saves_multiple_discovered_events_under_artist_watch(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    artist = lm.add_watch(str(db_path), "Example Artist", kind=lm.WATCH_KIND_ARTIST, now="2026-06-01T00:00:00+00:00")
+    first = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example Artist",
+            official_page="https://official.example/first",
+            title="First Artist Event",
+            summary="",
+            event_dates=("公演日 2026年7月10日",),
+            venues=("会場 First Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    second = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example Artist",
+            official_page="https://official.example/second",
+            title="Second Artist Event",
+            summary="",
+            event_dates=("公演日 2026年8月10日",),
+            venues=("会場 Second Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    monkeypatch.setattr(lm, "build_artist_event_blocks", lambda keyword: [second, first])
+
+    lm.run_watches(str(db_path), now="2026-06-02T00:00:00+00:00", kind=lm.WATCH_KIND_ARTIST)
+
+    events = lm.recent_events(str(db_path), include_muted_sources=True, include_muted_watches=True)
+    artist_events = [event for event in events if event["watch_id"] == artist.id]
+    detail = lm.render_artist_detail_page(str(db_path), artist.id)
+    assert len(artist_events) == 2
+    assert detail.index("First Artist Event") < detail.index("Second Artist Event")
+
+
 def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     monkeypatch.setattr(lm, "build_blocks", lambda keyword: example_blocks(keyword))
@@ -1124,9 +1282,8 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert created_watch["alert_preferences"] == "new_lottery_round"
         assert json_load_url(f"{base}/api/watchlist")[0]["keyword"] == "Example"
         home_with_preferences = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
-        assert "tags musical" in home_with_preferences
-        assert "venues Example Hall" in home_with_preferences
-        assert "alerts new_lottery_round" in home_with_preferences
+        assert "Example" in home_with_preferences
+        assert "not searched yet" in home_with_preferences
 
         source = post_form(f"{base}/api/sources", {"watch": "Example", "url": "https://fan.example/private", "label": "FC", "private_note": "1"})
         assert source["private_note"] is True
@@ -1135,7 +1292,7 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert any(alert["type"] == "new_lottery_round" for alert in run_alerts)
         home_with_source = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         detail_with_source = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
-        assert '<a href="https://fan.example/private">Open</a>' in home_with_source
+        assert '<a href="https://fan.example/private">Open</a>' not in home_with_source
         assert '<a href="https://fan.example/private">Open</a>' in detail_with_source
 
         removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
@@ -1150,7 +1307,9 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert events_with_muted_sources[0]["manual_sources"][0]["muted"] is True
 
         restored_source_home = post_text(f"{base}/source/unmute", {"identifier": "1"})
-        assert "Muted Sources" in restored_source_home
+        assert "Tracked Artists" in restored_source_home
+        assert "Tracked Events" in restored_source_home
+        assert "Muted Sources" not in restored_source_home
         assert json_load_url(f"{base}/api/sources")[0]["muted"] is False
 
         removed = post_form(f"{base}/api/watchlist/remove", {"identifier": "Example"})
@@ -1177,7 +1336,9 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert '<a href="https://fan.example/private">Open</a>' in muted_detail
 
         restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
-        assert "Muted Watches" in restored_home
+        assert "Tracked Artists" in restored_home
+        assert "Tracked Events" in restored_home
+        assert "Muted Watches" not in restored_home
         assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is False
     finally:
         server.shutdown()
