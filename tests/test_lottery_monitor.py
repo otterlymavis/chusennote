@@ -927,6 +927,32 @@ def test_private_note_sources_are_not_scraped(tmp_path, monkeypatch):
     assert any(link.url == "https://fan.example/private" for link in blocks.general_info.ticket_links)
 
 
+def test_public_manual_source_is_authoritative_and_skips_discovery(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
+    lm.add_watch_source(str(db_path), "Example", "https://official.example/stage", "公式", private_note=False)
+
+    def fail_discovery(keyword):
+        raise AssertionError("web discovery must be skipped when a public manual source exists")
+
+    monkeypatch.setattr(lm, "build_blocks", fail_discovery)
+    html = """
+    <html><head><title>Example Official</title></head><body>
+      <h1>Example</h1>
+      <p>公演日 2026年7月10日 会場 Example Hall</p>
+      <h2>第1次抽選先行</h2>
+      <p>受付期間 2026年6月10日 ～ 2026年6月18日</p>
+    </body></html>
+    """
+    monkeypatch.setattr(lm, "fetch_page", lambda url: lm.parse_page(url, html))
+
+    blocks = lm.build_blocks_for_watch(str(db_path), watch)
+
+    assert blocks.general_info.official_page == "https://official.example/stage"
+    assert blocks.general_info.title == "Example Official"
+    assert any(round.lottery_end == "2026-06-18" for round in blocks.ticket_info)
+
+
 def test_public_manual_source_adds_ticket_round(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")

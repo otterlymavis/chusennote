@@ -943,17 +943,40 @@ def build_artist_blocks(keyword: str, search_results: Sequence[SearchResult] | N
     return AppBlocks(general_info=dataclasses.replace(info, ticket_links=()), ticket_info=())
 
 
+def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
+    blocks: list[AppBlocks] = []
+    seen_urls: set[str] = set()
+    for result in choose_official_results(search_web(keyword, limit=limit), keyword, limit=limit):
+        if result.url in seen_urls or is_noisy_url(result.url):
+            continue
+        seen_urls.add(result.url)
+        try:
+            page = fetch_page(result.url)
+        except (OSError, ValueError):
+            continue
+        info = build_event_info(keyword, (page,))
+        if not info.title:
+            info = dataclasses.replace(info, title=result.title or page.title)
+        if result.snippet and not info.summary:
+            info = dataclasses.replace(info, summary=result.snippet)
+        blocks.append(AppBlocks(general_info=info, ticket_info=extract_ticket_rounds_for_page(page)))
+    return blocks
+
+
 def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
     if watch.kind == WATCH_KIND_ARTIST:
         return build_artist_blocks(watch.keyword)
-    blocks = build_blocks(watch.keyword)
     manual_sources = list_watch_sources(db_path, str(watch.id))
     manual_links = tuple(Link(source.label, source.url) for source in manual_sources)
     public_sources = [source for source in manual_sources if not source.private_note]
+
+    # Fetch curated public sources once and reuse them for both the headline
+    # event info and the ticket rounds.
+    source_pages: list[Page] = []
     extra_rounds: list[TicketRound] = []
     for source in public_sources:
         try:
-            extra_rounds.extend(extract_ticket_rounds_for_page(fetch_page(source.url)))
+            page = fetch_page(source.url)
         except (OSError, ValueError):
             extra_rounds.append(
                 TicketRound(
@@ -965,11 +988,25 @@ def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
                     confidence=source.confidence,
                 )
             )
-    info = blocks.general_info
+            continue
+        source_pages.append(page)
+        extra_rounds.extend(extract_ticket_rounds_for_page(page))
+
+    if source_pages:
+        # A curated official source is authoritative, so trust it for the headline
+        # info and skip web discovery, which is bot-throttled and can spawn an
+        # unrelated "twin" event for the same watch.
+        info = build_event_info(watch.keyword, source_pages)
+        base_rounds: tuple[TicketRound, ...] = ()
+    else:
+        blocks = build_blocks(watch.keyword)
+        info = blocks.general_info
+        base_rounds = blocks.ticket_info
+
     existing_urls = {link.url for link in info.ticket_links}
     merged_links = info.ticket_links + tuple(link for link in manual_links if link.url not in existing_urls)
     merged_info = dataclasses.replace(info, ticket_links=merged_links)
-    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(blocks.ticket_info + tuple(extra_rounds)))
+    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(base_rounds + tuple(extra_rounds)))
 
 
 def render_blocks(blocks: AppBlocks) -> str:
