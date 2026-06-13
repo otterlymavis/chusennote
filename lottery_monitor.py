@@ -3192,6 +3192,7 @@ def render_web_page(
 ) -> str:
     watches = list_watches(db_path, include_muted=True)
     events = recent_events(db_path)
+    upcoming_rows = upcoming_priority_rows(db_path, limit=6)
     latest_event_by_watch_id = {
         int(event["watch_id"]): event
         for event in reversed(events)
@@ -3265,6 +3266,25 @@ def render_web_page(
           <ul>{event_result_items or '<li class="empty-row">No matching event pages found.</li>'}</ul>
         </div>
         """
+    upcoming_items = "\n".join(
+        f"""
+        <li class="watch-row attention-row">
+          <span class="watch-copy">
+            <a class="watch-title" href="/events/{html.escape(str(row.get('event_id')))}">{html.escape(str(row.get('event_title') or 'Untitled event'))}</a>
+            <small>{html.escape(str(row.get('keyword') or 'unknown'))}</small>
+            <span class="watch-meta">
+              <span class="mini-stat" title="Ticket status">{html.escape(str(row.get('status') or 'unknown'))}</span>
+              <span class="mini-stat" title="Relevant date">Date {html.escape(str(row.get('relevant_date') or 'unknown'))}</span>
+              <span class="mini-stat" title="Platform">{html.escape(str(row.get('platform') or 'unknown'))}</span>
+              <span class="mini-stat wide" title="Round">{html.escape(str(row.get('round_name') or 'Ticket round'))}</span>
+            </span>
+          </span>
+          <span class="row-actions"><a class="action-link" href="/events/{html.escape(str(row.get('event_id')))}" title="Open event details" aria-label="Open event details">Open</a></span>
+        </li>
+        """
+        for row in upcoming_rows
+    ) or '<li class="empty-row">No ticket rounds need attention.</li>'
+    upcoming_label = "round" if len(upcoming_rows) == 1 else "rounds"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3349,6 +3369,7 @@ def render_web_page(
       min-width: 0;
       padding: 0;
     }}
+    .attention-panel {{ margin-bottom: 26px; }}
     .section-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }}
     h1, h2 {{ margin: 0; letter-spacing: 0; }}
     h2 {{ font-size: 20px; }}
@@ -3438,6 +3459,7 @@ def render_web_page(
     }}
     .watch-row {{ align-items: flex-start; }}
     .event-row {{ min-height: 108px; }}
+    .attention-row {{ min-height: 96px; }}
     .empty-row {{ color: var(--muted); font-weight: 700; box-shadow: none; }}
     .watch-copy {{ min-width: 0; display: grid; gap: 4px; }}
     .event-title {{
@@ -3504,6 +3526,10 @@ def render_web_page(
         <span class="summary-pill">{len(events)} saved events</span>
       </div>
     </div>
+    <section class="attention-panel">
+      <div class="section-head"><h2>Needs Attention</h2><span class="status">{len(upcoming_rows)} {upcoming_label}</span></div>
+      <ul>{upcoming_items}</ul>
+    </section>
     <div class="grid-two">
       <section>
         <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>

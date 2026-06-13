@@ -1280,7 +1280,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Calendar feed" not in home
         assert "Muted Watches" not in home
         assert "Muted Sources" not in home
-        assert "Needs Attention" not in home
+        assert "Needs Attention" in home
+        assert "Rounds 1" in home
         assert "Example Tour" in detail
         assert "Dates" in detail
         assert "Venues" in detail
