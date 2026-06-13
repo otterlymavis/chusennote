@@ -748,6 +748,21 @@ def keyword_overlap(keyword: str, text: str) -> float:
     return len(keyword_grams & text_bigrams(text)) / len(keyword_grams)
 
 
+def keyword_matches_text(keyword: str, text: str) -> bool:
+    normalized_keyword = clean_text(keyword).lower()
+    haystack = clean_text(text).lower()
+    if not normalized_keyword:
+        return False
+    if normalized_keyword in haystack:
+        return True
+    tokens = [token for token in re.split(r"\s+", normalized_keyword) if len(token) >= 3]
+    if tokens and any(token in haystack for token in tokens):
+        return True
+    if re.fullmatch(r"[a-z0-9 ._'-]+", normalized_keyword):
+        return False
+    return keyword_overlap(keyword, text) >= MIN_KEYWORD_OVERLAP
+
+
 def official_score(result: SearchResult, keyword: str) -> float:
     host = hostname(result.url)
     text = f"{result.title} {result.snippet} {result.url}".lower()
@@ -755,7 +770,7 @@ def official_score(result: SearchResult, keyword: str) -> float:
     overlap = keyword_overlap(keyword, title_snippet)
     token_score = sum(2 for token in keyword.lower().split() if len(token) >= 3 and token in text)
     trusted_host = any(hint in host for hint in OFFICIAL_HOST_HINTS)
-    has_keyword_relevance = overlap >= MIN_KEYWORD_OVERLAP or token_score > 0
+    has_keyword_relevance = keyword_matches_text(keyword, title_snippet) or token_score > 0
     if not trusted_host and not has_keyword_relevance:
         return -20.0 if any(noisy in host for noisy in SOCIAL_OR_NOISY_DOMAINS) else 0.0
 
@@ -787,10 +802,7 @@ def choose_official_results(results: Sequence[SearchResult], keyword: str, limit
 
 def page_matches_keyword(keyword: str, page: Page) -> bool:
     title_and_intro = f"{page.title} {page.text[:1200]}"
-    if keyword_overlap(keyword, title_and_intro) >= MIN_KEYWORD_OVERLAP:
-        return True
-    haystack = title_and_intro.lower()
-    return any(len(token) >= 3 and token in haystack for token in keyword.lower().split())
+    return keyword_matches_text(keyword, title_and_intro)
 
 
 def nearby_phrases(text: str, labels: Iterable[str], width: int = 90, limit: int = 4) -> tuple[str, ...]:
@@ -1237,6 +1249,18 @@ def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
         if result.snippet and not info.summary:
             info = dataclasses.replace(info, summary=result.snippet)
         blocks.append(AppBlocks(general_info=info, ticket_info=extract_ticket_rounds_for_page(page)))
+    if not blocks:
+        ticket_links = portal_search_links(keyword)
+        info = EventInfo(
+            keyword=keyword,
+            official_page=ticket_links[0].url if ticket_links else None,
+            title=f"{keyword} ticket search",
+            summary="Trusted ticket portal searches for this artist.",
+            event_dates=(),
+            venues=(),
+            ticket_links=ticket_links,
+        )
+        blocks.append(AppBlocks(general_info=info, ticket_info=()))
     return blocks
 
 
@@ -2384,6 +2408,39 @@ def infer_event_location(venues: Sequence[str]) -> str:
     return clean_text(str(venues[0])).strip(" ：:") if venues else ""
 
 
+def split_event_notes(text: str) -> list[str]:
+    normalized = clean_text(text)
+    parts = re.split(r"(?=※)|[。\n\r]+", normalized)
+    return [part.strip(" ・:：。") for part in parts if part.strip(" ・:：。")]
+
+
+def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
+    hints = ("未就学", "入場", "有償譲渡", "転売", "車椅子", "身分証", "本人確認", "禁止", "注意", "同意")
+    items: list[str] = []
+    seen: set[str] = set()
+    for note in split_event_notes(text):
+        if any(hint in note for hint in hints) and note not in seen:
+            items.append(note)
+            seen.add(note)
+        if len(items) >= limit:
+            break
+    return tuple(items)
+
+
+def extract_ticket_price_items(text: str, limit: int = 6) -> tuple[str, ...]:
+    hints = ("料金", "席", "円", "税込")
+    items: list[str] = []
+    seen: set[str] = set()
+    for note in split_event_notes(text):
+        has_price = bool(re.search(r"\d[\d,]*\s*円", note))
+        if (has_price or any(hint in note for hint in hints)) and note not in seen:
+            items.append(note)
+            seen.add(note)
+        if len(items) >= limit:
+            break
+    return tuple(items)
+
+
 def render_event_detail_page(db_path: str, event_id: int) -> str:
     event = event_detail(db_path, event_id)
     if not event:
@@ -2393,6 +2450,11 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     time_label = "; ".join(event_dates[:3]) if event_dates else "Unknown"
     venue_label = "; ".join(venues[:3]) if venues else "Unknown"
     location_label = infer_event_location(venues) or "Unknown"
+    summary_text = str(event.get("summary") or "")
+    ticket_rules = extract_ticket_rule_items(summary_text)
+    ticket_prices = extract_ticket_price_items(summary_text)
+    ticket_rule_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_rules) or "<li>Ticket rules not captured yet.</li>"
+    ticket_price_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_prices) or "<li>Ticket prices not captured yet.</li>"
     ticket_link_items = "".join(
         f"""
         <li>
@@ -2493,6 +2555,8 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         <div><small>Venue</small><strong>{html.escape(venue_label)}</strong></div>
       </div>
     </section>
+    <section><h2>Ticket Rules</h2><ul>{ticket_rule_items}</ul></section>
+    <section><h2>Ticket Price</h2><ul>{ticket_price_items}</ul></section>
     <section><h2>Ticket Links</h2><ul>{ticket_link_items}</ul></section>
     <section><h2>Lottery Rounds</h2><div class="rounds">{round_items}</div></section>
     <section><h2>Manual Sources</h2><ul>{manual_source_items}</ul></section>
@@ -3230,6 +3294,7 @@ def render_web_page(
     event_search_keyword: str = "",
     event_search_results: Sequence[SearchResult] = (),
     event_search_error: str = "",
+    selected_tab: str = "",
 ) -> str:
     watches = list_watches(db_path, include_muted=True)
     events = recent_events(db_path)
@@ -3241,10 +3306,16 @@ def render_web_page(
     }
     active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
+    event_count_by_artist_id: dict[int, int] = {}
+    for event in events:
+        if event.get("watch_kind") != WATCH_KIND_ARTIST or not event.get("watch_id"):
+            continue
+        artist_id = int(event["watch_id"])
+        event_count_by_artist_id[artist_id] = event_count_by_artist_id.get(artist_id, 0) + 1
     artist_items = "\n".join(
         f"""
         <li class="watch-row">
-          <span class="watch-copy"><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | checked {html.escape(watch.last_checked_at or 'never')}</small></span>
+          <span class="watch-copy"><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | checked {html.escape(watch.last_checked_at or 'never')} | {event_count_by_artist_id.get(watch.id, 0)} results</small></span>
           <span class="row-actions"><a class="action-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">Open</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
@@ -3326,7 +3397,7 @@ def render_web_page(
         for row in upcoming_rows
     ) or '<li class="empty-row">No ticket rounds need attention.</li>'
     upcoming_label = "round" if len(upcoming_rows) == 1 else "rounds"
-    active_dashboard_tab = "events" if event_search_keyword or event_search_error else "attention"
+    active_dashboard_tab = selected_tab if selected_tab in {"attention", "artists", "events"} else "events" if event_search_keyword or event_search_error else "attention"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3733,7 +3804,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             path = parsed_url.path
             query = urllib.parse.parse_qs(parsed_url.query)
             if path == "/":
-                html_response(self, render_web_page(db_path))
+                html_response(self, render_web_page(db_path, selected_tab=query.get("tab", [""])[0]))
             elif re.fullmatch(r"/artists/\d+", path):
                 html_response(self, render_artist_detail_page(db_path, int(path.rsplit("/", 1)[1])))
             elif re.fullmatch(r"/events/\d+", path):
@@ -3780,7 +3851,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
                 add_watch_from_form(db_path, form)
-                redirect_response(self)
+                redirect_response(self, f"/?tab={'artists' if form.get('kind') == WATCH_KIND_ARTIST else 'events'}")
             elif path == "/watch/remove":
                 remove_watch(db_path, form.get("identifier", ""))
                 redirect_response(self)
@@ -3788,8 +3859,9 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 set_watch_muted(db_path, form.get("identifier", ""), False)
                 redirect_response(self)
             elif path == "/watch/run":
-                run_watches(db_path, kind=form.get("kind") or None)
-                redirect_response(self)
+                kind = form.get("kind") or None
+                run_watches(db_path, kind=kind)
+                redirect_response(self, f"/?tab={'artists' if kind == WATCH_KIND_ARTIST else 'events' if kind == WATCH_KIND_EVENT else 'attention'}")
             elif path == "/event/search":
                 keyword = clean_text(form.get("keyword", ""))
                 if not keyword:

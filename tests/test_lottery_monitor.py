@@ -165,6 +165,18 @@ def test_infer_event_location_prefers_parenthetical_area():
     assert lm.infer_event_location(("Venue Example Hall (Tokyo)",)) == "Tokyo"
 
 
+def test_ticket_rule_and_price_extractors_read_summary_notes():
+    summary = (
+        "Schedule ※未就学児のご入場はご遠慮ください。"
+        "※本公演のチケットは主催者の同意のない有償譲渡が禁止されています。"
+        "【料金】 S席 17,500円 A席 11,000円"
+    )
+
+    assert "未就学児" in lm.extract_ticket_rule_items(summary)[0]
+    assert "有償譲渡" in lm.extract_ticket_rule_items(summary)[1]
+    assert "17,500円" in lm.extract_ticket_price_items(summary)[0]
+
+
 def test_extract_ticket_rounds_with_japanese_lottery_dates():
     html = """
     <html><head><title>Ticket</title></head><body>
@@ -1314,6 +1326,8 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Location" in detail
         assert "Time" in detail
         assert "Venue" in detail
+        assert "Ticket Rules" in detail
+        assert "Ticket Price" in detail
         assert "Ticket Links" in detail
         assert "Lottery Rounds" in detail
         assert "Evidence:" in detail
@@ -1477,6 +1491,29 @@ def test_artist_run_saves_multiple_discovered_events_under_artist_watch(tmp_path
     detail = lm.render_artist_detail_page(str(db_path), artist.id)
     assert len(artist_events) == 2
     assert detail.index("First Artist Event") < detail.index("Second Artist Event")
+
+
+def test_artist_event_blocks_fall_back_to_ticket_portal_searches(monkeypatch):
+    monkeypatch.setattr(
+        lm,
+        "search_web",
+        lambda keyword, limit=8: [lm.SearchResult("Unrelated article", "https://example.com/noise", "libido sodomie")],
+    )
+    monkeypatch.setattr(
+        lm,
+        "fetch_page",
+        lambda url: lm.Page(url=url, title="Unrelated article", text="libido sodomie menopause", links=()),
+    )
+
+    blocks = lm.build_artist_event_blocks("yoasobi")
+
+    assert len(blocks) == 1
+    assert blocks[0].general_info.title == "yoasobi ticket search"
+    assert [link.label for link in blocks[0].general_info.ticket_links] == [
+        "Pia search",
+        "eplus search",
+        "Lawson Ticket search",
+    ]
 
 
 def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
@@ -1682,6 +1719,11 @@ def test_keyword_overlap_is_high_for_matching_japanese_and_low_for_unrelated():
     keyword = "ディア・エヴァン・ハンセン"
     assert lm.keyword_overlap(keyword, "ディア・エヴァン・ハンセン 公演") > 0.8
     assert lm.keyword_overlap(keyword, "toute l'actu des stars Gala") == 0.0
+
+
+def test_keyword_matches_latin_artist_by_name_not_incidental_bigrams():
+    assert lm.keyword_matches_text("yoasobi", "YOASOBI official live schedule")
+    assert not lm.keyword_matches_text("yoasobi", "Sexualité: libido, sodomie, ménopause")
 
 
 def test_search_api_disabled_without_env(monkeypatch):
