@@ -162,6 +162,13 @@ def test_past_general_sale_round_is_closed():
     assert lm.compute_ticket_status(ticket, today=dt.date(2026, 6, 13)) == "closed"
 
 
+def test_ticket_round_key_distinguishes_same_name_rounds_by_dates():
+    first = lm.TicketRound(source="official", url="https://example.test", name="抽選", lottery_start="2026-01-24")
+    second = lm.TicketRound(source="official", url="https://example.test", name="抽選", lottery_start="2026-03-24")
+
+    assert lm.ticket_round_key(first) != lm.ticket_round_key(second)
+
+
 def test_render_blocks_has_two_expected_app_blocks():
     blocks = lm.AppBlocks(
         general_info=lm.EventInfo(

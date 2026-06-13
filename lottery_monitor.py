@@ -994,7 +994,7 @@ def context_windows(text: str, patterns: Sequence[str], width: int = 220) -> lis
 
 def extract_first_date(text: str, labels: Sequence[str]) -> str | None:
     for label in labels:
-        for match in re.finditer(label, text, flags=re.IGNORECASE):
+        for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[match.start() : min(len(text), match.end() + 100)]
             date_match = DATE_RE.search(window)
             if date_match:
@@ -1006,7 +1006,7 @@ def extract_first_date(text: str, labels: Sequence[str]) -> str | None:
 
 def extract_last_date_before_label(text: str, labels: Sequence[str], width: int = 60) -> str | None:
     for label in labels:
-        for match in re.finditer(label, text, flags=re.IGNORECASE):
+        for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[max(0, match.start() - width) : match.start()]
             dates = [date for date in (normalized_iso_date(m.group(0)) for m in DATE_RE.finditer(window)) if date]
             if dates:
@@ -1028,7 +1028,7 @@ def extract_range(text: str) -> tuple[str | None, str | None]:
 
 def extract_range_after_label(text: str, labels: Sequence[str]) -> tuple[str | None, str | None]:
     for label in labels:
-        for match in re.finditer(label, text, flags=re.IGNORECASE):
+        for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[match.start() : min(len(text), match.end() + 140)]
             start, end = extract_range(window)
             if start or end:
@@ -1052,7 +1052,17 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     for index, context in enumerate(contexts, start=1):
         start, end = extract_range_after_label(
             context,
-            ("受付期間", "申込期間", "申込み期間", "申込受付期間", "抽選申込期間", "抽選受付期間", "受付"),
+            (
+                "受付期間",
+                "申込期間",
+                "申込み期間",
+                "申込受付期間",
+                "抽選申込期間",
+                "抽選受付期間",
+                "抽選先行",
+                "先着先行",
+                "受付",
+            ),
         )
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
@@ -2511,6 +2521,8 @@ def ticket_round_key(ticket: TicketRound) -> str:
                 normalized.platform or normalized.source,
                 normalized.url,
                 normalize_round_name(normalized.name),
+                normalized.application_start_at or "",
+                normalized.general_sale_date or "",
             )
         )
     )
