@@ -139,7 +139,6 @@ ROUND_CONTEXT_HINTS = (
     "申込受付期間",
     "抽選申込期間",
     "抽選受付期間",
-    "受付",
     "当落",
     "当選発表",
     "抽選結果",
@@ -163,6 +162,7 @@ DATE_TOKEN = r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{2}年\s*\d{1,2}月\s*\d{1
 RANGE_RE = re.compile(rf"(?P<start>{DATE_TOKEN})(?:(?!{DATE_TOKEN}).){{0,60}}(?:[〜～~–—]|から)(?:(?!{DATE_TOKEN}).){{0,60}}(?P<end>{DATE_TOKEN})")
 ROUND_LABEL_PATTERNS = ROUND_LABEL_PATTERNS + (
     r"(?:CN|Rakuten|Ticket\s*Board|楽天|チケットボード|CNプレイガイド)?\s*(?:抽選|先行|プレオーダー|プレリクエスト|先着先行)",
+    r"先行先着販売",
     r"一般発売",
 )
 DATE_RE = re.compile(DATE_TOKEN)
@@ -982,8 +982,26 @@ def context_windows(text: str, patterns: Sequence[str], width: int = 220) -> lis
     windows: list[str] = []
     seen: set[str] = set()
     for pattern in patterns:
-        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        try:
+            matches = re.finditer(pattern, text, flags=re.IGNORECASE)
+        except re.error:
+            matches = re.finditer(re.escape(pattern), text, flags=re.IGNORECASE)
+        for match in matches:
             start = max(0, match.start() - 60)
+            end = min(len(text), match.end() + width)
+            window = clean_text(text[start:end])
+            if window not in seen:
+                windows.append(window)
+                seen.add(window)
+    return windows
+
+
+def label_forward_contexts(text: str, labels: Sequence[str], lead: int = 12, width: int = 180) -> list[str]:
+    windows: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
+            start = max(0, match.start() - lead)
             end = min(len(text), match.end() + width)
             window = clean_text(text[start:end])
             if window not in seen:
@@ -1036,6 +1054,18 @@ def extract_range_after_label(text: str, labels: Sequence[str]) -> tuple[str | N
     return None, None
 
 
+def extract_first_date_after_label(text: str, labels: Sequence[str]) -> str | None:
+    for label in labels:
+        for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
+            window = text[match.start() : min(len(text), match.end() + 40)]
+            date_match = DATE_RE.search(window)
+            if date_match:
+                normalized = normalized_iso_date(date_match.group(0))
+                if normalized:
+                    return normalized
+    return None
+
+
 def round_name_from_context(context: str, fallback: str) -> str:
     for pattern in ROUND_LABEL_PATTERNS:
         match = re.search(pattern, context, flags=re.IGNORECASE)
@@ -1046,6 +1076,7 @@ def round_name_from_context(context: str, fallback: str) -> str:
 
 def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     contexts = context_windows(page.text, ROUND_LABEL_PATTERNS + ("受付期間", "申込期間", "抽選結果", "当落", "一般発売"))
+    contexts = contexts + label_forward_contexts(page.text, ("先行先着販売", "先着先行"))
     contexts = contexts + context_windows(page.text, ROUND_CONTEXT_HINTS)
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
@@ -1060,14 +1091,14 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
                 "抽選申込期間",
                 "抽選受付期間",
                 "抽選先行",
-                "先着先行",
-                "受付",
+                "先行抽選エントリー",
             ),
         )
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
         payment_deadline = extract_first_date(context, ("入金", "支払", "払込", "決済"))
         start = start or extract_last_date_before_label(context, ("会員先行予約", "先行予約", "先着先行"))
+        start = start or extract_first_date_after_label(context, ("先行先着販売", "先着先行"))
         results_date = results_date or extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"))
         general_sale_date = general_sale_date or extract_last_date_before_label(context, ("一般発売", "一般前売", "発売開始"))

@@ -169,6 +169,21 @@ def test_ticket_round_key_distinguishes_same_name_rounds_by_dates():
     assert lm.ticket_round_key(first) != lm.ticket_round_key(second)
 
 
+def test_extract_ticket_rounds_reads_toho_advance_sale_labels():
+    text = (
+        "東宝ナビザーブ 先行抽選エントリー 3月18日(火)～3月21日(金)まで "
+        "先行先着販売 3月30日(日)11:00より販売開始 "
+        "一般前売 4月5日(土) 11:00販売開始"
+    )
+    page = lm.Page("https://www.tohostage.com/lesmiserables/ticket_gunma.html", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+
+    assert any(round_.lottery_start == "2026-03-18" and round_.lottery_end == "2026-03-21" for round_ in rounds)
+    assert any(round_.lottery_start == "2026-03-30" for round_ in rounds)
+    assert any(round_.general_sale_date == "2026-04-05" for round_ in rounds)
+
+
 def test_render_blocks_has_two_expected_app_blocks():
     blocks = lm.AppBlocks(
         general_info=lm.EventInfo(
