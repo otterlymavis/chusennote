@@ -577,6 +577,10 @@ def search_query(keyword: str) -> str:
     return f"{keyword} 公式 チケット 抽選 先行"
 
 
+def warn_search_backend(message: str) -> None:
+    print(f"Warning: {message}", file=sys.stderr)
+
+
 def search_api(keyword: str, limit: int = 8) -> list[SearchResult]:
     """Query a managed search API when configured via env vars.
 
@@ -610,8 +614,12 @@ def search_api(keyword: str, limit: int = 8) -> list[SearchResult]:
             data = request_json(url)
             rows = data.get("organic_results", []) if isinstance(data, dict) else []
             return parse_api_results(rows, "title", "link", "snippet", limit)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError) as exc:
+        warn_search_backend(
+            f"{SEARCH_PROVIDER_ENV}={provider!r} failed ({type(exc).__name__}); falling back to HTML search."
+        )
         return []
+    warn_search_backend(f"unsupported {SEARCH_PROVIDER_ENV}={provider!r}; falling back to HTML search.")
     return []
 
 

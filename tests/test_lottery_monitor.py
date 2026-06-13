@@ -62,6 +62,34 @@ def test_extract_ticket_links_ignores_social_share_urls():
     assert [link.url for link in links] == ["https://www.shiki.jp/applause/lionking/ticket_schedule/"]
 
 
+def test_search_api_warns_when_configured_backend_fails(monkeypatch, capsys):
+    monkeypatch.setenv(lm.SEARCH_PROVIDER_ENV, "brave")
+    monkeypatch.setenv(lm.SEARCH_API_KEY_ENV, "secret-key")
+
+    def fail_request_json(url, headers=None):
+        raise OSError("bad credentials")
+
+    monkeypatch.setattr(lm, "request_json", fail_request_json)
+
+    assert lm.search_api("Example") == []
+
+    warning = capsys.readouterr().err
+    assert "Warning:" in warning
+    assert "CHUSENNOTE_SEARCH_PROVIDER='brave' failed" in warning
+    assert "secret-key" not in warning
+
+
+def test_search_api_warns_for_unsupported_provider(monkeypatch, capsys):
+    monkeypatch.setenv(lm.SEARCH_PROVIDER_ENV, "unknown")
+    monkeypatch.setenv(lm.SEARCH_API_KEY_ENV, "secret-key")
+
+    assert lm.search_api("Example") == []
+
+    warning = capsys.readouterr().err
+    assert "unsupported CHUSENNOTE_SEARCH_PROVIDER='unknown'" in warning
+    assert "secret-key" not in warning
+
+
 def test_event_dates_and_venues_ignore_ticket_sales_noise():
     text = """
     SCHEDULE & TICKETS スケジュール＆チケット 群馬公演 【一般前売開始】 2025年4月5日(土)
