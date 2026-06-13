@@ -188,6 +188,18 @@ def test_ticket_price_extractor_splits_structured_seat_tiers():
     )
 
 
+def test_ticket_rule_extractor_merges_continuations_and_skips_notice_links():
+    summary = (
+        "※車椅子スペースをご利用のお客様は、空き状況をお問い合わせください。"
+        "なお、車椅子スペースをご利用の場合は、S席をご購入ください。"
+        "※【重要なお知らせ】高額転売チケットに関する注意喚起 ＞＞"
+    )
+
+    assert lm.extract_ticket_rule_items(summary) == (
+        "※車椅子スペースをご利用のお客様は、空き状況をお問い合わせください なお、車椅子スペースをご利用の場合は、S席をご購入ください",
+    )
+
+
 def test_build_event_info_summary_keeps_ticket_price_notes():
     page = lm.parse_page(
         "https://official.example/stage",

@@ -2430,6 +2430,15 @@ def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
     items: list[str] = []
     seen: set[str] = set()
     for note in split_event_notes(text):
+        if "重要なお知らせ" in note or "＞＞" in note or ">>" in note:
+            continue
+        if items and note.startswith(("なお、", "なお ")):
+            if note in items[-1]:
+                continue
+            merged = f"{items[-1]} {note}"
+            items[-1] = merged
+            seen.add(merged)
+            continue
         if any(hint in note for hint in hints) and note not in seen:
             items.append(note)
             seen.add(note)
