@@ -2270,7 +2270,7 @@ def event_detail(db_path: str, event_id: int) -> dict[str, object] | None:
 
 def web_source_link(url: object, label: str = "Open") -> str:
     return (
-        f'<a href="{html.escape(str(url))}">{html.escape(label)}</a>'
+        f'<a class="action-link" href="{html.escape(str(url))}">{html.escape(label)}</a>'
         if is_web_url(url)
         else "<span>Source unavailable</span>"
     )
@@ -2293,17 +2293,17 @@ def render_artist_detail_page(db_path: str, artist_id: int) -> str:
         ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
         round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
         return f"""
-        <li>
+        <li class="watch-row">
           <span>
             <a class="watch-title" href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a>
             <span class="watch-meta">
-              <span class="mini-stat" title="Date">D {html.escape(str(event_date or 'unknown'))}</span>
-              <span class="mini-stat wide" title="Venue">V {html.escape(venue_label)}</span>
-              <span class="mini-stat" title="Ticket links">T {ticket_count}</span>
-              <span class="mini-stat" title="Lottery rounds">R {round_count}</span>
+              <span class="mini-stat" title="Date">Date {html.escape(str(event_date or 'unknown'))}</span>
+              <span class="mini-stat wide" title="Venue">Venue {html.escape(venue_label)}</span>
+              <span class="mini-stat" title="Ticket links">Tickets {ticket_count}</span>
+              <span class="mini-stat" title="Lottery rounds">Rounds {round_count}</span>
             </span>
           </span>
-          <a class="icon-link" href="/events/{html.escape(str(event.get('id')))}" title="Open event" aria-label="Open event">i</a>
+          <a class="action-link" href="/events/{html.escape(str(event.get('id')))}" title="Open event" aria-label="Open event">Open</a>
         </li>
         """
 
@@ -2315,28 +2315,29 @@ def render_artist_detail_page(db_path: str, artist_id: int) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(artist.keyword)}</title>
   <style>
-    :root {{ --ink: #261c2c; --muted: #736a7b; --line: #eadde8; --shadow: 0 18px 40px rgba(81, 44, 72, 0.12); }}
+    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent-strong: #9b2446; --green: #13795b; --blue: #315c9b; --shadow: 0 10px 28px rgba(28, 36, 52, 0.08); }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: linear-gradient(180deg, #fff8ee, #f7fbff); color: var(--ink); }}
-    a {{ color: #e2536d; font-weight: 850; text-decoration: none; }}
+    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }}
+    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
-    header {{ background: rgba(255, 253, 248, 0.92); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
+    header {{ background: rgba(255, 255, 255, 0.96); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
     .topbar, main {{ max-width: 900px; margin: 0 auto; }}
     .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
     main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
-    .back, .icon-link {{ display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 8px; background: white; border: 1px solid var(--line); }}
-    section {{ background: rgba(255,255,255,0.94); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: var(--shadow); }}
+    .back, .action-link {{ display: inline-flex; align-items: center; justify-content: center; min-width: 55px; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; }}
+    .back {{ min-width: 38px; width: 38px; padding: 0; }}
+    section {{ border-top: 1px solid var(--line); padding: 18px 0 0; }}
     h1, h2 {{ margin-top: 0; letter-spacing: 0; }}
     small {{ display: block; color: var(--muted); line-height: 1.45; }}
     ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; padding: 12px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
     .watch-title {{ color: var(--ink); }}
     .watch-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }}
-    .mini-stat {{ display: inline-flex; align-items: center; max-width: 100%; min-height: 24px; padding: 3px 7px; border-radius: 999px; background: #fff3f6; border: 1px solid #f7d7e1; color: #5b3142; font-size: 12px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: #147047; }}
-    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: #315c9b; }}
+    .mini-stat {{ display: inline-flex; align-items: center; max-width: 100%; min-height: 24px; padding: 4px 8px; border-radius: 8px; background: #fff3f6; border: 1px solid #efc2cd; color: #6d263a; font-size: 12px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: var(--green); }}
+    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: var(--blue); }}
     .mini-stat.wide {{ max-width: min(100%, 360px); }}
-    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ align-items: flex-start; flex-direction: column; }} }}
+    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ flex-direction: column; }} }}
   </style>
 </head>
 <body>
@@ -2412,28 +2413,30 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(str(event.get('title') or 'Event'))}</title>
   <style>
-    :root {{ --ink: #261c2c; --muted: #736a7b; --line: #eadde8; --peach: #ff8c7a; --rose: #ffd9e2; --mint: #bdf3da; --shadow: 0 18px 40px rgba(81, 44, 72, 0.12); }}
+    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent-strong: #9b2446; --green: #13795b; --blue: #315c9b; --shadow: 0 10px 28px rgba(28, 36, 52, 0.08); }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: linear-gradient(180deg, #fff8ee, #f7fbff); color: var(--ink); }}
-    a {{ color: #e2536d; font-weight: 850; text-decoration: none; }}
+    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }}
+    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
-    header {{ background: rgba(255, 253, 248, 0.92); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
+    header {{ background: rgba(255, 255, 255, 0.96); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
     .topbar, main {{ max-width: 1040px; margin: 0 auto; }}
     .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
     main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
-    .back {{ display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 8px; background: white; border: 1px solid var(--line); }}
-    .hero, section {{ background: rgba(255,255,255,0.94); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: var(--shadow); }}
+    .back, .action-link {{ display: inline-flex; align-items: center; justify-content: center; min-width: 55px; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; }}
+    .back {{ min-width: 38px; width: 38px; padding: 0; }}
+    .hero {{ border-bottom: 1px solid var(--line); padding-bottom: 18px; }}
+    section {{ border-top: 1px solid var(--line); padding-top: 18px; }}
     h1, h2, h3, p {{ margin-top: 0; letter-spacing: 0; }}
-    h1 {{ margin-bottom: 10px; font-size: clamp(30px, 5vw, 52px); line-height: 1; }}
+    h1 {{ margin-bottom: 10px; font-size: clamp(28px, 4vw, 40px); line-height: 1.08; }}
     h2 {{ margin-bottom: 12px; font-size: 22px; }}
-    .status {{ display: inline-block; padding: 4px 9px; border-radius: 999px; background: #e9f9f1; color: #147047; font-size: 12px; font-weight: 900; }}
-    .summary-grid, .fact-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }}
-    .summary-grid > div, .fact-grid > div {{ padding: 12px; border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; }}
+    .status {{ display: inline-block; padding: 4px 8px; border-radius: 8px; background: #e9f9f1; color: var(--green); font-size: 12px; font-weight: 900; }}
+    .summary-grid, .fact-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }}
+    .summary-grid > div, .fact-grid > div {{ padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }}
     small {{ display: block; color: var(--muted); line-height: 1.45; }}
     ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; padding: 12px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
     .rounds {{ display: grid; gap: 12px; }}
-    .round-card {{ border: 1px solid #f1e4ed; border-radius: 8px; background: #fffdfd; padding: 14px; }}
+    .round-card {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; box-shadow: var(--shadow); }}
     .round-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }}
     @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ align-items: flex-start; flex-direction: column; }} }}
   </style>

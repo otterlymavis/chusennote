@@ -1404,11 +1404,11 @@ def test_artist_detail_lists_discovered_events_sorted_by_date(tmp_path):
 
     assert f'href="/artists/{artist.id}"' in home
     assert detail.index("Earlier Show") < detail.index("Later Show")
-    assert "D 2026-07-10" in detail
-    assert "D 2026-09-20" in detail
-    assert "V 会場 Earlier Hall" in detail
-    assert "T 0" in detail
-    assert "R 0" in detail
+    assert "Date 2026-07-10" in detail
+    assert "Date 2026-09-20" in detail
+    assert "Venue 会場 Earlier Hall" in detail
+    assert "Tickets 0" in detail
+    assert "Rounds 0" in detail
 
 
 def test_artist_run_saves_multiple_discovered_events_under_artist_watch(tmp_path, monkeypatch):
@@ -1485,7 +1485,7 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         home_with_source = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         detail_with_source = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert '<a href="https://fan.example/private">Open</a>' not in home_with_source
-        assert '<a href="https://fan.example/private">Open</a>' in detail_with_source
+        assert '<a class="action-link" href="https://fan.example/private">Open</a>' in detail_with_source
 
         removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
         assert removed_source["removed"] is True
@@ -1525,7 +1525,7 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert json_load_url(f"{base}/api/upcoming?include_muted=1")[0]["event_title"] == "Example Tour"
         muted_detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert "Example Tour" in muted_detail
-        assert '<a href="https://fan.example/private">Open</a>' in muted_detail
+        assert '<a class="action-link" href="https://fan.example/private">Open</a>' in muted_detail
 
         restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
         assert "Tracked Artists" in restored_home
