@@ -177,6 +177,24 @@ def test_ticket_rule_and_price_extractors_read_summary_notes():
     assert "17,500円" in lm.extract_ticket_price_items(summary)[0]
 
 
+def test_build_event_info_summary_keeps_ticket_price_notes():
+    page = lm.parse_page(
+        "https://official.example/stage",
+        """
+        <html><head><title>Example Stage</title></head><body>
+          <p>公演日 2026年7月10日 会場 Example Hall</p>
+          <p>チケット S席：平日14,000円／土日祝15,000円 A席：9,000円</p>
+          <p>※未就学児のご入場はご遠慮ください。</p>
+        </body></html>
+        """,
+    )
+
+    info = lm.build_event_info("Example", [page])
+
+    assert "14,000円" in (info.summary or "")
+    assert "未就学児" in (info.summary or "")
+
+
 def test_extract_ticket_rounds_with_japanese_lottery_dates():
     html = """
     <html><head><title>Ticket</title></head><body>

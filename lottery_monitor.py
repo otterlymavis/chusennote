@@ -946,8 +946,19 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
 
     summary = None
     if official:
-        summary_phrases = nearby_phrases(official.text, ("公演", "開催", "チケット"), limit=1)
-        summary = summary_phrases[0] if summary_phrases else official.text[:240]
+        summary_phrases = nearby_phrases(
+            official.text,
+            ("公演", "開催", "チケット", "料金", "S席", "A席", "未就学", "有償譲渡", "車椅子"),
+            width=260,
+            limit=6,
+        )
+        summary_parts: list[str] = []
+        seen_summary_parts: set[str] = set()
+        for part in (*summary_phrases, *extract_ticket_price_items(official.text), *extract_ticket_rule_items(official.text)):
+            if part and part not in seen_summary_parts:
+                summary_parts.append(part)
+                seen_summary_parts.add(part)
+        summary = " ".join(summary_parts) if summary_parts else official.text[:520]
 
     return EventInfo(
         keyword=keyword,
@@ -2428,12 +2439,24 @@ def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
 
 
 def extract_ticket_price_items(text: str, limit: int = 6) -> tuple[str, ...]:
-    hints = ("料金", "席", "円", "税込")
     items: list[str] = []
     seen: set[str] = set()
+    price_pattern = re.compile(r"(?:チケット\s*)?(?:S席|A席|Yシート|U-25)[^。※\n\r]{0,260}?\d[\d,]*\s*円[^。※\n\r]{0,260}")
+    for match in price_pattern.finditer(clean_text(text)):
+        note = match.group(0).strip(" ・:：。")
+        if note and note not in seen:
+            items.append(note)
+            seen.add(note)
+        if len(items) >= limit:
+            return tuple(items)
+    if items:
+        return tuple(items)
     for note in split_event_notes(text):
         has_price = bool(re.search(r"\d[\d,]*\s*円", note))
-        if (has_price or any(hint in note for hint in hints)) and note not in seen:
+        if not has_price:
+            continue
+        note = re.sub(r"^.*?(?=(?:チケット|料金|S席|A席|Yシート|U-25))", "", note).strip()
+        if note and note not in seen:
             items.append(note)
             seen.add(note)
         if len(items) >= limit:
