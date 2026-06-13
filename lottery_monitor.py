@@ -2502,6 +2502,21 @@ def upsert_event(
     return int(row[0]), existing is None
 
 
+def delete_stale_keyword_fallback_events(connection: sqlite3.Connection, watch_id: int, current_event_id: int) -> None:
+    rows = connection.execute(
+        """
+        SELECT id FROM events
+        WHERE watch_id = ? AND id != ? AND official_url LIKE 'keyword:%'
+        """,
+        (watch_id, current_event_id),
+    ).fetchall()
+    for row in rows:
+        event_id = int(row[0])
+        for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
+            connection.execute(f"DELETE FROM {table} WHERE event_id = ?", (event_id,))
+        connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
+
+
 def source_confidence(link: Link) -> int:
     if is_ticket_url(link.url):
         return 90
@@ -2856,6 +2871,8 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_i
         watch_id = watch_id or upsert_keyword(connection, info.keyword, timestamp)
         normalized_rounds = dedupe_ticket_rounds(blocks.ticket_info, parse_iso_date(timestamp))
         event_id, new_event = upsert_event(connection, watch_id, info, normalized_rounds, timestamp)
+        if info.official_page and is_web_url(info.official_page):
+            delete_stale_keyword_fallback_events(connection, watch_id, event_id)
         event_title = info.title or info.keyword
         alerts: list[dict[str, str]] = []
         if new_event and info.official_page:

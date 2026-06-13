@@ -261,6 +261,46 @@ def test_save_blocks_persists_initial_monitoring_state(tmp_path):
     assert any(alert["type"] == "new_lottery_round" for alert in alerts)
 
 
+def test_save_blocks_removes_stale_keyword_fallback_after_official_page(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    fallback = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="",
+            title="Example",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(lm.Link("Fallback ticket", "https://t.pia.jp/example"),),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="keyword",
+                url="keyword:Example",
+                name="Manual reminder",
+                lottery_start="2026-06-03",
+                lottery_end="2026-06-05",
+            ),
+        ),
+    )
+    official = example_blocks("Example")
+
+    lm.save_blocks(str(db_path), fallback, now="2026-06-03T00:00:00+00:00")
+    lm.save_blocks(str(db_path), official, now="2026-06-04T00:00:00+00:00")
+
+    with sqlite3.connect(db_path) as connection:
+        events = connection.execute("SELECT id, official_url FROM events ORDER BY id").fetchall()
+        fallback_children = connection.execute(
+            """
+            SELECT COUNT(*) FROM ticket_rounds
+            WHERE url = 'keyword:Example'
+            """
+        ).fetchone()[0]
+
+    assert [row[1] for row in events] == ["https://official.example/"]
+    assert fallback_children == 0
+
+
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     original = lm.AppBlocks(
