@@ -3285,6 +3285,7 @@ def render_web_page(
         for row in upcoming_rows
     ) or '<li class="empty-row">No ticket rounds need attention.</li>'
     upcoming_label = "round" if len(upcoming_rows) == 1 else "rounds"
+    active_dashboard_tab = "events" if event_search_keyword or event_search_error else "attention"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -3364,12 +3365,49 @@ def render_web_page(
       font-weight: 850;
       white-space: nowrap;
     }}
-    .grid-two {{ display: grid; grid-template-columns: minmax(270px, 0.78fr) minmax(0, 1.32fr); gap: 26px; align-items: start; }}
+    .dashboard-tabs {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0 0 18px;
+    }}
+    .tab-button {{
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      box-shadow: var(--shadow);
+      text-align: left;
+    }}
+    .tab-button:hover {{ transform: translateY(-1px); }}
+    .tab-button[aria-selected="true"] {{
+      border-color: #e7b6c5;
+      background: #fff3f6;
+      color: var(--accent-strong);
+    }}
+    .tab-button .tab-label {{ font-weight: 950; }}
+    .tab-button .tab-count {{
+      min-width: 28px;
+      min-height: 28px;
+      display: inline-grid;
+      place-items: center;
+      padding: 3px 8px;
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 950;
+    }}
+    .dashboard-panel {{ display: none; }}
+    .dashboard-panel.is-active {{ display: block; }}
     section {{
       min-width: 0;
       padding: 0;
     }}
-    .attention-panel {{ margin-bottom: 26px; }}
     .section-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }}
     h1, h2 {{ margin: 0; letter-spacing: 0; }}
     h2 {{ font-size: 20px; }}
@@ -3499,7 +3537,7 @@ def render_web_page(
       main {{ padding: 18px 16px 42px; }}
       .dashboard-intro {{ align-items: flex-start; flex-direction: column; }}
       .summary-strip {{ justify-content: flex-start; }}
-      .grid-two {{ grid-template-columns: 1fr; }}
+      .dashboard-tabs {{ grid-template-columns: 1fr; }}
       form {{ grid-template-columns: 1fr auto; }}
       input {{ grid-column: 1 / -1; }}
       input[name="keyword"] {{ grid-column: 1 / 2; }}
@@ -3526,33 +3564,51 @@ def render_web_page(
         <span class="summary-pill">{len(events)} saved events</span>
       </div>
     </div>
-    <section class="attention-panel">
+    <div class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
+      <button class="tab-button" type="button" role="tab" aria-selected="{'true' if active_dashboard_tab == 'attention' else 'false'}" aria-controls="panel-attention" id="tab-attention" data-tab-target="attention"><span class="tab-label">Attention</span><span class="tab-count">{len(upcoming_rows)}</span></button>
+      <button class="tab-button" type="button" role="tab" aria-selected="{'true' if active_dashboard_tab == 'artists' else 'false'}" aria-controls="panel-artists" id="tab-artists" data-tab-target="artists"><span class="tab-label">Artists</span><span class="tab-count">{len(active_artist_watches)}</span></button>
+      <button class="tab-button" type="button" role="tab" aria-selected="{'true' if active_dashboard_tab == 'events' else 'false'}" aria-controls="panel-events" id="tab-events" data-tab-target="events"><span class="tab-label">Events</span><span class="tab-count">{len(active_event_watches)}</span></button>
+    </div>
+    <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'attention' else ''}" id="panel-attention" role="tabpanel" aria-labelledby="tab-attention" data-tab-panel="attention">
       <div class="section-head"><h2>Needs Attention</h2><span class="status">{len(upcoming_rows)} {upcoming_label}</span></div>
       <ul>{upcoming_items}</ul>
     </section>
-    <div class="grid-two">
-      <section>
-        <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>
-        <form method="post" action="/watch/add">
-          <input type="hidden" name="kind" value="artist">
-          <input name="keyword" placeholder="Artist" required>
-          <button class="secondary-button" title="Add artist" aria-label="Add artist">Add</button>
-        </form>
-        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="secondary-button" title="Run artists" aria-label="Run artists">Run artists</button></form>
-        <ul>{artist_items}</ul>
-      </section>
-      <section>
-        <div class="section-head"><h2>Tracked Events</h2><span class="status">{len(active_event_watches)} active</span></div>
-        <form method="post" action="/event/search">
-          <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" required>
-          <button class="secondary-button" title="Search events" aria-label="Search events">Search</button>
-        </form>
-        {event_search_panel}
-        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="secondary-button" title="Run events" aria-label="Run events">Run events</button></form>
-        <ul>{tracked_event_items}</ul>
-      </section>
-    </div>
+    <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'artists' else ''}" id="panel-artists" role="tabpanel" aria-labelledby="tab-artists" data-tab-panel="artists">
+      <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>
+      <form method="post" action="/watch/add">
+        <input type="hidden" name="kind" value="artist">
+        <input name="keyword" placeholder="Artist" required>
+        <button class="secondary-button" title="Add artist" aria-label="Add artist">Add</button>
+      </form>
+      <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="secondary-button" title="Run artists" aria-label="Run artists">Run artists</button></form>
+      <ul>{artist_items}</ul>
+    </section>
+    <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'events' else ''}" id="panel-events" role="tabpanel" aria-labelledby="tab-events" data-tab-panel="events">
+      <div class="section-head"><h2>Tracked Events</h2><span class="status">{len(active_event_watches)} active</span></div>
+      <form method="post" action="/event/search">
+        <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" required>
+        <button class="secondary-button" title="Search events" aria-label="Search events">Search</button>
+      </form>
+      {event_search_panel}
+      <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="secondary-button" title="Run events" aria-label="Run events">Run events</button></form>
+      <ul>{tracked_event_items}</ul>
+    </section>
   </main>
+  <script>
+    const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
+    const tabPanels = Array.from(document.querySelectorAll('[data-tab-panel]'));
+    function showDashboardTab(name) {{
+      tabButtons.forEach((button) => {{
+        button.setAttribute('aria-selected', String(button.dataset.tabTarget === name));
+      }});
+      tabPanels.forEach((panel) => {{
+        panel.classList.toggle('is-active', panel.dataset.tabPanel === name);
+      }});
+    }}
+    tabButtons.forEach((button) => {{
+      button.addEventListener('click', () => showDashboardTab(button.dataset.tabTarget));
+    }});
+  </script>
 </body>
 </html>"""
 

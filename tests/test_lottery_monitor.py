@@ -1274,6 +1274,10 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "chusennote" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
+        assert 'role="tablist"' in home
+        assert 'data-tab-target="attention"' in home
+        assert 'data-tab-target="artists"' in home
+        assert 'data-tab-target="events"' in home
         assert "Search exact event" in home
         assert "Search events" in home
         assert 'href="/events/1"' in home
