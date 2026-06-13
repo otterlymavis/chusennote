@@ -47,7 +47,7 @@ def test_extract_ticket_links_from_official_page():
     assert "Example Hall" in info.venues[0]
 
 
-def test_extract_ticket_links_ignores_social_share_urls():
+def test_extract_ticket_links_ignores_social_share_and_info_urls():
     html = """
     <html><body>
       <a href="http://twitter.com/share?text=チケット">Xで投稿する</a>
@@ -59,7 +59,26 @@ def test_extract_ticket_links_ignores_social_share_urls():
 
     links = lm.extract_ticket_links(page)
 
-    assert [link.url for link in links] == ["https://www.shiki.jp/applause/lionking/ticket_schedule/"]
+    assert links == ()
+
+
+def test_extract_ticket_links_ignores_ticket_related_info_pages():
+    html = """
+    <html><body>
+      <a href="https://horipro-stage.jp/stage/example/#schedule">Tickets &amp; Schedule</a>
+      <a href="https://www.nissay-plus.co.jp/horipro-ticket-hoken?ch=abc">Ticket insurance</a>
+      <a href="https://w.pia.jp/t/example/">Pia lottery</a>
+      <a href="https://ticket.tv-asahi.co.jp/ex/project/example">TV Asahi ticket</a>
+    </body></html>
+    """
+    page = lm.parse_page("https://horipro-stage.jp/stage/example/", html)
+
+    links = lm.extract_ticket_links(page)
+
+    assert [link.url for link in links] == [
+        "https://w.pia.jp/t/example/",
+        "https://ticket.tv-asahi.co.jp/ex/project/example",
+    ]
 
 
 def test_search_api_warns_when_configured_backend_fails(monkeypatch, capsys):

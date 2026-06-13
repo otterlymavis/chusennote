@@ -80,12 +80,14 @@ DEFAULT_ALERT_PREFERENCES = ",".join(
 )
 
 TICKET_DOMAINS = {
-    "pia": ("t.pia.jp", "ticket.pia.jp"),
+    "pia": ("t.pia.jp", "ticket.pia.jp", "w.pia.jp"),
     "eplus": ("eplus.jp",),
     "lawson": ("l-tike.com",),
     "rakuten": ("r-t.jp", "ticket.rakuten.co.jp"),
     "ticketboard": ("ticketboard.jp", "tickebo.jp"),
     "cnplayguide": ("cnplayguide.com",),
+    "e-get": ("e-get.jp",),
+    "tv-asahi-ticket": ("ticket.tv-asahi.co.jp",),
 }
 SOCIAL_OR_NOISY_DOMAINS = (
     "x.com",
@@ -350,6 +352,21 @@ def is_noisy_url(url: object) -> bool:
 def is_ticket_url(url: str) -> bool:
     host = hostname(url)
     return any(any(domain in host for domain in domains) for domains in TICKET_DOMAINS.values())
+
+
+def is_actionable_ticket_link(url: str, label: str = "") -> bool:
+    if is_noisy_url(url) or is_generic_ticket_info_url(url):
+        return False
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path.lower()
+    fragment = parsed.fragment.lower()
+    haystack = f"{label} {url}".lower()
+    if "hoken" in haystack or "insurance" in haystack:
+        return False
+    if host in OFFICIAL_HOST_HINTS and (fragment in {"schedule", "ticket", "tickets"} or "/stage/" in path):
+        return False
+    return is_ticket_url(url)
 
 
 def is_portal_search_url(url: str) -> bool:
@@ -878,12 +895,7 @@ def extract_ticket_links(page: Page) -> tuple[Link, ...]:
     links: list[Link] = []
     seen: set[str] = set()
     for link in page.links:
-        if is_noisy_url(link.url):
-            continue
-        if is_generic_ticket_info_url(link.url):
-            continue
-        haystack = f"{link.label} {link.url}".lower()
-        if is_ticket_url(link.url) or any(hint.lower() in haystack for hint in TICKET_LINK_HINTS):
+        if is_actionable_ticket_link(link.url, link.label):
             if link.url not in seen:
                 links.append(link)
                 seen.add(link.url)
@@ -2004,7 +2016,7 @@ def recent_events(
                             "provenance": link[4],
                         }
                         for link in ticket_links
-                        if not is_noisy_url(link[1])
+                        if is_actionable_ticket_link(str(link[1]), str(link[0] or ""))
                     ],
                     "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
                     "rounds": [
@@ -2609,7 +2621,7 @@ def cleanup_database(db_path: str) -> dict[str, int]:
 
 
 def source_confidence(link: Link) -> int:
-    if is_ticket_url(link.url):
+    if is_actionable_ticket_link(link.url, link.label):
         return 90
     if any(hint.lower() in f"{link.label} {link.url}".lower() for hint in TICKET_LINK_HINTS):
         return 60
@@ -2619,6 +2631,8 @@ def source_confidence(link: Link) -> int:
 def upsert_sources(connection: sqlite3.Connection, event_id: int, links: Sequence[Link], now: str) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
     for link in links:
+        if not is_actionable_ticket_link(link.url, link.label):
+            continue
         existing = connection.execute(
             "SELECT id FROM sources WHERE event_id = ? AND url = ?",
             (event_id, link.url),
