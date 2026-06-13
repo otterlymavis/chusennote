@@ -142,6 +142,10 @@ def test_extract_venues_prefers_concise_shiki_theater_name():
     assert lm.extract_venues(text)[0] == "電通四季劇場［海］（汐留）"
 
 
+def test_infer_event_location_prefers_parenthetical_area():
+    assert lm.infer_event_location(("Venue Example Hall (Tokyo)",)) == "Tokyo"
+
+
 def test_extract_ticket_rounds_with_japanese_lottery_dates():
     html = """
     <html><head><title>Ticket</title></head><body>
@@ -1287,8 +1291,10 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Needs Attention" in home
         assert "Rounds 1" in home
         assert "Example Tour" in detail
-        assert "Dates" in detail
-        assert "Venues" in detail
+        assert "General Info" in detail
+        assert "Location" in detail
+        assert "Time" in detail
+        assert "Venue" in detail
         assert "Ticket Links" in detail
         assert "Lottery Rounds" in detail
         assert "Evidence:" in detail

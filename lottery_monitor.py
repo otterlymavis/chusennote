@@ -2329,8 +2329,9 @@ def render_artist_detail_page(db_path: str, artist_id: int) -> str:
     section {{ border-top: 1px solid var(--line); padding: 18px 0 0; }}
     h1, h2 {{ margin-top: 0; letter-spacing: 0; }}
     small {{ display: block; color: var(--muted); line-height: 1.45; }}
-    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
+    ul {{ min-width: 0; list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }}
+    li {{ min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
+    li span, li strong, li small {{ min-width: 0; overflow-wrap: anywhere; }}
     .watch-title {{ color: var(--ink); }}
     .watch-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }}
     .mini-stat {{ display: inline-flex; align-items: center; max-width: 100%; min-height: 24px; padding: 4px 8px; border-radius: 8px; background: #fff3f6; border: 1px solid #efc2cd; color: #6d263a; font-size: 12px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
@@ -2356,12 +2357,30 @@ def render_artist_detail_page(db_path: str, artist_id: int) -> str:
 </html>"""
 
 
+def infer_event_location(venues: Sequence[str]) -> str:
+    for venue in venues:
+        text = clean_text(str(venue)).strip(" ：:")
+        text = re.sub(r"^(?:会\s*場|Venue)\s*", "", text, flags=re.IGNORECASE).strip(" ：:")
+        parenthetical = re.search(r"[（(]([^）)]+)[）)]", text)
+        if parenthetical:
+            location = clean_text(parenthetical.group(1))
+            if location and len(location) <= 24:
+                return location
+        region = re.match(r"(東京|大阪|名古屋|京都|福岡|札幌|仙台|静岡|広島|群馬|神奈川|埼玉|千葉|兵庫|愛知|北海道|全国)\s+", text)
+        if region:
+            return region.group(1)
+    return clean_text(str(venues[0])).strip(" ：:") if venues else ""
+
+
 def render_event_detail_page(db_path: str, event_id: int) -> str:
     event = event_detail(db_path, event_id)
     if not event:
         return "<!doctype html><title>Not found</title><h1>Event not found</h1>"
-    date_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in event.get("event_dates", [])) or "<li>Unknown</li>"
-    venue_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in event.get("venues", [])) or "<li>Unknown</li>"
+    event_dates = [clean_text(str(item)) for item in event.get("event_dates", []) if clean_text(str(item))]
+    venues = [clean_text(str(item)) for item in event.get("venues", []) if clean_text(str(item))]
+    time_label = "; ".join(event_dates[:3]) if event_dates else "Unknown"
+    venue_label = "; ".join(venues[:3]) if venues else "Unknown"
+    location_label = infer_event_location(venues) or "Unknown"
     ticket_link_items = "".join(
         f"""
         <li>
@@ -2425,20 +2444,22 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     .back, .action-link {{ display: inline-flex; align-items: center; justify-content: center; min-width: 55px; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; }}
     .back {{ min-width: 38px; width: 38px; padding: 0; }}
     .hero {{ border-bottom: 1px solid var(--line); padding-bottom: 18px; }}
-    section {{ border-top: 1px solid var(--line); padding-top: 18px; }}
+    section {{ min-width: 0; border-top: 1px solid var(--line); padding-top: 18px; }}
     h1, h2, h3, p {{ margin-top: 0; letter-spacing: 0; }}
     h1 {{ margin-bottom: 10px; font-size: clamp(28px, 4vw, 40px); line-height: 1.08; }}
     h2 {{ margin-bottom: 12px; font-size: 22px; }}
     .status {{ display: inline-block; padding: 4px 8px; border-radius: 8px; background: #e9f9f1; color: var(--green); font-size: 12px; font-weight: 900; }}
     .summary-grid, .fact-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }}
-    .summary-grid > div, .fact-grid > div {{ padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }}
+    .summary-grid > div, .fact-grid > div {{ min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }}
+    .summary-grid strong, .fact-grid strong {{ display: block; min-width: 0; overflow-wrap: anywhere; }}
     small {{ display: block; color: var(--muted); line-height: 1.45; }}
-    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
+    ul {{ min-width: 0; list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }}
+    li {{ min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
+    li span, li strong, li small {{ min-width: 0; overflow-wrap: anywhere; }}
     .rounds {{ display: grid; gap: 12px; }}
     .round-card {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; box-shadow: var(--shadow); }}
     .round-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }}
-    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ align-items: flex-start; flex-direction: column; }} }}
+    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} .summary-grid, .fact-grid {{ grid-template-columns: 1fr; }} li {{ align-items: flex-start; flex-direction: column; }} }}
   </style>
 </head>
 <body>
@@ -2452,8 +2473,14 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         <div><small>Watch keyword</small><strong>{html.escape(str(event.get('keyword') or 'unknown'))}</strong></div>
       </div>
     </div>
-    <section><h2>Dates</h2><ul>{date_items}</ul></section>
-    <section><h2>Venues</h2><ul>{venue_items}</ul></section>
+    <section>
+      <h2>General Info</h2>
+      <div class="summary-grid">
+        <div><small>Location</small><strong>{html.escape(location_label)}</strong></div>
+        <div><small>Time</small><strong>{html.escape(time_label)}</strong></div>
+        <div><small>Venue</small><strong>{html.escape(venue_label)}</strong></div>
+      </div>
+    </section>
     <section><h2>Ticket Links</h2><ul>{ticket_link_items}</ul></section>
     <section><h2>Lottery Rounds</h2><div class="rounds">{round_items}</div></section>
     <section><h2>Manual Sources</h2><ul>{manual_source_items}</ul></section>
