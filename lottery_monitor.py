@@ -3198,19 +3198,19 @@ def render_web_page(
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
     artist_items = "\n".join(
         f"""
-        <li>
-          <span><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | last checked {html.escape(watch.last_checked_at or 'never')}</small></span>
-          <span class="row-actions"><a class="icon-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">i</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
+        <li class="watch-row">
+          <span class="watch-copy"><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | checked {html.escape(watch.last_checked_at or 'never')}</small></span>
+          <span class="row-actions"><a class="action-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">Open</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
         for watch in active_artist_watches
-    ) or "<li>No tracked artists.</li>"
+    ) or '<li class="empty-row">No tracked artists.</li>'
     def render_tracked_event_item(watch: Watch) -> str:
         event = latest_event_by_watch_id.get(watch.id)
         if not event:
             return f"""
-        <li>
-          <span><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} | not searched yet</small></span>
+        <li class="watch-row">
+          <span class="watch-copy"><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} | not searched yet</small></span>
           <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form>
         </li>
         """
@@ -3219,34 +3219,34 @@ def render_web_page(
         round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
         date_items = event.get("event_dates", [])
         date_label = str(date_items[0]) if isinstance(date_items, list) and date_items else "no date"
-        official_label = "yes" if is_web_url(event.get("official_url")) else "no"
+        official_label = "Official" if is_web_url(event.get("official_url")) else "No official"
         return f"""
-        <li>
-          <span>
-            <a class="watch-title" href="{detail_url}" title="Open event details">{html.escape(str(event.get('title') or watch.keyword))}</a>
+        <li class="watch-row event-row">
+          <span class="watch-copy">
+            <a class="watch-title event-title" href="{detail_url}" title="Open event details">{html.escape(str(event.get('title') or watch.keyword))}</a>
             <small>{html.escape(watch.keyword)}</small>
             <span class="watch-meta">
-              <span class="mini-stat" title="Official page">O {html.escape(official_label)}</span>
-              <span class="mini-stat" title="Ticket links">T {ticket_count}</span>
-              <span class="mini-stat" title="Lottery rounds">R {round_count}</span>
-              <span class="mini-stat wide" title="First date clue">D {html.escape(date_label)}</span>
+              <span class="mini-stat" title="Official page">{html.escape(official_label)}</span>
+              <span class="mini-stat" title="Ticket links">Tickets {ticket_count}</span>
+              <span class="mini-stat" title="Lottery rounds">Rounds {round_count}</span>
+              <span class="mini-stat wide" title="First date clue">Date {html.escape(date_label)}</span>
             </span>
           </span>
-          <span class="row-actions"><a class="icon-link" href="{detail_url}" title="Open event details" aria-label="Open event details">i</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
+          <span class="row-actions"><a class="action-link" href="{detail_url}" title="Open event details" aria-label="Open event details">Open</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
 
-    tracked_event_items = "\n".join(render_tracked_event_item(watch) for watch in active_event_watches) or "<li>No tracked events.</li>"
+    tracked_event_items = "\n".join(render_tracked_event_item(watch) for watch in active_event_watches) or '<li class="empty-row">No tracked events.</li>'
     event_result_items = "\n".join(
         f"""
-        <li>
-          <span><strong>{html.escape(result.title or result.url)}</strong><small>{html.escape(result.url)}</small></span>
+        <li class="watch-row">
+          <span class="watch-copy"><strong>{html.escape(result.title or result.url)}</strong><small>{html.escape(result.url)}</small></span>
           <form method="post" action="/event/add">
             <input type="hidden" name="keyword" value="{html.escape(event_search_keyword)}">
             <input type="hidden" name="title" value="{html.escape(result.title)}">
             <input type="hidden" name="url" value="{html.escape(result.url)}">
             <input type="hidden" name="snippet" value="{html.escape(result.snippet)}">
-            <button class="icon-button" title="Add exact event" aria-label="Add exact event"><span aria-hidden="true">+</span><span class="button-text">Add exact event</span></button>
+            <button class="secondary-button" title="Add exact event" aria-label="Add exact event">Add</button>
           </form>
         </li>
         """
@@ -3259,7 +3259,7 @@ def render_web_page(
         event_search_panel = f"""
         <div class="results-panel">
           <div class="subhead"><span>Results</span><small>{html.escape(event_search_keyword)}</small></div>
-          <ul>{event_result_items or '<li>No matching event pages found.</li>'}</ul>
+          <ul>{event_result_items or '<li class="empty-row">No matching event pages found.</li>'}</ul>
         </div>
         """
     return f"""<!doctype html>
@@ -3270,44 +3270,42 @@ def render_web_page(
   <title>chusennote</title>
   <style>
     :root {{
-      --ink: #261c2c;
-      --muted: #736a7b;
-      --line: #eadde8;
-      --paper: #fffdf8;
-      --peach: #ff8c7a;
-      --rose: #ffd9e2;
-      --mint: #bdf3da;
-      --shadow: 0 18px 40px rgba(81, 44, 72, 0.12);
+      --ink: #202126;
+      --muted: #667085;
+      --line: #d9dee8;
+      --paper: #f6f7fb;
+      --panel: #ffffff;
+      --accent: #d94f70;
+      --accent-strong: #9b2446;
+      --green: #13795b;
+      --blue: #315c9b;
+      --shadow: 0 10px 28px rgba(28, 36, 52, 0.08);
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       min-height: 100vh;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at 10% 0%, rgba(255, 217, 226, 0.72), transparent 30%),
-        radial-gradient(circle at 88% 4%, rgba(189, 243, 218, 0.72), transparent 28%),
-        linear-gradient(180deg, #fff8ee 0%, #fffdf8 50%, #f7fbff 100%);
+      background: var(--paper);
       color: var(--ink);
     }}
-    a {{ color: #e2536d; font-weight: 850; text-decoration: none; }}
+    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .watch-title {{ color: var(--ink); }}
     header {{
-      background: rgba(255, 253, 248, 0.92);
-      border-bottom: 1px solid rgba(234, 221, 232, 0.9);
-      backdrop-filter: blur(16px);
+      background: rgba(255, 255, 255, 0.96);
+      border-bottom: 1px solid var(--line);
       padding: 16px 24px;
     }}
     .topbar {{
-      max-width: 1120px;
+      max-width: 1180px;
       margin: 0 auto;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
     }}
-    .brand {{ display: flex; gap: 10px; align-items: center; color: var(--ink); font-size: 24px; font-weight: 950; }}
+    .brand {{ display: flex; gap: 10px; align-items: center; color: var(--ink); font-size: 22px; font-weight: 950; }}
     .brand:hover {{ text-decoration: none; }}
     .brand-mark {{
       width: 36px;
@@ -3315,48 +3313,75 @@ def render_web_page(
       display: grid;
       place-items: center;
       border-radius: 8px;
-      background: linear-gradient(135deg, var(--peach), #ffbfd0);
+      background: var(--accent);
       color: white;
-      box-shadow: 0 10px 24px rgba(255, 140, 122, 0.28);
+      box-shadow: 0 8px 20px rgba(155, 36, 70, 0.2);
     }}
-    main {{ max-width: 1120px; margin: 0 auto; padding: 28px 24px 56px; }}
-    .grid-two {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }}
-    section {{
-      min-width: 0;
-      background: rgba(255, 255, 255, 0.94);
+    main {{ max-width: 1180px; margin: 0 auto; padding: 28px 24px 56px; }}
+    .dashboard-intro {{
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-end;
+      margin-bottom: 22px;
+    }}
+    .dashboard-intro h1 {{ margin: 0; font-size: 30px; line-height: 1.1; }}
+    .dashboard-intro p {{ margin: 6px 0 0; color: var(--muted); font-weight: 650; }}
+    .summary-strip {{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }}
+    .summary-pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 6px 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 18px;
-      box-shadow: var(--shadow);
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 850;
+      white-space: nowrap;
     }}
-    .section-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }}
+    .grid-two {{ display: grid; grid-template-columns: minmax(270px, 0.78fr) minmax(0, 1.32fr); gap: 26px; align-items: start; }}
+    section {{
+      min-width: 0;
+      padding: 0;
+    }}
+    .section-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }}
     h1, h2 {{ margin: 0; letter-spacing: 0; }}
-    h2 {{ font-size: 22px; }}
-    .status {{ display: inline-block; padding: 3px 8px; border-radius: 999px; background: #e9f9f1; color: #147047; font-size: 12px; font-weight: 900; white-space: nowrap; }}
+    h2 {{ font-size: 20px; }}
+    .status {{ display: inline-block; padding: 4px 8px; border-radius: 8px; background: #e9f9f1; color: var(--green); font-size: 12px; font-weight: 900; white-space: nowrap; }}
     form {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 8px; align-items: center; }}
     input {{
       min-width: 0;
       min-height: 42px;
       padding: 10px 12px;
-      border: 1px solid #e5c9d8;
+      border: 1px solid #cfd6e3;
       border-radius: 8px;
-      background: #fffafc;
+      background: #fff;
       color: var(--ink);
       font: inherit;
     }}
+    input:focus {{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217, 79, 112, 0.16); outline: none; }}
     input[name="keyword"] {{ grid-column: 1 / -2; }}
     button {{
       min-height: 40px;
       padding: 10px 14px;
-      border: 1px solid var(--ink);
+      border: 1px solid var(--accent-strong);
       border-radius: 8px;
-      background: var(--ink);
+      background: var(--accent-strong);
       color: white;
       cursor: pointer;
       font-weight: 850;
-      box-shadow: 0 8px 18px rgba(81, 44, 72, 0.08);
+      font: inherit;
     }}
     button:hover {{ transform: translateY(-1px); }}
+    .secondary-button {{
+      min-width: 64px;
+      background: #fff;
+      color: var(--accent-strong);
+      border-color: #e7b6c5;
+      box-shadow: none;
+    }}
     .icon-button {{
       width: 42px;
       min-width: 42px;
@@ -3366,22 +3391,22 @@ def render_web_page(
       font-size: 22px;
       line-height: 1;
     }}
-    .icon-button.soft {{ background: #fff; border-color: #f0b8c7; color: var(--ink); }}
-    .icon-button.danger {{ background: #fff3f6; border-color: #ffc1d0; color: #b9284a; box-shadow: none; }}
-    .icon-link {{
-      width: 34px;
-      min-width: 34px;
+    .icon-button.soft {{ background: #fff; border-color: #cfd6e3; color: var(--ink); }}
+    .icon-button.danger {{ background: #fff; border-color: #efc2cd; color: #b9284a; box-shadow: none; }}
+    .action-link {{
       min-height: 34px;
-      display: inline-grid;
-      place-items: center;
-      border: 1px solid #cfe9dc;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 7px 10px;
+      border: 1px solid #cfd6e3;
       border-radius: 8px;
-      background: #effbf5;
-      color: #147047;
-      font-weight: 950;
-      box-shadow: 0 8px 18px rgba(81, 44, 72, 0.06);
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 850;
     }}
-    .icon-link:hover {{ text-decoration: none; transform: translateY(-1px); }}
+    .action-link:hover {{ text-decoration: none; transform: translateY(-1px); }}
     .button-text {{
       position: absolute;
       width: 1px;
@@ -3402,10 +3427,21 @@ def render_web_page(
       justify-content: space-between;
       gap: 12px;
       align-items: center;
-      border: 1px solid #f1e4ed;
+      border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fffdfd;
-      padding: 12px;
+      background: var(--panel);
+      padding: 13px;
+      box-shadow: var(--shadow);
+    }}
+    .watch-row {{ align-items: flex-start; }}
+    .event-row {{ min-height: 108px; }}
+    .empty-row {{ color: var(--muted); font-weight: 700; box-shadow: none; }}
+    .watch-copy {{ min-width: 0; display: grid; gap: 4px; }}
+    .event-title {{
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }}
     small {{ color: var(--muted); line-height: 1.45; }}
     li form {{ display: block; flex: 0 0 auto; }}
@@ -3416,30 +3452,34 @@ def render_web_page(
       align-items: center;
       max-width: 100%;
       min-height: 24px;
-      padding: 3px 7px;
-      border-radius: 999px;
+      padding: 4px 8px;
+      border-radius: 8px;
       background: #fff3f6;
-      border: 1px solid #f7d7e1;
-      color: #5b3142;
+      border: 1px solid #efc2cd;
+      color: #6d263a;
       font-size: 12px;
       font-weight: 900;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }}
-    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: #147047; }}
-    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: #315c9b; }}
+    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: var(--green); }}
+    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: var(--blue); }}
     .mini-stat.wide {{ max-width: min(100%, 320px); }}
     li .icon-button {{ width: 34px; min-width: 34px; min-height: 34px; font-size: 18px; }}
     .run-form {{ display: flex; margin-top: 10px; }}
+    .run-form button {{ width: auto; min-width: 92px; padding: 0 12px; font-size: 14px; }}
     @media (max-width: 820px) {{
       header {{ padding: 12px 16px; }}
       main {{ padding: 18px 16px 42px; }}
+      .dashboard-intro {{ align-items: flex-start; flex-direction: column; }}
+      .summary-strip {{ justify-content: flex-start; }}
       .grid-two {{ grid-template-columns: 1fr; }}
       form {{ grid-template-columns: 1fr auto; }}
       input {{ grid-column: 1 / -1; }}
       input[name="keyword"] {{ grid-column: 1 / 2; }}
       li {{ align-items: flex-start; flex-direction: column; }}
+      .row-actions {{ width: 100%; justify-content: flex-start; }}
     }}
   </style>
 </head>
@@ -3450,25 +3490,36 @@ def render_web_page(
     </div>
   </header>
   <main>
+    <div class="dashboard-intro">
+      <div>
+        <h1>Watch dashboard</h1>
+        <p>Track official pages, ticket links, and lottery rounds from one place.</p>
+      </div>
+      <div class="summary-strip" aria-label="Dashboard summary">
+        <span class="summary-pill">{len(active_artist_watches)} active artists</span>
+        <span class="summary-pill">{len(active_event_watches)} active events</span>
+        <span class="summary-pill">{len(events)} saved events</span>
+      </div>
+    </div>
     <div class="grid-two">
       <section>
         <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>
         <form method="post" action="/watch/add">
           <input type="hidden" name="kind" value="artist">
           <input name="keyword" placeholder="Artist" required>
-          <button class="icon-button" title="Add artist" aria-label="Add artist"><span aria-hidden="true">+</span><span class="button-text">Add Artist</span></button>
+          <button class="secondary-button" title="Add artist" aria-label="Add artist">Add</button>
         </form>
-        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="icon-button soft" title="Run artists" aria-label="Run artists"><span aria-hidden="true">></span><span class="button-text">Run Artists</span></button></form>
+        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="secondary-button" title="Run artists" aria-label="Run artists">Run artists</button></form>
         <ul>{artist_items}</ul>
       </section>
       <section>
         <div class="section-head"><h2>Tracked Events</h2><span class="status">{len(active_event_watches)} active</span></div>
         <form method="post" action="/event/search">
           <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" required>
-          <button class="icon-button" title="Search events" aria-label="Search events"><span aria-hidden="true">?</span><span class="button-text">Search events</span></button>
+          <button class="secondary-button" title="Search events" aria-label="Search events">Search</button>
         </form>
         {event_search_panel}
-        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="icon-button soft" title="Run events" aria-label="Run events"><span aria-hidden="true">></span><span class="button-text">Run Events</span></button></form>
+        <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="secondary-button" title="Run events" aria-label="Run events">Run events</button></form>
         <ul>{tracked_event_items}</ul>
       </section>
     </div>

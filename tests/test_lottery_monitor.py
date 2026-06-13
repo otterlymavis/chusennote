@@ -1354,8 +1354,8 @@ def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatc
         )
         assert "Example Musical" in added_home
         assert 'href="/events/1"' in added_home
-        assert "T 1" in added_home
-        assert "R 1" in added_home
+        assert "Tickets 1" in added_home
+        assert "Rounds 1" in added_home
         detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert "Official page" in detail
         assert "https://t.pia.jp/example" in detail
