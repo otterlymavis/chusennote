@@ -174,7 +174,18 @@ def test_ticket_rule_and_price_extractors_read_summary_notes():
 
     assert "未就学児" in lm.extract_ticket_rule_items(summary)[0]
     assert "有償譲渡" in lm.extract_ticket_rule_items(summary)[1]
-    assert "17,500円" in lm.extract_ticket_price_items(summary)[0]
+    assert lm.extract_ticket_price_items(summary) == ("S席 17,500円 A席 11,000円",)
+
+
+def test_ticket_price_extractor_splits_structured_seat_tiers():
+    summary = "チケット S席：平日14,000円／土日祝15,000円 A席：平日9,000円／土日祝10,000円 Yシート（20歳以下当日引換券）：2,000円＊ U-25（25歳以下当日引換券）：5,500円"
+
+    assert lm.extract_ticket_price_items(summary) == (
+        "S席：平日14,000円／土日祝15,000円",
+        "A席：平日9,000円／土日祝10,000円",
+        "Yシート（20歳以下当日引換券）：2,000円",
+        "U-25（25歳以下当日引換券）：5,500円",
+    )
 
 
 def test_build_event_info_summary_keeps_ticket_price_notes():

@@ -2441,8 +2441,22 @@ def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
 def extract_ticket_price_items(text: str, limit: int = 6) -> tuple[str, ...]:
     items: list[str] = []
     seen: set[str] = set()
+    normalized = clean_text(text)
+    tier_matches = list(re.finditer(r"(?:チケット\s*)?(S席|A席|Yシート(?:（[^）]+）)?|U-25(?:（[^）]+）)?)[：:]", normalized))
+    for index, match in enumerate(tier_matches):
+        start = match.start(1)
+        end = tier_matches[index + 1].start(1) if index + 1 < len(tier_matches) else len(normalized)
+        note = normalized[start:end]
+        note = re.split(r"(?=＊＝|※|チケット販売|Tickets|News|Tour|Cast)", note)[0].strip(" ・:：。＊*")
+        if note and re.search(r"\d[\d,]*\s*円", note) and note not in seen:
+            items.append(note)
+            seen.add(note)
+        if len(items) >= limit:
+            return tuple(items)
+    if items:
+        return tuple(items)
     price_pattern = re.compile(r"(?:チケット\s*)?(?:S席|A席|Yシート|U-25)[^。※\n\r]{0,260}?\d[\d,]*\s*円[^。※\n\r]{0,260}")
-    for match in price_pattern.finditer(clean_text(text)):
+    for match in price_pattern.finditer(normalized):
         note = match.group(0).strip(" ・:：。")
         if note and note not in seen:
             items.append(note)
