@@ -2525,6 +2525,59 @@ def delete_stale_keyword_fallback_events(connection: sqlite3.Connection, watch_i
         connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
 
+def cleanup_database(db_path: str) -> dict[str, int]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        counts = {
+            "sources": 0,
+            "ticket_rounds": 0,
+            "snapshots": 0,
+            "alert_log": 0,
+            "watch_sources": 0,
+            "keyword_fallback_events": 0,
+        }
+        for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
+            cursor = connection.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE event_id NOT IN (SELECT id FROM events)
+                """
+            )
+            counts[table] += cursor.rowcount if cursor.rowcount >= 0 else 0
+        cursor = connection.execute(
+            """
+            DELETE FROM watch_sources
+            WHERE watch_id NOT IN (SELECT id FROM watched_keywords)
+            """
+        )
+        counts["watch_sources"] += cursor.rowcount if cursor.rowcount >= 0 else 0
+
+        stale_fallbacks = connection.execute(
+            """
+            SELECT fallback.id
+            FROM events AS fallback
+            WHERE fallback.official_url LIKE 'keyword:%'
+              AND EXISTS (
+                SELECT 1 FROM events AS official
+                WHERE official.watch_id = fallback.watch_id
+                  AND official.id != fallback.id
+                  AND (
+                    official.official_url LIKE 'http://%'
+                    OR official.official_url LIKE 'https://%'
+                  )
+              )
+            """
+        ).fetchall()
+        for row in stale_fallbacks:
+            event_id = int(row[0])
+            for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
+                cursor = connection.execute(f"DELETE FROM {table} WHERE event_id = ?", (event_id,))
+                counts[table] += cursor.rowcount if cursor.rowcount >= 0 else 0
+            connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
+            counts["keyword_fallback_events"] += 1
+        return counts
+
+
 def source_confidence(link: Link) -> int:
     if is_ticket_url(link.url):
         return 90
@@ -2894,7 +2947,7 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_i
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     cleaned_argv, session_log, session_log_dir = split_session_log_args(argv)
-    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "-h", "--help"}:
+    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "db", "-h", "--help"}:
         parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
         parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
         parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
@@ -3015,6 +3068,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
     web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
+
+    db_parser = subparsers.add_parser("db", help="Maintain the local SQLite database")
+    db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
+    cleanup_parser = db_subparsers.add_parser("cleanup", help="Remove stale fallback and orphaned rows")
+    cleanup_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    cleanup_parser.add_argument("--json", action="store_true")
 
     export_parser = subparsers.add_parser("export", help="Export saved data")
     export_parser.add_argument("target", choices=("events", "alerts", "artists", "tracked-events", "sources", "calendar", "upcoming"))
@@ -3654,6 +3713,18 @@ def run_command(args: argparse.Namespace) -> int:
     if args.command == "web":
         run_web(args.db, args.port, args.host)
         return 0
+    if args.command == "db":
+        if args.db_command == "cleanup":
+            counts = cleanup_database(args.db)
+            if args.json:
+                print(json.dumps(counts, ensure_ascii=False, indent=2))
+            else:
+                total = sum(counts.values())
+                print(f"Database cleanup removed {total} rows.")
+                for key, count in counts.items():
+                    if count:
+                        print(f"- {key}: {count}")
+            return 0
     if args.command == "export":
         if args.target == "events":
             print(

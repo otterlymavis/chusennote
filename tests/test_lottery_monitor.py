@@ -329,6 +329,69 @@ def test_save_blocks_removes_stale_keyword_fallback_after_official_page(tmp_path
     assert fallback_children == 0
 
 
+def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    official = example_blocks("Example")
+
+    lm.save_blocks(str(db_path), official, now="2026-06-04T00:00:00+00:00")
+    with sqlite3.connect(db_path) as connection:
+        watch_id = connection.execute("SELECT id FROM watched_keywords WHERE keyword = 'Example'").fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO events(watch_id, canonical_title, official_url, summary, event_dates_json, venues_json, status, event_key, created_at, updated_at)
+            VALUES (?, 'Example fallback', 'keyword:Example', '', '[]', '[]', 'watching', 'fallback', '2026-06-03', '2026-06-03')
+            """,
+            (watch_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO ticket_rounds(event_id, round_key, source, url, name, confidence, status, round_type, membership_required, created_at, updated_at)
+            VALUES (999, 'orphan', 'manual', 'keyword:Orphan', 'Orphan', 50, 'unknown', 'unknown', 'unknown', '2026-06-03', '2026-06-03')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sources(event_id, url, label, platform, confidence, provenance, created_at, updated_at)
+            VALUES (999, 'https://orphan.example', 'Orphan', 'orphan.example', 40, 'low_confidence', '2026-06-03', '2026-06-03')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO snapshots(event_id, snapshot_hash, payload_json, created_at)
+            VALUES (999, 'orphan', '{}', '2026-06-03')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO alert_log(event_id, alert_key, alert_type, payload_json, created_at)
+            VALUES (999, 'orphan', 'orphan', '{}', '2026-06-03')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO watch_sources(watch_id, url, label, platform, confidence, private_note, muted, created_at, updated_at)
+            VALUES (999, 'https://orphan.example', 'Orphan', 'orphan.example', 40, 0, 0, '2026-06-03', '2026-06-03')
+            """
+        )
+
+    assert lm.main(["db", "cleanup", "--db", str(db_path), "--json"]) == 0
+
+    output = capsys.readouterr().out
+    counts = json.loads(output)
+    assert counts["keyword_fallback_events"] == 1
+    assert counts["ticket_rounds"] == 1
+    assert counts["sources"] == 1
+    assert counts["snapshots"] == 1
+    assert counts["alert_log"] == 1
+    assert counts["watch_sources"] == 1
+    with sqlite3.connect(db_path) as connection:
+        event_urls = [row[0] for row in connection.execute("SELECT official_url FROM events ORDER BY id")]
+        orphan_rounds = connection.execute("SELECT COUNT(*) FROM ticket_rounds WHERE event_id = 999").fetchone()[0]
+
+    assert event_urls == ["https://official.example/"]
+    assert orphan_rounds == 0
+
+
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     original = lm.AppBlocks(
