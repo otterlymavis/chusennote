@@ -84,6 +84,12 @@ def test_extract_venues_stops_at_organizer_and_contact_noise():
     assert lm.extract_venues(text) == ("梅田芸術劇場メインホール",)
 
 
+def test_extract_venues_handles_spaced_label_and_suffixless_venue():
+    text = "出演（柿澤勇人） 会 場 EXシアター有明(東京ドリームパーク内) 座席表 上演時間 3時間"
+
+    assert lm.extract_venues(text) == ("EXシアター有明(東京ドリームパーク内)",)
+
+
 def test_extract_event_dates_captures_performance_period_not_ticketing():
     text = (
         "ミュージカル『例』 期 間 2026年7月25日(土)～8月23日(日) 会 場 例ホール "
@@ -133,6 +139,27 @@ def test_extract_ticket_rounds_with_japanese_lottery_dates():
     assert rounds[0].results_date == "2026-06-22"
     assert rounds[0].payment_deadline == "2026-06-22"
     assert any(round_.general_sale_date == "2026-07-04" for round_ in rounds)
+
+
+def test_extract_ticket_rounds_reads_shiki_dates_before_labels():
+    text = (
+        "東京公演はこちら 1月10日（火）～8月26日（土）長期保守点検 "
+        "8月27日（日）～12月31日（日）公演分 "
+        "2月19日（日）「四季の会」会員先行予約／2月26日（日）一般発売開始"
+    )
+    page = lm.Page("https://www.shiki.jp/applause/aladdin/ticket_schedule/", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+
+    assert rounds[0].lottery_start == "2026-02-19"
+    assert rounds[0].lottery_end is None
+    assert rounds[0].general_sale_date == "2026-02-26"
+
+
+def test_past_general_sale_round_is_closed():
+    ticket = lm.TicketRound(source="official", url="https://example.test", name="一般発売", general_sale_date="2026-02-26")
+
+    assert lm.compute_ticket_status(ticket, today=dt.date(2026, 6, 13)) == "closed"
 
 
 def test_render_blocks_has_two_expected_app_blocks():

@@ -838,9 +838,12 @@ def extract_venues(text: str) -> tuple[str, ...]:
     # so a trailing "チケット抽選先行…" link does not get swallowed into the venue
     # (which would then trip the noise filter below and drop the venue entirely).
     boundary = r"(?=〒|MAP|座席表|【|チケット|抽選|先行|受付|申込|発売|公演日|出演|料金|開場|開演|主催|お問い?合せ|お問い合わせ|TEL|$)"
+    # Schedule pages frequently space out CJK labels (e.g. "会 場"), so match the
+    # 会場 label space-tolerantly to catch venues like "EXシアター有明(…)" that have
+    # no 劇場/ホール suffix and would otherwise be missed entirely.
     patterns = (
-        rf"会場のご案内\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
-        rf"会場\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
+        rf"会\s*場のご案内\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
+        rf"会\s*場\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
         r"(?:東京|大阪|名古屋|京都|福岡|札幌|仙台|静岡|広島|全国)\s+(?P<venue>[^\s。]{2,40}(?:劇場|ホール|アリーナ|ドーム|会館)(?:［[^］]+］)?(?:（[^）]+）)?)",
         r"(?P<venue>[\w一-龥ぁ-んァ-ヶー・（）() ]{2,40}(?:劇場|ホール|アリーナ|ドーム|会館|大劇場|小劇場))",
     )
@@ -1001,6 +1004,16 @@ def extract_first_date(text: str, labels: Sequence[str]) -> str | None:
     return None
 
 
+def extract_last_date_before_label(text: str, labels: Sequence[str], width: int = 60) -> str | None:
+    for label in labels:
+        for match in re.finditer(label, text, flags=re.IGNORECASE):
+            window = text[max(0, match.start() - width) : match.start()]
+            dates = [date for date in (normalized_iso_date(m.group(0)) for m in DATE_RE.finditer(window)) if date]
+            if dates:
+                return dates[-1]
+    return None
+
+
 def extract_range(text: str) -> tuple[str | None, str | None]:
     match = RANGE_RE.search(text)
     if not match:
@@ -1011,6 +1024,16 @@ def extract_range(text: str) -> tuple[str | None, str | None]:
             return dates[0], None
         return None, None
     return normalized_iso_date(match.group("start")), normalized_iso_date(match.group("end"))
+
+
+def extract_range_after_label(text: str, labels: Sequence[str]) -> tuple[str | None, str | None]:
+    for label in labels:
+        for match in re.finditer(label, text, flags=re.IGNORECASE):
+            window = text[match.start() : min(len(text), match.end() + 140)]
+            start, end = extract_range(window)
+            if start or end:
+                return start, end
+    return None, None
 
 
 def round_name_from_context(context: str, fallback: str) -> str:
@@ -1027,12 +1050,17 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
     for index, context in enumerate(contexts, start=1):
-        start, end = extract_range(context)
+        start, end = extract_range_after_label(
+            context,
+            ("受付期間", "申込期間", "申込み期間", "申込受付期間", "抽選申込期間", "抽選受付期間", "受付"),
+        )
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
         payment_deadline = extract_first_date(context, ("入金", "支払", "払込", "決済"))
+        start = start or extract_last_date_before_label(context, ("会員先行予約", "先行予約", "先着先行"))
         results_date = results_date or extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"))
+        general_sale_date = general_sale_date or extract_last_date_before_label(context, ("一般発売", "一般前売", "発売開始"))
         payment_deadline = payment_deadline or extract_first_date(context, ("入金", "支払", "支払い", "支払期限", "入金締切"))
         if not any((start, end, results_date, general_sale_date, payment_deadline)):
             continue
@@ -2525,6 +2553,8 @@ def compute_ticket_status(ticket: TicketRound, today: dt.date | None = None) -> 
         return "payment_due"
     if general_sale and 0 <= (general_sale - today).days <= 2:
         return "general_sale_soon"
+    if general_sale and today > general_sale:
+        return "closed"
     if application_start and application_end and application_start <= today <= application_end:
         if (application_end - today).days <= 2:
             return "closing_soon"
