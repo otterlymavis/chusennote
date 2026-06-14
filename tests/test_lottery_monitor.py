@@ -296,6 +296,30 @@ def test_extract_ticket_rounds_with_japanese_lottery_dates():
     assert any(round_.general_sale_date == "2026-07-04" for round_ in rounds)
 
 
+def test_extract_ticket_rounds_reads_member_presale_ranges_from_evidence():
+    text = (
+        "ホリプロステージで購入 【先着先行】 "
+        "ゴールド会員：2月28日(土)12:00～3月15日(日)23:59 "
+        "レギュラー会員：2月28日(土)13:00～3月15日(日)23:59 "
+        "【一般発売】 3月18日(水)11:00～"
+    )
+    page = lm.Page("https://horipro-stage.jp/stage/example/", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+
+    assert any(
+        round_.name == "先着先行"
+        and round_.lottery_start == "2026-02-28"
+        and round_.lottery_end == "2026-03-15"
+        for round_ in rounds
+    )
+    assert all(
+        round_.lottery_start is None and round_.lottery_end is None
+        for round_ in rounds
+        if round_.name == "一般発売"
+    )
+
+
 def test_extract_ticket_rounds_reads_shiki_dates_before_labels():
     text = (
         "東京公演はこちら 1月10日（火）～8月26日（土）長期保守点検 "
@@ -541,6 +565,46 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
     assert orphan_rounds == 0
     assert merged_source == 1
     assert json.loads(venues_json) == []
+
+
+def test_db_cleanup_backfills_ticket_round_dates_from_evidence(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.save_blocks(str(db_path), example_blocks("Example"), now="2026-06-04T00:00:00+00:00")
+    evidence = (
+        "【先着先行】 ゴールド会員：2月28日(土)12:00～3月15日(日)23:59 "
+        "レギュラー会員：2月28日(土)13:00～3月15日(日)23:59 【一般発売】 3月18日(水)11:00～"
+    )
+    with sqlite3.connect(db_path) as connection:
+        event_id = connection.execute("SELECT id FROM events LIMIT 1").fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO ticket_rounds(event_id, round_key, source, url, name, lottery_start, confidence, status, round_type, membership_required, evidence, created_at, updated_at)
+            VALUES (?, 'member-presale', 'official', 'https://official.example/', '先着先行', '2026-02-28', 50, 'unknown', 'platform', 'yes', ?, '2026-06-03', '2026-06-03')
+            """,
+            (event_id, evidence),
+        )
+        connection.execute(
+            """
+            INSERT INTO ticket_rounds(event_id, round_key, source, url, name, general_sale_date, confidence, status, round_type, membership_required, evidence, created_at, updated_at)
+            VALUES (?, 'general-sale', 'official', 'https://official.example/', '一般発売', '2026-03-18', 50, 'unknown', 'general', 'yes', ?, '2026-06-03', '2026-06-03')
+            """,
+            (event_id, evidence),
+        )
+
+    assert lm.main(["db", "cleanup", "--db", str(db_path), "--json"]) == 0
+
+    counts = json.loads(capsys.readouterr().out)
+    assert counts["ticket_round_dates"] >= 1
+    with sqlite3.connect(db_path) as connection:
+        application_end_at = connection.execute(
+            "SELECT application_end_at FROM ticket_rounds WHERE round_key = 'member-presale'"
+        ).fetchone()[0]
+        general_dates = connection.execute(
+            "SELECT application_start_at, application_end_at FROM ticket_rounds WHERE round_key = 'general-sale'"
+        ).fetchone()
+
+    assert application_end_at == "2026-03-15"
+    assert general_dates == (None, None)
 
 
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):

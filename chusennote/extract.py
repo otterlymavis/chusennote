@@ -340,9 +340,12 @@ def extract_last_date_before_label(text: str, labels: Sequence[str], width: int 
 
 
 def extract_range(text: str) -> tuple[str | None, str | None]:
-    match = RANGE_RE.search(text)
+    unicode_date_token = r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
+    unicode_range_re = re.compile(rf"(?P<start>{unicode_date_token})(?:(?!{unicode_date_token}).){{0,60}}(?:[〜～~–—]|から)(?:(?!{unicode_date_token}).){{0,60}}(?P<end>{unicode_date_token})")
+    match = RANGE_RE.search(text) or unicode_range_re.search(text)
     if not match:
         dates = [date for date in (normalized_iso_date(m.group(0)) for m in DATE_RE.finditer(text)) if date]
+        dates.extend(date for date in (normalized_iso_date(m.group(0)) for m in re.finditer(unicode_date_token, text)) if date and date not in dates)
         if len(dates) >= 2:
             return dates[0], dates[1]
         if len(dates) == 1:
@@ -361,6 +364,26 @@ def extract_range_after_label(text: str, labels: Sequence[str]) -> tuple[str | N
     return None, None
 
 
+ADVANCE_RANGE_LABELS = (
+    "受付期間",
+    "申込期間",
+    "申込み期間",
+    "申込受付期間",
+    "抽選申込期間",
+    "抽選受付期間",
+    "抽選先行",
+    "先行抽選エントリー",
+    "先着先行",
+    "先行先着販売",
+    "ゴールド会員",
+    "レギュラー会員",
+    "å…ˆç€å…ˆè¡Œ",
+    "å…ˆè¡Œå…ˆç€è²©å£²",
+    "ã‚´ãƒ¼ãƒ«ãƒ‰ä¼šå“¡",
+    "ãƒ¬ã‚®ãƒ¥ãƒ©ãƒ¼ä¼šå“¡",
+)
+
+
 def extract_first_date_after_label(text: str, labels: Sequence[str]) -> str | None:
     for label in labels:
         for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
@@ -374,10 +397,17 @@ def extract_first_date_after_label(text: str, labels: Sequence[str]) -> str | No
 
 
 def round_name_from_context(context: str, fallback: str) -> str:
+    if not ("第" in context and "次" in context):
+        for label in ("追加公演・先着先行", "先着先行", "先行先着販売", "会員先行予約", "先行予約", "追加公演・抽選先行", "抽選先行", "一般発売"):
+            if label in context:
+                return label
     for pattern in ROUND_LABEL_PATTERNS:
         match = re.search(pattern, context, flags=re.IGNORECASE)
         if match:
             return clean_text(match.group(0))
+    for label in ("追加公演・先着先行", "先着先行", "先行先着販売", "会員先行予約", "先行予約", "追加公演・抽選先行", "抽選先行", "一般発売"):
+        if label in context:
+            return label
     return fallback
 
 
@@ -390,16 +420,7 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     for index, context in enumerate(contexts, start=1):
         start, end = extract_range_after_label(
             context,
-            (
-                "受付期間",
-                "申込期間",
-                "申込み期間",
-                "申込受付期間",
-                "抽選申込期間",
-                "抽選受付期間",
-                "抽選先行",
-                "先行抽選エントリー",
-            ),
+            ADVANCE_RANGE_LABELS,
         )
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
@@ -413,6 +434,8 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
         if not any((start, end, results_date, general_sale_date, payment_deadline)):
             continue
         name = round_name_from_context(context, f"Lottery round {index}")
+        if "一般発売" in name or "一般前売" in name:
+            start, end = None, None
         key = (name, start, end)
         if key in seen:
             continue
@@ -566,6 +589,12 @@ def normalize_ticket_round(ticket: TicketRound, today: dt.date | None = None) ->
     platform = ticket.platform or ticket.source or source_name_for_url(ticket.url)
     application_start = ticket.application_start_at or ticket.lottery_start
     application_end = ticket.application_end_at or ticket.lottery_end
+    if ticket.evidence and (not application_start or not application_end):
+        evidence_start, evidence_end = extract_range_after_label(ticket.evidence, ADVANCE_RANGE_LABELS)
+        application_start = application_start or evidence_start
+        application_end = application_end or evidence_end
+    if "一般発売" in ticket.name or "一般前売" in ticket.name:
+        application_start, application_end = None, None
     payment_end = ticket.payment_end_at or ticket.payment_deadline
     normalized = dataclasses.replace(
         ticket,

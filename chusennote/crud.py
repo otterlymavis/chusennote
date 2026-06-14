@@ -382,6 +382,7 @@ def cleanup_database(db_path: str) -> dict[str, int]:
             "watch_sources": 0,
             "keyword_fallback_events": 0,
             "event_venues": 0,
+            "ticket_round_dates": 0,
         }
         for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
             cursor = connection.execute(
@@ -460,6 +461,58 @@ def cleanup_database(db_path: str) -> dict[str, int]:
                 (json.dumps(cleaned_venues, ensure_ascii=False), int(event_id)),
             )
             counts["event_venues"] += 1
+        round_rows = connection.execute(
+            """
+            SELECT id, source, url, name, round_number, platform, lottery_start, lottery_end,
+                   results_date, general_sale_date, payment_deadline, application_start_at,
+                   application_end_at, payment_start_at, payment_end_at, trade_start_at,
+                   trade_end_at, confidence, status, round_type, membership_required, evidence
+            FROM ticket_rounds
+            """
+        ).fetchall()
+        for row in round_rows:
+            ticket = TicketRound(
+                source=row[1],
+                url=row[2],
+                name=row[3],
+                round_number=row[4],
+                platform=row[5],
+                lottery_start=row[6],
+                lottery_end=row[7],
+                results_date=row[8],
+                general_sale_date=row[9],
+                payment_deadline=row[10],
+                application_start_at=row[11],
+                application_end_at=row[12],
+                payment_start_at=row[13],
+                payment_end_at=row[14],
+                trade_start_at=row[15],
+                trade_end_at=row[16],
+                confidence=row[17],
+                status=row[18],
+                round_type=row[19],
+                membership_required=row[20],
+                evidence=row[21],
+            )
+            normalized = normalize_ticket_round(ticket)
+            if (
+                normalized.application_start_at == row[11]
+                and normalized.application_end_at == row[12]
+                and normalized.status == row[18]
+            ):
+                continue
+            connection.execute(
+                """
+                UPDATE ticket_rounds
+                SET application_start_at = ?,
+                    application_end_at = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (normalized.application_start_at, normalized.application_end_at, normalized.status, utc_now_iso(), int(row[0])),
+            )
+            counts["ticket_round_dates"] += 1
         return counts
 
 
