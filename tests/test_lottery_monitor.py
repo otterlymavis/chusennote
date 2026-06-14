@@ -445,6 +445,12 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
         )
         connection.execute(
             """
+            INSERT INTO sources(event_id, url, label, platform, confidence, provenance, created_at, updated_at)
+            VALUES (1, 'https://official.example/news/ticket-info', 'Important ticket notice', 'official.example', 60, 'manual_public', '2026-06-03', '2026-06-03')
+            """
+        )
+        connection.execute(
+            """
             INSERT INTO snapshots(event_id, snapshot_hash, payload_json, created_at)
             VALUES (999, 'orphan', '{}', '2026-06-03')
             """
@@ -468,7 +474,7 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
     counts = json.loads(output)
     assert counts["keyword_fallback_events"] == 1
     assert counts["ticket_rounds"] == 1
-    assert counts["sources"] == 1
+    assert counts["sources"] == 2
     assert counts["snapshots"] == 1
     assert counts["alert_log"] == 1
     assert counts["watch_sources"] == 1

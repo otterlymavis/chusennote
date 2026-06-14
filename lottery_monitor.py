@@ -2711,6 +2711,17 @@ def cleanup_database(db_path: str) -> dict[str, int]:
                 """
             )
             counts[table] += cursor.rowcount if cursor.rowcount >= 0 else 0
+        stale_sources = connection.execute(
+            """
+            SELECT id, url, label
+            FROM sources
+            """
+        ).fetchall()
+        for source_id, url, label in stale_sources:
+            if is_actionable_ticket_link(str(url), str(label or "")):
+                continue
+            cursor = connection.execute("DELETE FROM sources WHERE id = ?", (int(source_id),))
+            counts["sources"] += cursor.rowcount if cursor.rowcount >= 0 else 0
         cursor = connection.execute(
             """
             DELETE FROM watch_sources
