@@ -2732,22 +2732,29 @@ def cleanup_database(db_path: str) -> dict[str, int]:
 
         stale_fallbacks = connection.execute(
             """
-            SELECT fallback.id
+            SELECT fallback.id, official.id
             FROM events AS fallback
+            JOIN events AS official
+              ON official.watch_id = fallback.watch_id
+             AND official.id != fallback.id
+             AND (
+                official.official_url LIKE 'http://%'
+                OR official.official_url LIKE 'https://%'
+             )
             WHERE fallback.official_url LIKE 'keyword:%'
-              AND EXISTS (
-                SELECT 1 FROM events AS official
-                WHERE official.watch_id = fallback.watch_id
-                  AND official.id != fallback.id
-                  AND (
-                    official.official_url LIKE 'http://%'
-                    OR official.official_url LIKE 'https://%'
-                  )
-              )
             """
         ).fetchall()
         for row in stale_fallbacks:
             event_id = int(row[0])
+            official_event_id = int(row[1])
+            connection.execute(
+                """
+                UPDATE OR IGNORE sources
+                SET event_id = ?
+                WHERE event_id = ?
+                """,
+                (official_event_id, event_id),
+            )
             for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
                 cursor = connection.execute(f"DELETE FROM {table} WHERE event_id = ?", (event_id,))
                 counts[table] += cursor.rowcount if cursor.rowcount >= 0 else 0
@@ -2870,7 +2877,7 @@ def compute_event_status(info: EventInfo, rounds: Sequence[TicketRound], today: 
         return "lottery_open"
     if rounds:
         return "lottery_found"
-    if info.ticket_links:
+    if any(is_actionable_ticket_link(link.url, link.label) for link in info.ticket_links):
         return "ticket_links_found"
     if info.official_page:
         return "official_found"

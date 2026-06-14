@@ -81,6 +81,20 @@ def test_extract_ticket_links_ignores_ticket_related_info_pages():
     ]
 
 
+def test_event_status_ignores_non_actionable_ticket_info_links():
+    info = lm.EventInfo(
+        keyword="Example",
+        official_page="https://official.example/stage",
+        title="Example",
+        summary="",
+        event_dates=(),
+        venues=(),
+        ticket_links=(lm.Link("Tickets & Schedule", "https://horipro-stage.jp/stage/example/#schedule"),),
+    )
+
+    assert lm.compute_event_status(info, ()) == "official_found"
+
+
 def test_search_api_warns_when_configured_backend_fails(monkeypatch, capsys):
     monkeypatch.setenv(lm.SEARCH_PROVIDER_ENV, "brave")
     monkeypatch.setenv(lm.SEARCH_API_KEY_ENV, "secret-key")
@@ -451,6 +465,12 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
         )
         connection.execute(
             """
+            INSERT INTO sources(event_id, url, label, platform, confidence, provenance, created_at, updated_at)
+            VALUES (2, 'https://eplus.jp/example', 'eplus', 'eplus', 90, 'ticket_primary', '2026-06-03', '2026-06-03')
+            """
+        )
+        connection.execute(
+            """
             INSERT INTO snapshots(event_id, snapshot_hash, payload_json, created_at)
             VALUES (999, 'orphan', '{}', '2026-06-03')
             """
@@ -481,9 +501,11 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
     with sqlite3.connect(db_path) as connection:
         event_urls = [row[0] for row in connection.execute("SELECT official_url FROM events ORDER BY id")]
         orphan_rounds = connection.execute("SELECT COUNT(*) FROM ticket_rounds WHERE event_id = 999").fetchone()[0]
+        merged_source = connection.execute("SELECT event_id FROM sources WHERE url = 'https://eplus.jp/example'").fetchone()[0]
 
     assert event_urls == ["https://official.example/"]
     assert orphan_rounds == 0
+    assert merged_source == 1
 
 
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
