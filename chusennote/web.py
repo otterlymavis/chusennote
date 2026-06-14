@@ -335,6 +335,16 @@ def render_watch_preferences(watch: Watch, include_alerts: bool = False) -> str:
     return " | ".join(parts)
 
 
+def tracked_event_display_key(watch: Watch, event: dict[str, object] | None) -> tuple[int, int, int, int, str]:
+    if not event:
+        return (1, 0, 0, 0, watch.keyword.lower())
+    has_official = int(is_web_url(event.get("official_url")))
+    ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
+    round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
+    date_count = len(event.get("event_dates", [])) if isinstance(event.get("event_dates"), list) else 0
+    return (-has_official, -round_count, -date_count, -ticket_count, watch.keyword.lower())
+
+
 def render_web_page(
     db_path: str,
     event_search_keyword: str = "",
@@ -398,6 +408,7 @@ def render_web_page(
         </li>
         """
 
+    active_event_watches.sort(key=lambda watch: tracked_event_display_key(watch, latest_event_by_watch_id.get(watch.id)))
     tracked_event_items = "\n".join(render_tracked_event_item(watch) for watch in active_event_watches) or '<li class="empty-row">No tracked events.</li>'
     event_result_items = "\n".join(
         f"""

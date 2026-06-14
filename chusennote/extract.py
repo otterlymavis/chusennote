@@ -121,7 +121,8 @@ def extract_venues(text: str) -> tuple[str, ...]:
             venue = re.sub(r"^(?:のご案内|会場のご案内)\s*", "", venue).strip()
             if not venue or venue in seen:
                 continue
-            if any(noisy in venue for noisy in ("チケット", "ご購入", "ご予約", "販売", "受付", "お問い合わせ", "お問合せ", "主催", "電話", "ぜひ", "グループ観劇", "座席料金", "座席図", "アクセス", "車いす")):
+            context = clean_text(text[max(0, match.start() - 24) : min(len(text), match.end() + 80)])
+            if venue_looks_noisy(venue, context):
                 continue
             if any(venue in existing or existing in venue for existing in seen):
                 continue
@@ -132,6 +133,38 @@ def extract_venues(text: str) -> tuple[str, ...]:
         if venues and pattern_index == 2:
             return tuple(venues)
     return tuple(venues)
+
+
+def venue_looks_noisy(venue: str, context: str = "") -> bool:
+    venue = clean_text(venue)
+    context = clean_text(context)
+    if any(noisy in context for noisy in ("交通アクセス", "駐車場", "公演スケジュール情報はありません")):
+        return True
+    return any(
+        noisy in venue
+        for noisy in (
+            "チケット",
+            "ご購入",
+            "ご予約",
+            "販売",
+            "受付",
+            "お問い合わせ",
+            "お問合せ",
+            "主催",
+            "電話",
+            "ぜひ",
+            "グループ観劇",
+            "座席料金",
+            "座席図",
+            "アクセス",
+            "車いす",
+            "現在",
+            "スケジュール情報",
+            "公演一覧",
+            "Facebook",
+            "LINE",
+        )
+    )
 
 
 def extract_ticket_links(page: Page) -> tuple[Link, ...]:
@@ -428,7 +461,13 @@ def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
     items: list[str] = []
     seen: set[str] = set()
     for note in split_event_notes(text):
-        if "重要なお知らせ" in note or "＞＞" in note or ">>" in note:
+        if (
+            "重要なお知らせ" in note
+            or "＞＞" in note
+            or ">>" in note
+            or "クッキー" in note
+            or "cookie" in note.lower()
+        ):
             continue
         if items and note.startswith(("なお、", "なお ")):
             if note in items[-1]:
@@ -436,6 +475,8 @@ def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
             merged = f"{items[-1]} {note}"
             items[-1] = merged
             seen.add(merged)
+            continue
+        if any(note in existing or existing in note for existing in items):
             continue
         if any(hint in note for hint in hints) and note not in seen:
             items.append(note)

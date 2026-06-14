@@ -381,6 +381,7 @@ def cleanup_database(db_path: str) -> dict[str, int]:
             "alert_log": 0,
             "watch_sources": 0,
             "keyword_fallback_events": 0,
+            "event_venues": 0,
         }
         for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
             cursor = connection.execute(
@@ -439,6 +440,26 @@ def cleanup_database(db_path: str) -> dict[str, int]:
                 counts[table] += cursor.rowcount if cursor.rowcount >= 0 else 0
             connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
             counts["keyword_fallback_events"] += 1
+        venue_rows = connection.execute("SELECT id, venues_json FROM events").fetchall()
+        for event_id, venues_json in venue_rows:
+            try:
+                venues = json.loads(venues_json or "[]")
+            except json.JSONDecodeError:
+                venues = []
+            if not isinstance(venues, list):
+                venues = []
+            cleaned_venues = [str(venue) for venue in venues if clean_text(str(venue)) and not venue_looks_noisy(str(venue))]
+            if cleaned_venues == venues:
+                continue
+            connection.execute(
+                """
+                UPDATE events
+                SET venues_json = ?
+                WHERE id = ?
+                """,
+                (json.dumps(cleaned_venues, ensure_ascii=False), int(event_id)),
+            )
+            counts["event_venues"] += 1
         return counts
 
 

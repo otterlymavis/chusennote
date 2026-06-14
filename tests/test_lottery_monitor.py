@@ -175,6 +175,15 @@ def test_extract_venues_prefers_concise_shiki_theater_name():
     assert lm.extract_venues(text)[0] == "電通四季劇場［海］（汐留）"
 
 
+def test_extract_venues_ignores_shiki_no_schedule_notice():
+    text = (
+        "チケット購入はできません。 ＞「有明四季劇場」交通アクセス・駐車場のご案内 "
+        "現在、公演スケジュール情報はありません。 公演一覧はこちら Facebookでシェアする LINEで送る"
+    )
+
+    assert lm.extract_venues(text) == ()
+
+
 def test_infer_event_location_prefers_parenthetical_area():
     assert lm.infer_event_location(("Venue Example Hall (Tokyo)",)) == "Tokyo"
 
@@ -212,6 +221,22 @@ def test_ticket_rule_extractor_merges_continuations_and_skips_notice_links():
     assert lm.extract_ticket_rule_items(summary) == (
         "※車椅子スペースをご利用のお客様は、空き状況をお問い合わせください なお、車椅子スペースをご利用の場合は、S席をご購入ください",
     )
+
+
+def test_ticket_rule_extractor_dedupes_contained_notes_and_skips_cookie_consent():
+    summary = (
+        "※車椅子でご来場のお客様は、ご観劇日の1週間前までにホリプロチケットセンターまでご連絡ください。"
+        "※車椅子スペースをご利用のお客様は、空き状況をお問い合わせください。"
+        "なお、車椅子スペースをご利用の場合は、S席をご購入ください。"
+        "※車椅子スペースをご利用のお客様は、空き状況をお問い合わせください なお、車椅子スペースをご利用の場合は、S席をご購入ください。"
+        "サイトを閲覧いただく際には、クッキーの使用に同意いただく必要があります。"
+    )
+
+    rules = lm.extract_ticket_rule_items(summary)
+
+    assert len(rules) == 2
+    assert sum("車椅子スペース" in rule for rule in rules) == 1
+    assert all("クッキー" not in rule for rule in rules)
 
 
 def test_format_evidence_snippet_removes_notice_links_and_truncates():
@@ -487,6 +512,13 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
             VALUES (999, 'https://orphan.example', 'Orphan', 'orphan.example', 40, 0, 0, '2026-06-03', '2026-06-03')
             """
         )
+        connection.execute(
+            """
+            UPDATE events
+            SET venues_json = '["現在、公演スケジュール情報はありません。 公演一覧はこちら"]'
+            WHERE official_url = 'https://official.example/'
+            """
+        )
 
     assert lm.main(["db", "cleanup", "--db", str(db_path), "--json"]) == 0
 
@@ -498,14 +530,17 @@ def test_db_cleanup_cli_removes_stale_fallbacks_and_orphans(tmp_path, capsys):
     assert counts["snapshots"] == 1
     assert counts["alert_log"] == 1
     assert counts["watch_sources"] == 1
+    assert counts["event_venues"] == 1
     with sqlite3.connect(db_path) as connection:
         event_urls = [row[0] for row in connection.execute("SELECT official_url FROM events ORDER BY id")]
         orphan_rounds = connection.execute("SELECT COUNT(*) FROM ticket_rounds WHERE event_id = 999").fetchone()[0]
         merged_source = connection.execute("SELECT event_id FROM sources WHERE url = 'https://eplus.jp/example'").fetchone()[0]
+        venues_json = connection.execute("SELECT venues_json FROM events WHERE official_url = 'https://official.example/'").fetchone()[0]
 
     assert event_urls == ["https://official.example/"]
     assert orphan_rounds == 0
     assert merged_source == 1
+    assert json.loads(venues_json) == []
 
 
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
@@ -1189,6 +1224,28 @@ def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
     assert "Tracked Artists" in home
     assert "Tracked Events" in home
     assert "Source unavailable" not in home
+
+
+def test_tracked_event_display_key_prioritizes_official_pages():
+    fallback_watch = lm.Watch(
+        id=1,
+        keyword="Fallback",
+        kind=lm.WATCH_KIND_EVENT,
+    )
+    official_watch = lm.Watch(
+        id=2,
+        keyword="Official",
+        kind=lm.WATCH_KIND_EVENT,
+    )
+    fallback_event = {"official_url": "keyword:Fallback", "ticket_links": [{}, {}, {}], "rounds": [], "event_dates": []}
+    official_event = {"official_url": "https://official.example/", "ticket_links": [{}], "rounds": [], "event_dates": []}
+
+    ordered = sorted(
+        (fallback_watch, official_watch),
+        key=lambda watch: lm.tracked_event_display_key(watch, fallback_event if watch.id == 1 else official_event),
+    )
+
+    assert [watch.keyword for watch in ordered] == ["Official", "Fallback"]
 
 
 def test_api_health_reports_database_counts(tmp_path):
