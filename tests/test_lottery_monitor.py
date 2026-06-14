@@ -1107,6 +1107,36 @@ def test_upcoming_export_sorts_urgent_ticket_rounds(tmp_path, capsys):
     assert '"event_title": "Closing Tour"' in included_muted_output
 
 
+def test_upcoming_priority_rows_excludes_closed_rounds(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.save_blocks(
+        str(db_path),
+        lm.AppBlocks(
+            general_info=lm.EventInfo(
+                keyword="Closed",
+                official_page="https://official.example/closed",
+                title="Closed Tour",
+                summary="",
+                event_dates=(),
+                venues=(),
+                ticket_links=(),
+            ),
+            ticket_info=(
+                lm.TicketRound(
+                    source="official",
+                    url="https://official.example/closed",
+                    name="Closed lottery",
+                    lottery_start="2026-01-24",
+                    lottery_end="2026-02-01",
+                ),
+            ),
+        ),
+        now="2026-06-14T00:00:00+00:00",
+    )
+
+    assert lm.upcoming_priority_rows(str(db_path)) == []
+
+
 def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
@@ -1648,7 +1678,7 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert json_load_url(f"{base}/api/events") == []
         assert json_load_url(f"{base}/api/events?include_muted=1")[0]["title"] == "Example Tour"
         assert json_load_url(f"{base}/api/upcoming") == []
-        assert json_load_url(f"{base}/api/upcoming?include_muted=1")[0]["event_title"] == "Example Tour"
+        assert json_load_url(f"{base}/api/upcoming?include_muted=1") == []
         muted_detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert "Example Tour" in muted_detail
         assert '<a class="action-link" href="https://fan.example/private">Open</a>' in muted_detail

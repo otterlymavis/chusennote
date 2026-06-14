@@ -2108,9 +2108,9 @@ def upcoming_priority_rows(db_path: str, limit: int = 50, include_muted_watches:
             if not isinstance(round_info, dict):
                 continue
             status = str(round_info.get("status") or "unknown")
-            relevant_date = upcoming_relevant_date(round_info)
-            if status == "closed" and not relevant_date:
+            if status not in UPCOMING_STATUS_ORDER or status in {"closed", "unknown"}:
                 continue
+            relevant_date = upcoming_relevant_date(round_info)
             rows.append(
                 {
                     "event_id": event.get("id"),
