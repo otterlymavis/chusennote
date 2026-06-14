@@ -2,7 +2,8 @@
 
 Renders the dashboard, artist/event detail pages, and JSON/ICS API responses,
 and wires them into a ThreadingHTTPServer. Depends on the persistence and
-discovery layer in :mod:`chusennote.storage` plus the lower leaf modules.
+discovery layers (:mod:`chusennote.persistence`, :mod:`chusennote.pipeline`)
+plus the lower leaf modules.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from .util import *  # noqa: F401,F403
 from .netio import *  # noqa: F401,F403
 from .search import *  # noqa: F401,F403
 from .extract import *  # noqa: F401,F403
-from .storage import *  # noqa: F401,F403
+from .persistence import *  # noqa: F401,F403
+from .pipeline import *  # noqa: F401,F403
 
 
 def web_source_link(url: object, label: str = "Open") -> str:

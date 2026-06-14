@@ -873,7 +873,7 @@ def test_kind_watch_mute_unmute_cli(tmp_path, capsys):
 def test_watch_run_cli_outputs_alerts_json(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
     lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00")
-    monkeypatch.setattr(lm.storage, "build_blocks", lambda keyword: example_blocks(keyword))
+    monkeypatch.setattr(lm.pipeline, "build_blocks", lambda keyword: example_blocks(keyword))
 
     assert lm.main(["watch", "run", "--db", str(db_path), "--alerts-json"]) == 0
     output = capsys.readouterr().out
@@ -892,7 +892,7 @@ def test_watch_run_continues_after_single_watch_failure(tmp_path, monkeypatch):
             raise OSError("network failed")
         return example_blocks(watch.keyword)
 
-    monkeypatch.setattr(lm.storage, "build_blocks_for_watch", fake_build)
+    monkeypatch.setattr(lm.pipeline, "build_blocks_for_watch", fake_build)
 
     alerts = lm.run_watches(str(db_path), now="2026-06-03T00:00:00+00:00")
     watches = lm.list_watches(str(db_path))
@@ -972,8 +972,8 @@ def test_watch_loop_argparse_validation():
 
 def test_artist_and_event_commands_are_separate_lanes(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
-    monkeypatch.setattr(lm.storage, "build_artist_blocks", lambda keyword: lm.AppBlocks(example_blocks(keyword).general_info, ()))
-    monkeypatch.setattr(lm.storage, "build_blocks", lambda keyword: example_blocks(keyword))
+    monkeypatch.setattr(lm.pipeline, "build_artist_blocks", lambda keyword: lm.AppBlocks(example_blocks(keyword).general_info, ()))
+    monkeypatch.setattr(lm.pipeline, "build_blocks", lambda keyword: example_blocks(keyword))
 
     assert lm.main(["artist", "add", "Artist Name", "--db", str(db_path)]) == 0
     assert lm.main(["event", "add", "Event Name", "--db", str(db_path)]) == 0
@@ -1299,7 +1299,7 @@ def test_public_manual_source_is_authoritative_and_skips_discovery(tmp_path, mon
     def fail_discovery(keyword):
         raise AssertionError("web discovery must be skipped when a public manual source exists")
 
-    monkeypatch.setattr(lm.storage, "build_blocks", fail_discovery)
+    monkeypatch.setattr(lm.pipeline, "build_blocks", fail_discovery)
     html = """
     <html><head><title>Example Official</title></head><body>
       <h1>Example</h1>
@@ -1308,7 +1308,7 @@ def test_public_manual_source_is_authoritative_and_skips_discovery(tmp_path, mon
       <p>受付期間 2026年6月10日 ～ 2026年6月18日</p>
     </body></html>
     """
-    monkeypatch.setattr(lm.storage, "fetch_page", lambda url: lm.parse_page(url, html))
+    monkeypatch.setattr(lm.pipeline, "fetch_page", lambda url: lm.parse_page(url, html))
 
     blocks = lm.build_blocks_for_watch(str(db_path), watch)
 
@@ -1335,7 +1335,7 @@ def test_public_manual_source_adds_ticket_round(tmp_path, monkeypatch):
       <p>受付期間 2026年6月10日 ～ 2026年6月18日</p>
     </body></html>
     """
-    monkeypatch.setattr(lm.storage, "fetch_page", lambda url: lm.parse_page(url, html))
+    monkeypatch.setattr(lm.pipeline, "fetch_page", lambda url: lm.parse_page(url, html))
 
     blocks = lm.build_blocks_for_watch(str(db_path), watch)
 
@@ -1593,7 +1593,7 @@ def test_artist_run_saves_multiple_discovered_events_under_artist_watch(tmp_path
         ),
         ticket_info=(),
     )
-    monkeypatch.setattr(lm.storage, "build_artist_event_blocks", lambda keyword: [second, first])
+    monkeypatch.setattr(lm.pipeline, "build_artist_event_blocks", lambda keyword: [second, first])
 
     lm.run_watches(str(db_path), now="2026-06-02T00:00:00+00:00", kind=lm.WATCH_KIND_ARTIST)
 
@@ -1629,7 +1629,7 @@ def test_artist_event_blocks_fall_back_to_ticket_portal_searches(monkeypatch):
 
 def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
-    monkeypatch.setattr(lm.storage, "build_blocks", lambda keyword: example_blocks(keyword))
+    monkeypatch.setattr(lm.pipeline, "build_blocks", lambda keyword: example_blocks(keyword))
     server = lm.create_web_server(str(db_path), 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

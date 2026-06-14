@@ -17,13 +17,14 @@ import json
 import sys
 from collections.abc import Sequence
 
-from chusennote import extract, models, netio, search, storage, util, web  # noqa: F401  (re-exported for monkeypatch targets)
+from chusennote import extract, models, netio, persistence, pipeline, search, util, web  # noqa: F401  (re-exported for monkeypatch targets)
 from chusennote.models import *  # noqa: F401,F403
 from chusennote.util import *  # noqa: F401,F403
 from chusennote.netio import *  # noqa: F401,F403
 from chusennote.search import *  # noqa: F401,F403
 from chusennote.extract import *  # noqa: F401,F403
-from chusennote.storage import *  # noqa: F401,F403
+from chusennote.persistence import *  # noqa: F401,F403
+from chusennote.pipeline import *  # noqa: F401,F403
 from chusennote.web import *  # noqa: F401,F403
 
 
