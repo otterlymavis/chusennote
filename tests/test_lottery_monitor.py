@@ -1477,14 +1477,14 @@ def test_web_command_parses_explicit_host():
 def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatch):
     db_path = tmp_path / "chusennote.sqlite3"
     monkeypatch.setattr(
-        lm,
+        lm.web,
         "search_web",
         lambda keyword, limit=8: (
             lm.SearchResult("Example Musical Official", "https://official.example/stage", "official event page"),
         ),
     )
     monkeypatch.setattr(
-        lm,
+        lm.web,
         "build_exact_event_blocks",
         lambda keyword, title, url, snippet="": example_blocks("Example Musical"),
     )
