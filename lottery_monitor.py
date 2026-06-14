@@ -2487,6 +2487,21 @@ def extract_ticket_price_items(text: str, limit: int = 6) -> tuple[str, ...]:
     return tuple(items)
 
 
+def format_evidence_snippet(value: object, limit: int = 180) -> str:
+    text = clean_text(str(value or ""))
+    text = re.sub(r"※【重要なお知らせ】[^＞>]*(?:＞＞|>>)?", " ", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = clean_text(text).strip(" ・:：。")
+    label_match = re.search(r"【[^】]*(?:抽選|先行|一般発売|発売|受付)[^】]*】", text)
+    if label_match and label_match.start() > 0:
+        text = text[label_match.start() :]
+    if not text:
+        return "none"
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
 def render_event_detail_page(db_path: str, event_id: int) -> str:
     event = event_detail(db_path, event_id)
     if not event:
@@ -2527,7 +2542,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
             <div><small>On sale</small><strong>{html.escape(str(ticket.get('general_sale_date') or 'unknown'))}</strong></div>
           </div>
           <p><small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))} · confidence {html.escape(str(ticket.get('confidence') or 'unknown'))}</small></p>
-          <p><small>Evidence: {html.escape(str(ticket.get('evidence') or 'none'))}</small></p>
+          <p><small>Evidence: {html.escape(format_evidence_snippet(ticket.get('evidence')))}</small></p>
           {web_source_link(ticket.get('url'), 'Open source')}
         </article>
         """

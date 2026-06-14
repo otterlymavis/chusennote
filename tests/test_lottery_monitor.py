@@ -200,6 +200,18 @@ def test_ticket_rule_extractor_merges_continuations_and_skips_notice_links():
     )
 
 
+def test_format_evidence_snippet_removes_notice_links_and_truncates():
+    evidence = "noise before label ※【重要なお知らせ】高額転売チケットに関する注意喚起 ＞＞ 【抽選先行】 2026年1月24日(土)12:00～2月1日(日)23:59 https://example.com/source " + ("details " * 40)
+
+    snippet = lm.format_evidence_snippet(evidence, limit=80)
+
+    assert "重要なお知らせ" not in snippet
+    assert "https://" not in snippet
+    assert snippet.startswith("【抽選先行】")
+    assert snippet.endswith("...")
+    assert len(snippet) <= 83
+
+
 def test_build_event_info_summary_keeps_ticket_price_notes():
     page = lm.parse_page(
         "https://official.example/stage",
