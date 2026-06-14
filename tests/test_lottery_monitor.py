@@ -1864,7 +1864,7 @@ def test_search_api_parses_brave_payload(monkeypatch):
             }
         }
 
-    monkeypatch.setattr(lm, "request_json", fake_request_json)
+    monkeypatch.setattr(lm.search, "request_json", fake_request_json)
     results = lm.search_api("ディア・エヴァン・ハンセン", limit=5)
 
     assert "api.search.brave.com" in captured["url"]
@@ -1875,7 +1875,7 @@ def test_search_api_parses_brave_payload(monkeypatch):
 
 def test_search_web_prefers_api_results_over_scraping(monkeypatch):
     monkeypatch.setattr(
-        lm,
+        lm.search,
         "search_api",
         lambda keyword, limit=8: [lm.SearchResult("api hit", "https://api.example/", "")],
     )
@@ -1883,7 +1883,7 @@ def test_search_web_prefers_api_results_over_scraping(monkeypatch):
     def fail_scrape(*args, **kwargs):
         raise AssertionError("HTML scraping should not run when the API returns results")
 
-    monkeypatch.setattr(lm, "request_html", fail_scrape)
+    monkeypatch.setattr(lm.search, "request_html", fail_scrape)
     results = lm.search_web("any keyword")
 
     assert [r.url for r in results] == ["https://api.example/"]
