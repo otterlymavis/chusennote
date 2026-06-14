@@ -13,22 +13,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
-import base64
-import hashlib
-import html
-import http.server
 import json
-import os
-import pathlib
-import re
-import shlex
-import sqlite3
 import sys
-import time
-import urllib.parse
-import urllib.request
-from collections.abc import Iterable, Sequence
-from html.parser import HTMLParser
+from collections.abc import Sequence
 
 from chusennote import extract, models, netio, search, storage, util, web  # noqa: F401  (re-exported for monkeypatch targets)
 from chusennote.models import *  # noqa: F401,F403
