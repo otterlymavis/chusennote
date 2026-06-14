@@ -2,8 +2,9 @@
 
 Turns a keyword into populated app blocks (web search -> official-page fetch ->
 event/ticket extraction) and runs batch passes over the watchlist, persisting
-results and emitting alerts. Builds on :mod:`chusennote.persistence`; that
-dependency is one-directional, so persistence has no knowledge of this module.
+results and emitting alerts. Builds on the persistence layer
+(:mod:`chusennote.schema`, :mod:`chusennote.crud`, :mod:`chusennote.read_models`);
+that dependency is one-directional, so persistence has no knowledge of this module.
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ from .util import *  # noqa: F401,F403
 from .netio import *  # noqa: F401,F403
 from .search import *  # noqa: F401,F403
 from .extract import *  # noqa: F401,F403
-from .persistence import *  # noqa: F401,F403
+from .schema import *  # noqa: F401,F403
+from .crud import *  # noqa: F401,F403
+from .read_models import *  # noqa: F401,F403
 
 
 def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = None) -> AppBlocks:

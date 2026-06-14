@@ -2,8 +2,8 @@
 
 Renders the dashboard, artist/event detail pages, and JSON/ICS API responses,
 and wires them into a ThreadingHTTPServer. Depends on the persistence and
-discovery layers (:mod:`chusennote.persistence`, :mod:`chusennote.pipeline`)
-plus the lower leaf modules.
+discovery layers (:mod:`chusennote.crud`, :mod:`chusennote.read_models`,
+:mod:`chusennote.pipeline`) plus the lower leaf modules.
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from .util import *  # noqa: F401,F403
 from .netio import *  # noqa: F401,F403
 from .search import *  # noqa: F401,F403
 from .extract import *  # noqa: F401,F403
-from .persistence import *  # noqa: F401,F403
+from .schema import *  # noqa: F401,F403
+from .crud import *  # noqa: F401,F403
+from .read_models import *  # noqa: F401,F403
 from .pipeline import *  # noqa: F401,F403
 
 
