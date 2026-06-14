@@ -2,6 +2,7 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 *.sqlite3
+*.sqlite3.backup-*
 history_logs/
 .venv/
 venv/
