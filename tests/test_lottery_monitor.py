@@ -395,6 +395,93 @@ def test_round_name_keeps_additional_performance_prefix():
     assert rounds[0].name == "追加公演・抽選先行"
 
 
+def test_extract_ticket_rounds_names_seat_selection_presale():
+    text = "先着 座席選択先行受付 受付期間:2026/3/14(土)10:00～2026/3/17(火)23:59 受付終了"
+    page = lm.Page("https://eplus.jp/example/", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+
+    assert any(round_.name == "座席選択先行受付" for round_ in rounds)
+    assert all(not round_.name.startswith("Lottery round") for round_ in rounds)
+
+
+def test_extract_ticket_rounds_drops_legal_text_without_application_signal():
+    # Terms-of-service prose mentions 抽選販売 and a date but is not a real round.
+    text = (
+        "第4条：(利用料金・支払い) お客様は、抽選販売サービスの利用によりチケットを購入した場合には、"
+        "各種手数料を購入時に支払うものとします。決済の完了をもって契約が成立します。 2026年1月1日 改定"
+    )
+    page = lm.Page("https://ticket.tv-asahi.co.jp/ex/project/example", "Terms", text, ())
+
+    assert lm.extract_ticket_rounds(page) == ()
+
+
+def test_save_blocks_prunes_vanished_round_within_same_platform(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    base = example_blocks("Example").general_info
+    first = lm.AppBlocks(
+        general_info=base,
+        ticket_info=(
+            lm.TicketRound(source="pia", platform="pia", url="https://t.pia.jp/example", name="第1次抽選先行", lottery_start="2026-06-10", lottery_end="2026-06-18"),
+            lm.TicketRound(source="pia", platform="pia", url="https://t.pia.jp/example", name="第2次抽選先行", lottery_start="2026-07-10", lottery_end="2026-07-18"),
+        ),
+    )
+    lm.save_blocks(str(db_path), first, now="2026-06-01T00:00:00+00:00")
+
+    # The second round disappears from the source on the next pass.
+    second = lm.AppBlocks(general_info=base, ticket_info=(first.ticket_info[0],))
+    lm.save_blocks(str(db_path), second, now="2026-06-02T00:00:00+00:00")
+
+    with sqlite3.connect(db_path) as connection:
+        names = [row[0] for row in connection.execute("SELECT name FROM ticket_rounds ORDER BY name")]
+
+    assert names == ["第1次抽選先行"]
+
+
+def test_save_blocks_keeps_rounds_for_platform_absent_from_new_save(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    base = example_blocks("Example").general_info
+    first = lm.AppBlocks(
+        general_info=base,
+        ticket_info=(
+            lm.TicketRound(source="pia", platform="pia", url="https://t.pia.jp/example", name="第1次抽選先行", lottery_start="2026-06-10", lottery_end="2026-06-18"),
+            lm.TicketRound(source="eplus", platform="eplus", url="https://eplus.jp/example", name="一般発売", general_sale_date="2026-07-04"),
+        ),
+    )
+    lm.save_blocks(str(db_path), first, now="2026-06-01T00:00:00+00:00")
+
+    # A transient eplus fetch failure yields no eplus rounds; its data must survive.
+    second = lm.AppBlocks(general_info=base, ticket_info=(first.ticket_info[0],))
+    lm.save_blocks(str(db_path), second, now="2026-06-02T00:00:00+00:00")
+
+    with sqlite3.connect(db_path) as connection:
+        platforms = sorted(row[0] for row in connection.execute("SELECT platform FROM ticket_rounds"))
+
+    assert platforms == ["eplus", "pia"]
+
+
+def test_db_cleanup_removes_legacy_fetch_failed_rounds(tmp_path, capsys):
+    db_path = tmp_path / "chusennote.sqlite3"
+    lm.save_blocks(str(db_path), example_blocks("Example"), now="2026-06-04T00:00:00+00:00")
+    with sqlite3.connect(db_path) as connection:
+        event_id = connection.execute("SELECT id FROM events LIMIT 1").fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO ticket_rounds(event_id, round_key, source, url, name, confidence, status, round_type, membership_required, created_at, updated_at)
+            VALUES (?, 'legacy-ff', 'eplus', 'https://eplus.jp/dead/', 'Fetch failed', 50, 'unknown', 'unknown', 'unknown', '2026-06-03', '2026-06-03')
+            """,
+            (event_id,),
+        )
+
+    assert lm.main(["db", "cleanup", "--db", str(db_path), "--json"]) == 0
+    counts = json.loads(capsys.readouterr().out)
+
+    assert counts["ticket_rounds"] >= 1
+    with sqlite3.connect(db_path) as connection:
+        remaining = connection.execute("SELECT COUNT(*) FROM ticket_rounds WHERE name = 'Fetch failed'").fetchone()[0]
+    assert remaining == 0
+
+
 def test_fetch_ticket_link_rounds_skips_unreachable_links_without_placeholder(monkeypatch):
     links = (lm.Link("ｅ＋", "https://eplus.jp/dead/"), lm.Link("Pia", "https://t.pia.jp/live/"))
 

@@ -456,26 +456,53 @@ ROUND_NAME_LABELS = (
     "追加公演・先着先行",
     "追加公演・一般発売",
     "追加公演・一般前売",
+    "座席選択先行受付",
+    "座席選択先行",
     "先行抽選エントリー",
     "先行抽選",
     "抽選先行",
     "先行先着販売",
+    "先着先行受付",
     "先着先行",
+    "先行先着",
     "会員先行予約",
     "四季の会会員先行",
+    "オフィシャル先行",
+    "オフィシャル抽選",
+    "ファンクラブ先行",
+    "プレリザーブ",
+    "プレオーダー",
     "先行予約",
+    "先行受付",
     "一般前売",
     "一般発売",
 )
 
+# Keywords that mark a genuine application or sale window. A date-bearing
+# context that matches none of these (and carries no round label) is incidental
+# noise — e.g. terms-of-service prose that merely mentions 抽選販売 — and must
+# not become a round.
+APPLICATION_SIGNAL_LABELS = ("受付期間", "申込期間", "申込受付", "エントリー", "受付開始", "お申し込み", "申込開始")
+GENERAL_SALE_SIGNAL_LABELS = ("発売日", "一般発売", "一般前売", "発売開始", "販売開始")
 
-def round_name_from_context(context: str, fallback: str) -> str:
+
+def application_round_name(context: str) -> str | None:
+    """A readable name for a labelled-but-untyped round, from its sale signal."""
+    if any(label in context for label in APPLICATION_SIGNAL_LABELS):
+        return "先行受付"
+    if any(label in context for label in GENERAL_SALE_SIGNAL_LABELS):
+        return "一般発売"
+    return None
+
+
+def round_name_from_context(context: str, fallback: str | None = None) -> str | None:
     """Name a round from the label that governs its dates.
 
     A context window often spans several rounds, so a fixed-priority scan can
     return a label that belongs to a *different* round (e.g. tagging a 抽選先行
     block as 先着先行). Instead, pick the label nearest to — and preferably
     before — the first date in the window, which is the one introducing it.
+    Returns ``fallback`` (default ``None``) when no round label is present.
     """
     date_match = DATE_RE.search(context)
     date_pos = date_match.start() if date_match else len(context)
@@ -514,7 +541,7 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     contexts = contexts + context_windows(page.text, ROUND_CONTEXT_HINTS)
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
-    for index, context in enumerate(contexts, start=1):
+    for context in contexts:
         start, end = extract_range_after_label(
             context,
             ADVANCE_RANGE_LABELS,
@@ -530,7 +557,11 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
         payment_deadline = payment_deadline or extract_first_date(context, ("入金", "支払", "支払い", "支払期限", "入金締切"))
         if not any((start, end, results_date, general_sale_date, payment_deadline)):
             continue
-        name = round_name_from_context(context, f"Lottery round {index}")
+        # Require a round label or a real application/sale signal. A date that
+        # carries neither is incidental noise (legal/terms prose), not a round.
+        name = round_name_from_context(context) or application_round_name(context)
+        if not name:
+            continue
         if "一般発売" in name or "一般前売" in name:
             start, end = None, None
             membership_rounds = ()

@@ -393,6 +393,10 @@ def cleanup_database(db_path: str) -> dict[str, int]:
                 """
             )
             counts[table] += cursor.rowcount if cursor.rowcount >= 0 else 0
+        # Legacy "Fetch failed" placeholder rounds are no longer written; remove
+        # any that linger from older runs.
+        cursor = connection.execute("DELETE FROM ticket_rounds WHERE name = 'Fetch failed'")
+        counts["ticket_rounds"] += cursor.rowcount if cursor.rowcount >= 0 else 0
         stale_sources = connection.execute(
             """
             SELECT id, url, label
@@ -799,9 +803,13 @@ def upsert_ticket_rounds(
     now: str,
 ) -> list[dict[str, str]]:
     alerts: list[dict[str, str]] = []
+    current_keys: set[str] = set()
+    current_platforms: set[str] = set()
     for ticket in dedupe_ticket_rounds(rounds, parse_iso_date(now)):
         ticket = normalize_ticket_round(ticket, parse_iso_date(now))
         round_key = ticket_round_key(ticket)
+        current_keys.add(round_key)
+        current_platforms.add(ticket.platform or ticket.source or "")
         previous = connection.execute(
             """
             SELECT lottery_start, lottery_end, results_date, general_sale_date, payment_deadline,
@@ -892,7 +900,36 @@ def upsert_ticket_rounds(
                         "url": ticket.url,
                     }
                 )
+    prune_stale_ticket_rounds(connection, event_id, current_keys, current_platforms)
     return alerts
+
+
+def prune_stale_ticket_rounds(
+    connection: sqlite3.Connection,
+    event_id: int,
+    current_keys: set[str],
+    current_platforms: set[str],
+) -> int:
+    """Drop rounds that vanished from a re-saved event.
+
+    Pruning is scoped to the platforms present in this save so a transient
+    fetch failure (which yields no rounds for a platform) cannot wipe a
+    platform's previously captured rounds.
+    """
+    if not current_keys or not current_platforms:
+        return 0
+    key_slots = ",".join("?" * len(current_keys))
+    platform_slots = ",".join("?" * len(current_platforms))
+    cursor = connection.execute(
+        f"""
+        DELETE FROM ticket_rounds
+        WHERE event_id = ?
+          AND COALESCE(platform, source, '') IN ({platform_slots})
+          AND round_key NOT IN ({key_slots})
+        """,
+        (event_id, *current_platforms, *current_keys),
+    )
+    return cursor.rowcount
 
 
 def save_snapshot(connection: sqlite3.Connection, event_id: int, blocks: AppBlocks, now: str) -> None:
