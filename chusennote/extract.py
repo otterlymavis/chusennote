@@ -451,19 +451,61 @@ def extract_first_date_after_label(text: str, labels: Sequence[str]) -> str | No
     return None
 
 
+ROUND_NAME_LABELS = (
+    "追加公演・抽選先行",
+    "追加公演・先着先行",
+    "追加公演・一般発売",
+    "追加公演・一般前売",
+    "先行抽選エントリー",
+    "先行抽選",
+    "抽選先行",
+    "先行先着販売",
+    "先着先行",
+    "会員先行予約",
+    "四季の会会員先行",
+    "先行予約",
+    "一般前売",
+    "一般発売",
+)
+
+
 def round_name_from_context(context: str, fallback: str) -> str:
-    if not ("第" in context and "次" in context):
-        for label in ("追加公演・先着先行", "先着先行", "先行先着販売", "会員先行予約", "先行予約", "追加公演・抽選先行", "抽選先行", "一般発売"):
-            if label in context:
-                return label
-    for pattern in ROUND_LABEL_PATTERNS:
-        match = re.search(pattern, context, flags=re.IGNORECASE)
-        if match:
-            return clean_text(match.group(0))
-    for label in ("追加公演・先着先行", "先着先行", "先行先着販売", "会員先行予約", "先行予約", "追加公演・抽選先行", "抽選先行", "一般発売"):
-        if label in context:
-            return label
-    return fallback
+    """Name a round from the label that governs its dates.
+
+    A context window often spans several rounds, so a fixed-priority scan can
+    return a label that belongs to a *different* round (e.g. tagging a 抽選先行
+    block as 先着先行). Instead, pick the label nearest to — and preferably
+    before — the first date in the window, which is the one introducing it.
+    """
+    date_match = DATE_RE.search(context)
+    date_pos = date_match.start() if date_match else len(context)
+
+    spans: list[tuple[int, int, str]] = []
+    numbered = re.search(r"第\s*[0-9０-９一二三四五六七八九十]+\s*次\s*(?:抽選)?\s*先行", context)
+    if numbered:
+        spans.append((numbered.start(), numbered.end(), clean_text(numbered.group(0))))
+    for label in ROUND_NAME_LABELS:
+        pos = context.find(label)
+        if pos != -1:
+            spans.append((pos, pos + len(label), label))
+    if not spans:
+        return fallback
+
+    # Drop a label whose span sits entirely inside a more specific one so that
+    # "追加公演・抽選先行" wins over the bare "抽選先行" it contains.
+    candidates = [
+        (start, name)
+        for start, end, name in spans
+        if not any(
+            other_start <= start and end <= other_end and (other_start, other_end) != (start, end)
+            for other_start, other_end, _ in spans
+        )
+    ]
+
+    before = [(date_pos - start, name) for start, name in candidates if start <= date_pos]
+    if before:
+        return min(before)[1]
+    return min((start - date_pos, name) for start, name in candidates)[1]
 
 
 def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:

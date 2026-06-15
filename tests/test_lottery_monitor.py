@@ -365,6 +365,34 @@ def test_extract_ticket_rounds_reads_toho_advance_sale_labels():
     assert any(round_.general_sale_date == "2026-04-05" for round_ in rounds)
 
 
+def test_round_name_uses_label_governing_the_date_not_global_priority():
+    # A single window holds two rounds: the 3/18 dates belong to 抽選先行 and the
+    # 3/30 dates to 先着先行. The name must follow the nearest preceding label
+    # rather than a fixed priority that would tag both as 先着先行.
+    text = (
+        "ホリプロステージで購入 【抽選先行】 "
+        "2026年2月28日(土)12:00～3月15日(日)23:59 "
+        "【先着先行】 3月20日(金)11:00～3月25日(水)23:59 "
+        "【一般発売】 3月18日(水)11:00～"
+    )
+    page = lm.Page("https://horipro-stage.jp/stage/example/", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+    by_dates = {(round_.lottery_start, round_.lottery_end): round_.name for round_ in rounds}
+
+    assert by_dates.get(("2026-02-28", "2026-03-15")) == "抽選先行"
+    assert by_dates.get(("2026-03-20", "2026-03-25")) == "先着先行"
+
+
+def test_round_name_keeps_additional_performance_prefix():
+    text = "【追加公演・抽選先行】 2026年4月25日(土)10:00～5月10日(日)23:59"
+    page = lm.Page("https://horipro-stage.jp/stage/example/", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+
+    assert rounds[0].name == "追加公演・抽選先行"
+
+
 def test_render_blocks_has_two_expected_app_blocks():
     blocks = lm.AppBlocks(
         general_info=lm.EventInfo(
