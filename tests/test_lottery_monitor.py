@@ -395,6 +395,76 @@ def test_render_blocks_has_two_expected_app_blocks():
     assert "第1次抽選先行" in rendered
 
 
+def test_dedupe_ticket_rounds_sorts_newest_first():
+    older = lm.TicketRound(
+        source="pia",
+        url="https://t.pia.jp/older",
+        name="第1次抽選先行",
+        lottery_start="2026-01-10",
+        lottery_end="2026-01-18",
+    )
+    newer = lm.TicketRound(
+        source="eplus",
+        url="https://eplus.jp/newer",
+        name="一般発売",
+        general_sale_date="2026-07-04",
+    )
+    middle = lm.TicketRound(
+        source="lawson",
+        url="https://l-tike.com/middle",
+        name="第2次抽選先行",
+        lottery_start="2026-03-01",
+        lottery_end="2026-03-08",
+    )
+
+    deduped = lm.dedupe_ticket_rounds((older, newer, middle), today=dt.date(2026, 6, 13))
+
+    assert [round_.url for round_ in deduped] == [
+        "https://eplus.jp/newer",
+        "https://l-tike.com/middle",
+        "https://t.pia.jp/older",
+    ]
+
+
+def test_build_blocks_gathers_rounds_from_official_page_and_ticket_links(monkeypatch):
+    keyword = "Example Stage"
+    results = [lm.SearchResult("Example Stage Official", "https://official.example/stage", keyword)]
+    official_html = """
+    <html><head><title>Example Stage Official</title></head><body>
+      <h1>Example Stage</h1>
+      <p>公演日 2026年8月10日 会場 Example Hall</p>
+      <section>
+        <h2>第1次抽選先行</h2>
+        <p>受付期間 2026年6月10日(水) ～ 2026年6月18日(木)</p>
+      </section>
+      <a href="https://t.pia.jp/example">ぴあ 一般発売はこちら</a>
+    </body></html>
+    """
+    pia_html = """
+    <html><head><title>Pia</title></head><body>
+      <section>
+        <h2>一般発売</h2>
+        <p>発売日 2026/07/04 10:00</p>
+      </section>
+    </body></html>
+    """
+
+    def fake_fetch(url):
+        if url == "https://official.example/stage":
+            return lm.parse_page(url, official_html)
+        if url == "https://t.pia.jp/example":
+            return lm.parse_page(url, pia_html)
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    monkeypatch.setattr(lm.pipeline, "fetch_page", fake_fetch)
+
+    blocks = lm.build_blocks(keyword, search_results=results)
+
+    names = {round_.name for round_ in blocks.ticket_info}
+    assert "第1次抽選先行" in names
+    assert any(round_.general_sale_date == "2026-07-04" for round_ in blocks.ticket_info)
+
+
 def test_render_event_card_does_not_link_keyword_fallback_url():
     rendered = lm.render_event_card(
         {
@@ -1517,6 +1587,60 @@ def test_public_manual_source_adds_ticket_round(tmp_path, monkeypatch):
 
     assert blocks.ticket_info[0].platform == "lawson"
     assert blocks.ticket_info[0].application_end_at == "2026-06-18"
+
+
+def test_public_manual_source_fetches_discovered_ticket_links(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00", kind=lm.WATCH_KIND_EVENT)
+    lm.add_watch_source(str(db_path), "Example", "https://official.example/stage", "Official", private_note=False)
+    official_html = """
+    <html><head><title>Example Official</title></head><body>
+      <h1>Example</h1>
+      <a href="https://eplus.jp/example/">eplus</a>
+      <a href="https://w.pia.jp/t/example/">Pia</a>
+    </body></html>
+    """
+    ticket_html = """
+    <html><body>
+      <h2>先着先行</h2>
+      <p>ゴールド会員：2月28日(土)12:00～3月15日(日)23:59</p>
+    </body></html>
+    """
+
+    def fake_fetch(url):
+        return lm.parse_page(url, ticket_html if "eplus.jp" in url or "w.pia.jp" in url else official_html)
+
+    monkeypatch.setattr(lm.pipeline, "fetch_page", fake_fetch)
+
+    blocks = lm.build_blocks_for_watch(str(db_path), watch)
+
+    assert {round_.platform for round_ in blocks.ticket_info} >= {"eplus", "pia"}
+    assert all("ゴールド会員" in round_.name for round_ in blocks.ticket_info if round_.platform in {"eplus", "pia"})
+
+
+def test_recent_events_sorts_lottery_rounds_latest_to_oldest(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Event",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(source="pia", platform="pia", url="https://w.pia.jp/t/example/", name="Old", lottery_start="2026-02-01", lottery_end="2026-02-10"),
+            lm.TicketRound(source="eplus", platform="eplus", url="https://eplus.jp/example/", name="New", lottery_start="2026-05-01", lottery_end="2026-05-10"),
+            lm.TicketRound(source="lawson", platform="lawson", url="https://l-tike.com/example/", name="Middle", lottery_start="2026-03-01", lottery_end="2026-03-10"),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-04T00:00:00+00:00")
+
+    event = lm.recent_events(str(db_path))[0]
+
+    assert [round_["name"] for round_ in event["rounds"]] == ["New", "Middle", "Old"]
 
 
 def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path, capsys):

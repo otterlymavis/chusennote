@@ -719,6 +719,20 @@ def normalize_ticket_round(ticket: TicketRound, today: dt.date | None = None) ->
     return dataclasses.replace(normalized, status=compute_ticket_status(normalized, today))
 
 
+def ticket_round_latest_ordinal(ticket: TicketRound) -> int:
+    """Latest known date on a round as an ordinal, for newest-first sorting."""
+    candidates = (
+        ticket.application_start_at or ticket.lottery_start,
+        ticket.application_end_at or ticket.lottery_end,
+        ticket.results_date,
+        ticket.general_sale_date,
+        ticket.payment_end_at or ticket.payment_deadline,
+    )
+    parsed = [parse_iso_date(value) for value in candidates if value]
+    valid = [date for date in parsed if date]
+    return max(valid).toordinal() if valid else 0
+
+
 def dedupe_ticket_rounds(rounds: Sequence[TicketRound], today: dt.date | None = None) -> tuple[TicketRound, ...]:
     deduped: list[TicketRound] = []
     seen: set[tuple[str, str, str, str | None, str | None, str | None, str | None]] = set()
@@ -737,4 +751,11 @@ def dedupe_ticket_rounds(rounds: Sequence[TicketRound], today: dt.date | None = 
             continue
         seen.add(key)
         deduped.append(normalized)
+    deduped.sort(
+        key=lambda ticket: (
+            -ticket_round_latest_ordinal(ticket),
+            ticket.platform or ticket.source or "",
+            ticket.name or "",
+        )
+    )
     return tuple(deduped)

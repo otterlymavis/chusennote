@@ -63,6 +63,21 @@ def event_match_reasons(event: dict[str, object]) -> list[str]:
     return reasons
 
 
+def round_latest_date_ordinal(round_info: dict[str, object]) -> int:
+    dates = [
+        parse_iso_date(str(round_info.get(field) or ""))
+        for field in (
+            "application_start_at",
+            "application_end_at",
+            "results_date",
+            "general_sale_date",
+            "payment_end_at",
+        )
+    ]
+    valid_dates = [date for date in dates if date]
+    return max(valid_dates).toordinal() if valid_dates else 0
+
+
 def recent_events(
     db_path: str,
     limit: int = 50,
@@ -116,6 +131,32 @@ def recent_events(
                 """,
                 (row[0],),
             ).fetchall()
+            round_items = [
+                {
+                    "name": ticket[0],
+                    "platform": ticket[1],
+                    "url": ticket[2],
+                    "application_start_at": ticket[3],
+                    "application_end_at": ticket[4],
+                    "results_date": ticket[5],
+                    "general_sale_date": ticket[6],
+                    "payment_end_at": ticket[7],
+                    "status": ticket[8],
+                    "confidence": ticket[9],
+                    "round_type": ticket[10],
+                    "membership_required": ticket[11],
+                    "evidence": ticket[12],
+                }
+                for ticket in rounds
+                if not is_noisy_url(ticket[2])
+            ]
+            round_items.sort(
+                key=lambda ticket: (
+                    -round_latest_date_ordinal(ticket),
+                    str(ticket.get("platform") or ""),
+                    str(ticket.get("name") or ""),
+                )
+            )
             event = {
                     "id": row[0],
                     "watch_id": row[1],
@@ -140,25 +181,7 @@ def recent_events(
                         if is_actionable_ticket_link(str(link[1]), str(link[0] or ""))
                     ],
                     "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
-                    "rounds": [
-                        {
-                            "name": ticket[0],
-                            "platform": ticket[1],
-                            "url": ticket[2],
-                            "application_start_at": ticket[3],
-                            "application_end_at": ticket[4],
-                            "results_date": ticket[5],
-                            "general_sale_date": ticket[6],
-                            "payment_end_at": ticket[7],
-                            "status": ticket[8],
-                            "confidence": ticket[9],
-                            "round_type": ticket[10],
-                            "membership_required": ticket[11],
-                            "evidence": ticket[12],
-                        }
-                        for ticket in rounds
-                        if not is_noisy_url(ticket[2])
-                    ],
+                    "rounds": round_items,
                 }
             event["match_reasons"] = event_match_reasons(event)
             events.append(event)

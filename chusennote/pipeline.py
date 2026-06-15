@@ -38,14 +38,25 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
 
     event_info = build_event_info(keyword, official_pages)
     rounds: list[TicketRound] = []
-    for link in event_info.ticket_links:
+    for page in official_pages:
+        rounds.extend(extract_ticket_rounds_for_page(page))
+    rounds.extend(fetch_ticket_link_rounds(event_info.ticket_links))
+    return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
+
+
+def fetch_ticket_link_rounds(links: Sequence[Link]) -> list[TicketRound]:
+    rounds: list[TicketRound] = []
+    for link in links:
         if is_portal_search_url(link.url):
             continue
+        platform = source_name_for_url(link.url)
         try:
-            rounds.extend(extract_ticket_rounds_for_page(fetch_page(link.url)))
+            fetched_rounds = extract_ticket_rounds_for_page(fetch_page(link.url))
         except (OSError, ValueError):
-            rounds.append(TicketRound(source=source_name_for_url(link.url), url=link.url, name="Fetch failed", evidence=link.label))
-    return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
+            rounds.append(TicketRound(source=platform, platform=platform, url=link.url, name="Fetch failed", evidence=link.label))
+            continue
+        rounds.extend(fetched_rounds)
+    return rounds
 
 
 def build_exact_event_blocks(keyword: str, title: str, url: str, snippet: str = "") -> AppBlocks:
@@ -54,13 +65,7 @@ def build_exact_event_blocks(keyword: str, title: str, url: str, snippet: str = 
     if not event_info.title:
         event_info = dataclasses.replace(event_info, title=title or page.title)
     rounds: list[TicketRound] = list(extract_ticket_rounds_for_page(page))
-    for link in event_info.ticket_links:
-        if is_portal_search_url(link.url):
-            continue
-        try:
-            rounds.extend(extract_ticket_rounds_for_page(fetch_page(link.url)))
-        except (OSError, ValueError):
-            rounds.append(TicketRound(source=source_name_for_url(link.url), url=link.url, name="Fetch failed", evidence=link.label))
+    rounds.extend(fetch_ticket_link_rounds(event_info.ticket_links))
     if snippet and not event_info.summary:
         event_info = dataclasses.replace(event_info, summary=snippet)
     return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(tuple(rounds)))
@@ -166,7 +171,8 @@ def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
     existing_urls = {link.url for link in info.ticket_links}
     merged_links = info.ticket_links + tuple(link for link in manual_links if link.url not in existing_urls)
     merged_info = dataclasses.replace(info, ticket_links=merged_links)
-    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(base_rounds + tuple(extra_rounds)))
+    ticket_link_rounds = fetch_ticket_link_rounds(info.ticket_links)
+    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(base_rounds + tuple(extra_rounds) + tuple(ticket_link_rounds)))
 
 
 def comma_values(value: str) -> tuple[str, ...]:
