@@ -371,6 +371,24 @@ def delete_stale_keyword_fallback_events(connection: sqlite3.Connection, watch_i
         connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
 
+def delete_stale_search_fallback_events(connection: sqlite3.Connection, watch_id: int, current_event_id: int) -> None:
+    """Remove a "ticket search" portal-search fallback once a real event exists.
+
+    The artist lane saves a portal-search link only when no shows are found;
+    once a genuine event is discovered for the watch, that fallback is stale.
+    """
+    rows = connection.execute(
+        "SELECT id, official_url FROM events WHERE watch_id = ? AND id != ?",
+        (watch_id, current_event_id),
+    ).fetchall()
+    for event_id, official_url in rows:
+        if not is_portal_search_url(str(official_url)):
+            continue
+        for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
+            connection.execute(f"DELETE FROM {table} WHERE event_id = ?", (int(event_id),))
+        connection.execute("DELETE FROM events WHERE id = ?", (int(event_id),))
+
+
 def cleanup_database(db_path: str) -> dict[str, int]:
     with sqlite3.connect(db_path) as connection:
         init_db(connection)
@@ -953,6 +971,8 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_i
         event_id, new_event = upsert_event(connection, watch_id, info, normalized_rounds, timestamp)
         if info.official_page and is_web_url(info.official_page):
             delete_stale_keyword_fallback_events(connection, watch_id, event_id)
+            if not is_portal_search_url(info.official_page):
+                delete_stale_search_fallback_events(connection, watch_id, event_id)
         event_title = info.title or info.keyword
         alerts: list[dict[str, str]] = []
         if new_event and info.official_page:

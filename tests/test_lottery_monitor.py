@@ -453,6 +453,45 @@ def test_round_name_keeps_additional_performance_prefix():
     assert rounds[0].name == "追加公演・抽選先行"
 
 
+def test_save_blocks_prunes_search_fallback_once_real_show_exists(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "YOASOBI", kind=lm.WATCH_KIND_ARTIST, now="2026-06-01T00:00:00+00:00")
+    # First pass found no shows: only the portal-search fallback is saved.
+    fallback = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="YOASOBI",
+            official_page="https://t.pia.jp/pia/search_all.do?kw=YOASOBI",
+            title="YOASOBI ticket search",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    lm.save_blocks(str(db_path), fallback, now="2026-06-02T00:00:00+00:00", watch_id=watch.id)
+
+    # A later pass discovers a real tour; the stale fallback must be removed.
+    show = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="YOASOBI",
+            official_page="https://www.yoasobi-music.jp/live#20261024-aaa111",
+            title="YOASOBI ASIA TOUR 2026",
+            summary="2026-10-24",
+            event_dates=("2026年10月24日",),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    lm.save_blocks(str(db_path), show, now="2026-06-03T00:00:00+00:00", watch_id=watch.id)
+
+    with sqlite3.connect(db_path) as connection:
+        titles = [row[0] for row in connection.execute("SELECT canonical_title FROM events WHERE watch_id = ?", (watch.id,))]
+
+    assert titles == ["YOASOBI ASIA TOUR 2026"]
+
+
 def test_clear_performance_window_rounds_nulls_show_run_dates():
     # tv-asahi prints the show's run beside a lottery label; it must not be kept
     # as the application window, while a genuine lottery window is preserved.
