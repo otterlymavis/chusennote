@@ -172,22 +172,45 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         for link in event.get("ticket_links", [])
     ) or "<li>No ticket links saved yet.</li>"
     def render_round_card(ticket: dict[str, object]) -> str:
+        # Render only the facts that have a value: a general-sale round carries
+        # just a sale date, and many lottery rounds never publish result/payment
+        # dates, so a fixed grid would be mostly "unknown".
+        facts: list[tuple[str, str]] = [("Platform", str(ticket.get("platform") or ticket.get("source") or "unknown"))]
+        for label, key in (
+            ("Lottery opens", "application_start_at"),
+            ("Lottery closes", "application_end_at"),
+            ("Results", "results_date"),
+            ("Payment due", "payment_end_at"),
+            ("On sale", "general_sale_date"),
+        ):
+            value = clean_text(str(ticket.get(key) or ""))
+            if value:
+                facts.append((label, value))
+        fact_grid = "".join(
+            f"<div><small>{html.escape(label)}</small><strong>{html.escape(value)}</strong></div>"
+            for label, value in facts
+        )
+        meta_parts: list[str] = []
+        round_type = clean_text(str(ticket.get("round_type") or ""))
+        if round_type and round_type != "unknown":
+            meta_parts.append(f"Type: {html.escape(round_type)}")
+        membership = clean_text(str(ticket.get("membership_required") or ""))
+        if membership and membership != "unknown":
+            meta_parts.append(f"membership: {html.escape(membership)}")
+        if ticket.get("confidence"):
+            meta_parts.append(f"confidence {html.escape(str(ticket.get('confidence')))}")
+        meta_line = f"<p><small>{' · '.join(meta_parts)}</small></p>" if meta_parts else ""
+        evidence_snippet = format_evidence_snippet(ticket.get("evidence"))
+        evidence_line = f"<p><small>Evidence: {html.escape(evidence_snippet)}</small></p>" if evidence_snippet != "none" else ""
         return f"""
         <article class="round-card">
           <div class="round-head">
             <h3>{html.escape(str(ticket.get('name') or 'Ticket round'))}</h3>
             <span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span>
           </div>
-          <div class="fact-grid">
-            <div><small>Platform</small><strong>{html.escape(str(ticket.get('platform') or 'unknown'))}</strong></div>
-            <div><small>Lottery opens</small><strong>{html.escape(str(ticket.get('application_start_at') or 'unknown'))}</strong></div>
-            <div><small>Lottery closes</small><strong>{html.escape(str(ticket.get('application_end_at') or 'unknown'))}</strong></div>
-            <div><small>Results</small><strong>{html.escape(str(ticket.get('results_date') or 'unknown'))}</strong></div>
-            <div><small>Payment due</small><strong>{html.escape(str(ticket.get('payment_end_at') or 'unknown'))}</strong></div>
-            <div><small>On sale</small><strong>{html.escape(str(ticket.get('general_sale_date') or 'unknown'))}</strong></div>
-          </div>
-          <p><small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))} · confidence {html.escape(str(ticket.get('confidence') or 'unknown'))}</small></p>
-          <p><small>Evidence: {html.escape(format_evidence_snippet(ticket.get('evidence')))}</small></p>
+          <div class="fact-grid">{fact_grid}</div>
+          {meta_line}
+          {evidence_line}
           {web_source_link(ticket.get('url'), 'Open source')}
         </article>
         """

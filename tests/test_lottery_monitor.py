@@ -1993,7 +1993,10 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Ticket Price" in detail
         assert "Ticket Links" in detail
         assert "Lottery Rounds" in detail
-        assert "Evidence:" in detail
+        # Only populated facts render: this round has application dates but no
+        # payment date, so that label is omitted rather than shown blank.
+        assert "Lottery opens" in detail
+        assert "Payment due" not in detail
         assert "event Example" not in home
         assert health["status"] == "ok"
         assert health["tracked_events"] >= 1
@@ -2069,8 +2072,10 @@ def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatc
         assert "第1次抽選先行" in detail
         assert "Lottery opens" in detail
         assert "Lottery closes" in detail
-        assert "Payment due" in detail
-        assert "On sale" in detail
+        # This round has no payment or general-sale date, so those facts are
+        # omitted instead of rendered as blank "unknown" cells.
+        assert "Payment due" not in detail
+        assert "On sale" not in detail
     finally:
         server.shutdown()
         thread.join(timeout=5)
