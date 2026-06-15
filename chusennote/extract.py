@@ -384,6 +384,61 @@ ADVANCE_RANGE_LABELS = (
 )
 
 
+MEMBERSHIP_RANGE_LABELS = (
+    "ゴールド会員",
+    "レギュラー会員",
+    "シルバー会員",
+    "プレミアム会員",
+    "FC会員",
+    "ファンクラブ会員",
+    "有料会員",
+    "無料会員",
+    "非会員",
+    "会員登録なし",
+    "会員登録不要",
+)
+
+
+def membership_rounds_from_context(
+    context: str,
+    base_name: str,
+    source: str,
+    url: str,
+    results_date: str | None = None,
+    general_sale_date: str | None = None,
+    payment_deadline: str | None = None,
+) -> tuple[TicketRound, ...]:
+    unicode_date_token = r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
+    label_pattern = "|".join(re.escape(label) for label in MEMBERSHIP_RANGE_LABELS)
+    range_pattern = re.compile(
+        rf"(?P<label>{label_pattern})[：:]\s*(?P<range>{unicode_date_token}(?:(?!{unicode_date_token}).){{0,60}}[〜～~–—](?:(?!{unicode_date_token}).){{0,60}}{unicode_date_token})"
+    )
+    rounds: list[TicketRound] = []
+    seen: set[tuple[str, str | None, str | None]] = set()
+    for match in range_pattern.finditer(context):
+        label = clean_text(match.group("label"))
+        start, end = extract_range(match.group("range"))
+        name = f"{base_name} / {label}" if base_name and label not in base_name else label
+        key = (name, start, end)
+        if key in seen:
+            continue
+        seen.add(key)
+        rounds.append(
+            TicketRound(
+                source=source,
+                url=url,
+                name=name,
+                lottery_start=start,
+                lottery_end=end,
+                results_date=results_date,
+                general_sale_date=general_sale_date,
+                payment_deadline=payment_deadline,
+                evidence=context[:260],
+            )
+        )
+    return tuple(rounds)
+
+
 def extract_first_date_after_label(text: str, labels: Sequence[str]) -> str | None:
     for label in labels:
         for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
@@ -436,6 +491,25 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
         name = round_name_from_context(context, f"Lottery round {index}")
         if "一般発売" in name or "一般前売" in name:
             start, end = None, None
+            membership_rounds = ()
+        else:
+            membership_rounds = membership_rounds_from_context(
+                context,
+                name,
+                source_name_for_url(page.url),
+                page.url,
+                results_date=results_date,
+                general_sale_date=general_sale_date,
+                payment_deadline=payment_deadline,
+            )
+        if membership_rounds:
+            for ticket in membership_rounds:
+                key = (ticket.name, ticket.lottery_start, ticket.lottery_end)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rounds.append(ticket)
+            continue
         key = (name, start, end)
         if key in seen:
             continue
@@ -454,6 +528,37 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
             )
         )
     return tuple(rounds)
+
+
+def membership_rounds_from_ticket(ticket: TicketRound) -> tuple[TicketRound, ...]:
+    if not ticket.evidence:
+        return ()
+    if "会員" in ticket.name or "/" in ticket.name:
+        return ()
+    if not any(label in ticket.name for label in ("先行", "先着")) or "抽選" in ticket.name:
+        return ()
+    base_name = ticket.name if ticket.name not in {"先行"} else round_name_from_context(ticket.evidence, ticket.name)
+    rounds = membership_rounds_from_context(
+        ticket.evidence,
+        base_name,
+        ticket.source,
+        ticket.url,
+        results_date=ticket.results_date,
+        general_sale_date=ticket.general_sale_date,
+        payment_deadline=ticket.payment_deadline,
+    )
+    return tuple(
+        normalize_ticket_round(
+            dataclasses.replace(
+                round_,
+                platform=ticket.platform,
+                confidence=ticket.confidence,
+                round_type=ticket.round_type,
+                membership_required=ticket.membership_required,
+            )
+        )
+        for round_ in rounds
+    )
 
 
 def adapt_ticket_rounds(page: Page, platform: str) -> tuple[TicketRound, ...]:

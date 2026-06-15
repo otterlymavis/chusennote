@@ -307,12 +307,14 @@ def test_extract_ticket_rounds_reads_member_presale_ranges_from_evidence():
 
     rounds = lm.extract_ticket_rounds(page)
 
-    assert any(
-        round_.name == "先着先行"
-        and round_.lottery_start == "2026-02-28"
-        and round_.lottery_end == "2026-03-15"
+    assert {
+        (round_.name, round_.lottery_start, round_.lottery_end)
         for round_ in rounds
-    )
+        if "会員" in round_.name
+    } == {
+        ("先着先行 / ゴールド会員", "2026-02-28", "2026-03-15"),
+        ("先着先行 / レギュラー会員", "2026-02-28", "2026-03-15"),
+    }
     assert all(
         round_.lottery_start is None and round_.lottery_end is None
         for round_ in rounds
@@ -594,17 +596,28 @@ def test_db_cleanup_backfills_ticket_round_dates_from_evidence(tmp_path, capsys)
     assert lm.main(["db", "cleanup", "--db", str(db_path), "--json"]) == 0
 
     counts = json.loads(capsys.readouterr().out)
-    assert counts["ticket_round_dates"] >= 1
+    assert counts["ticket_round_memberships"] == 2
     with sqlite3.connect(db_path) as connection:
-        application_end_at = connection.execute(
-            "SELECT application_end_at FROM ticket_rounds WHERE round_key = 'member-presale'"
+        original_count = connection.execute(
+            "SELECT COUNT(*) FROM ticket_rounds WHERE round_key = 'member-presale'"
         ).fetchone()[0]
         general_dates = connection.execute(
             "SELECT application_start_at, application_end_at FROM ticket_rounds WHERE round_key = 'general-sale'"
         ).fetchone()
+        membership_rows = connection.execute(
+            "SELECT name, application_start_at, application_end_at FROM ticket_rounds WHERE name LIKE '%会員%' ORDER BY name"
+        ).fetchall()
 
-    assert application_end_at == "2026-03-15"
+    assert original_count == 0
+    assert membership_rows == [
+        ("先着先行 / ゴールド会員", "2026-02-28", "2026-03-15"),
+        ("先着先行 / レギュラー会員", "2026-02-28", "2026-03-15"),
+    ]
     assert general_dates == (None, None)
+
+    assert lm.main(["db", "cleanup", "--db", str(db_path), "--json"]) == 0
+    second_counts = json.loads(capsys.readouterr().out)
+    assert second_counts["ticket_round_memberships"] == 0
 
 
 def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
@@ -1288,6 +1301,48 @@ def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
     assert "Tracked Artists" in home
     assert "Tracked Events" in home
     assert "Source unavailable" not in home
+
+
+def test_event_detail_groups_lottery_rounds_by_ticket_website(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Event",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="pia",
+                platform="pia",
+                url="https://w.pia.jp/t/example/",
+                name="先着先行 / ゴールド会員",
+                lottery_start="2026-02-28",
+                lottery_end="2026-03-15",
+            ),
+            lm.TicketRound(
+                source="eplus",
+                platform="eplus",
+                url="https://eplus.jp/example/",
+                name="プレオーダー / 無料会員",
+                lottery_start="2026-03-01",
+                lottery_end="2026-03-10",
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-04T00:00:00+00:00")
+
+    detail = lm.render_event_detail_page(str(db_path), 1)
+
+    assert '<div class="round-group-head">' in detail
+    assert "<h3>pia</h3>" in detail
+    assert "<h3>eplus</h3>" in detail
+    assert "先着先行 / ゴールド会員" in detail
+    assert "プレオーダー / 無料会員" in detail
 
 
 def test_tracked_event_display_key_prioritizes_official_pages():

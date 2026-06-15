@@ -383,6 +383,7 @@ def cleanup_database(db_path: str) -> dict[str, int]:
             "keyword_fallback_events": 0,
             "event_venues": 0,
             "ticket_round_dates": 0,
+            "ticket_round_memberships": 0,
         }
         for table in ("sources", "ticket_rounds", "snapshots", "alert_log"):
             cursor = connection.execute(
@@ -494,6 +495,127 @@ def cleanup_database(db_path: str) -> dict[str, int]:
                 membership_required=row[20],
                 evidence=row[21],
             )
+            if "会員" in ticket.name and ticket.evidence:
+                base_name = round_name_from_context(ticket.evidence, "先行")
+                canonical_member_rounds = membership_rounds_from_context(
+                    ticket.evidence,
+                    base_name,
+                    ticket.source,
+                    ticket.url,
+                    results_date=ticket.results_date,
+                    general_sale_date=ticket.general_sale_date,
+                    payment_deadline=ticket.payment_deadline,
+                )
+                canonical_names = {round_.name for round_ in canonical_member_rounds}
+                inserted = 0
+                for member_ticket in canonical_member_rounds:
+                    member_ticket = normalize_ticket_round(
+                        dataclasses.replace(
+                            member_ticket,
+                            platform=ticket.platform,
+                            confidence=ticket.confidence,
+                            round_type=ticket.round_type,
+                            membership_required=ticket.membership_required,
+                        )
+                    )
+                    cursor = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO ticket_rounds(
+                            event_id, round_key, source, url, name, round_number, platform,
+                            lottery_start, lottery_end, results_date, general_sale_date, payment_deadline,
+                            application_start_at, application_end_at, payment_start_at, payment_end_at,
+                            trade_start_at, trade_end_at, confidence, status, round_type, membership_required,
+                            evidence, created_at, updated_at
+                        )
+                        SELECT event_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, created_at, ?
+                        FROM ticket_rounds
+                        WHERE id = ?
+                        """,
+                        (
+                            ticket_round_key(member_ticket),
+                            member_ticket.source,
+                            member_ticket.url,
+                            member_ticket.name,
+                            member_ticket.round_number,
+                            member_ticket.platform,
+                            member_ticket.lottery_start,
+                            member_ticket.lottery_end,
+                            member_ticket.results_date,
+                            member_ticket.general_sale_date,
+                            member_ticket.payment_deadline,
+                            member_ticket.application_start_at,
+                            member_ticket.application_end_at,
+                            member_ticket.payment_start_at,
+                            member_ticket.payment_end_at,
+                            member_ticket.trade_start_at,
+                            member_ticket.trade_end_at,
+                            member_ticket.confidence,
+                            member_ticket.status,
+                            member_ticket.round_type,
+                            member_ticket.membership_required,
+                            member_ticket.evidence,
+                            utc_now_iso(),
+                            int(row[0]),
+                        ),
+                    )
+                    inserted += cursor.rowcount if cursor.rowcount >= 0 else 0
+                if canonical_member_rounds and ticket.name not in canonical_names:
+                    cursor = connection.execute("DELETE FROM ticket_rounds WHERE id = ?", (int(row[0]),))
+                    counts["ticket_round_memberships"] += inserted + (cursor.rowcount if cursor.rowcount >= 0 else 0)
+                    continue
+                if inserted:
+                    counts["ticket_round_memberships"] += inserted
+                    continue
+            membership_rounds = membership_rounds_from_ticket(ticket)
+            if membership_rounds:
+                inserted = 0
+                for member_ticket in membership_rounds:
+                    member_key = ticket_round_key(member_ticket)
+                    cursor = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO ticket_rounds(
+                            event_id, round_key, source, url, name, round_number, platform,
+                            lottery_start, lottery_end, results_date, general_sale_date, payment_deadline,
+                            application_start_at, application_end_at, payment_start_at, payment_end_at,
+                            trade_start_at, trade_end_at, confidence, status, round_type, membership_required,
+                            evidence, created_at, updated_at
+                        )
+                        SELECT event_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, created_at, ?
+                        FROM ticket_rounds
+                        WHERE id = ?
+                        """,
+                        (
+                            member_key,
+                            member_ticket.source,
+                            member_ticket.url,
+                            member_ticket.name,
+                            member_ticket.round_number,
+                            member_ticket.platform,
+                            member_ticket.lottery_start,
+                            member_ticket.lottery_end,
+                            member_ticket.results_date,
+                            member_ticket.general_sale_date,
+                            member_ticket.payment_deadline,
+                            member_ticket.application_start_at,
+                            member_ticket.application_end_at,
+                            member_ticket.payment_start_at,
+                            member_ticket.payment_end_at,
+                            member_ticket.trade_start_at,
+                            member_ticket.trade_end_at,
+                            member_ticket.confidence,
+                            member_ticket.status,
+                            member_ticket.round_type,
+                            member_ticket.membership_required,
+                            member_ticket.evidence,
+                            utc_now_iso(),
+                            int(row[0]),
+                        ),
+                    )
+                    inserted += cursor.rowcount if cursor.rowcount >= 0 else 0
+                if inserted:
+                    connection.execute("DELETE FROM ticket_rounds WHERE id = ?", (int(row[0]),))
+                    counts["ticket_round_memberships"] += inserted
+                    continue
             normalized = normalize_ticket_round(ticket)
             if (
                 normalized.application_start_at == row[11]

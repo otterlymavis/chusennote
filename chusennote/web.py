@@ -171,8 +171,8 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         """
         for link in event.get("ticket_links", [])
     ) or "<li>No ticket links saved yet.</li>"
-    round_items = "".join(
-        f"""
+    def render_round_card(ticket: dict[str, object]) -> str:
+        return f"""
         <article class="round-card">
           <div class="round-head">
             <h3>{html.escape(str(ticket.get('name') or 'Ticket round'))}</h3>
@@ -191,7 +191,24 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
           {web_source_link(ticket.get('url'), 'Open source')}
         </article>
         """
-        for ticket in event.get("rounds", [])
+
+    rounds_by_platform: dict[str, list[dict[str, object]]] = {}
+    for ticket in event.get("rounds", []):
+        if not isinstance(ticket, dict):
+            continue
+        platform = clean_text(str(ticket.get("platform") or ticket.get("source") or "unknown")) or "unknown"
+        rounds_by_platform.setdefault(platform, []).append(ticket)
+    round_items = "".join(
+        f"""
+        <div class="round-group">
+          <div class="round-group-head">
+            <h3>{html.escape(platform)}</h3>
+            <small>{len(tickets)} round{'s' if len(tickets) != 1 else ''}</small>
+          </div>
+          <div class="round-group-list">{''.join(render_round_card(ticket) for ticket in tickets)}</div>
+        </div>
+        """
+        for platform, tickets in rounds_by_platform.items()
     ) or "<p>No lottery rounds saved yet.</p>"
     manual_source_items = "".join(
         f"""
@@ -237,6 +254,10 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     li {{ min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
     li span, li strong, li small {{ min-width: 0; overflow-wrap: anywhere; }}
     .rounds {{ display: grid; gap: 12px; }}
+    .round-group {{ display: grid; gap: 10px; }}
+    .round-group-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 2px; }}
+    .round-group-head h3 {{ margin: 0; font-size: 16px; }}
+    .round-group-list {{ display: grid; gap: 10px; }}
     .round-card {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; box-shadow: var(--shadow); }}
     .round-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }}
     @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} .summary-grid, .fact-grid {{ grid-template-columns: 1fr; }} li {{ align-items: flex-start; flex-direction: column; }} }}
