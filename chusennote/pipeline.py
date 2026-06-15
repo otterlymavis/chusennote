@@ -84,8 +84,48 @@ def build_artist_blocks(keyword: str, search_results: Sequence[SearchResult] | N
     return AppBlocks(general_info=dataclasses.replace(info, ticket_links=()), ticket_info=())
 
 
+def fetch_schedule_pages(page: Page, limit: int = 3) -> list[Page]:
+    """Follow up to ``limit`` live/tour/schedule links from an official page."""
+    pages: list[Page] = []
+    seen: set[str] = set()
+    for link in page.links:
+        if len(pages) >= limit:
+            break
+        haystack = f"{link.label} {link.url}".lower()
+        if not any(hint in haystack for hint in SCHEDULE_LINK_HINTS):
+            continue
+        if link.url == page.url or link.url in seen or is_noisy_url(link.url):
+            continue
+        seen.add(link.url)
+        try:
+            pages.append(fetch_page(link.url))
+        except (OSError, ValueError):
+            continue
+    return pages
+
+
+def artist_show_block(keyword: str, schedule_url: str, entry: dict[str, str]) -> AppBlocks:
+    venue = entry.get("venue", "")
+    date_text = entry.get("date_text", "")
+    iso_date = entry.get("date", "")
+    # A per-show fragment keeps each date a distinct event under the artist
+    # (events are keyed by watch_id + official_url) while staying clickable.
+    fragment = f"{iso_date.replace('-', '')}-{stable_hash(f'{iso_date}|{venue}')[:6]}"
+    info = EventInfo(
+        keyword=keyword,
+        official_page=f"{schedule_url}#{fragment}",
+        title=" ".join(part for part in (keyword, iso_date, venue) if part),
+        summary=" ".join(part for part in (date_text, venue) if part),
+        event_dates=(date_text or iso_date,),
+        venues=(venue,) if venue else (),
+        ticket_links=(),
+    )
+    return AppBlocks(general_info=info, ticket_info=())
+
+
 def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
     blocks: list[AppBlocks] = []
+    seen_shows: set[tuple[str, str]] = set()
     seen_urls: set[str] = set()
     for result in choose_official_results(search_web(keyword, limit=limit), keyword, limit=limit):
         if result.url in seen_urls or is_noisy_url(result.url):
@@ -97,19 +137,20 @@ def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
             continue
         if not page_matches_keyword(keyword, page):
             continue
-        info = build_event_info(keyword, (page,))
-        if not info.title:
-            info = dataclasses.replace(info, title=result.title or page.title)
-        if result.snippet and not info.summary:
-            info = dataclasses.replace(info, summary=result.snippet)
-        blocks.append(AppBlocks(general_info=info, ticket_info=extract_ticket_rounds_for_page(page)))
+        for schedule_page in (page, *fetch_schedule_pages(page)):
+            for entry in extract_tour_dates(schedule_page):
+                key = (entry["date"], entry["venue"])
+                if key in seen_shows:
+                    continue
+                seen_shows.add(key)
+                blocks.append(artist_show_block(keyword, schedule_page.url, entry))
     if not blocks:
         ticket_links = portal_search_links(keyword)
         info = EventInfo(
             keyword=keyword,
             official_page=ticket_links[0].url if ticket_links else None,
             title=f"{keyword} ticket search",
-            summary="Trusted ticket portal searches for this artist.",
+            summary="No upcoming shows found yet; trusted ticket portal searches for this artist.",
             event_dates=(),
             venues=(),
             ticket_links=ticket_links,

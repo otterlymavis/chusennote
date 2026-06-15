@@ -82,10 +82,23 @@ SOCIAL_OR_NOISY_DOMAINS = (
     "facebook.com",
     "line.me",
     "youtube.com",
+    "tiktok.com",
     "pornhub.com",
     "xvideos.com",
     "xnxx.com",
     "wikipedia.org",
+    # Streaming / encyclopaedic / profile sites: about an artist, never an event.
+    "music.apple.com",
+    "open.spotify.com",
+    "spotify.com",
+    "fandom.com",
+    "kprofiles.com",
+    "bilibili.tv",
+    "bilibili.com",
+    "genius.com",
+    "last.fm",
+    "discogs.com",
+    "imdb.com",
 )
 OFFICIAL_HINTS = ("公式", "official", "オフィシャル", "公演", "ライブ", "ミュージカル")
 # Hosts that frequently carry official Japanese stage/live information. Used as a

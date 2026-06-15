@@ -651,6 +651,62 @@ def extract_ticket_rounds_for_page(page: Page) -> tuple[TicketRound, ...]:
     return dedupe_ticket_rounds(extract_ticket_rounds(page))
 
 
+JP_PREFECTURES = (
+    "北海道", "青森", "岩手", "宮城", "秋田", "山形", "福島", "茨城", "栃木", "群馬",
+    "埼玉", "千葉", "東京", "神奈川", "新潟", "富山", "石川", "福井", "山梨", "長野",
+    "岐阜", "静岡", "愛知", "三重", "滋賀", "京都", "大阪", "兵庫", "奈良", "和歌山",
+    "鳥取", "島根", "岡山", "広島", "山口", "徳島", "香川", "愛媛", "高知", "福岡",
+    "佐賀", "長崎", "熊本", "大分", "宮崎", "鹿児島", "沖縄",
+)
+VENUE_SUFFIX_HINTS = (
+    "アリーナ", "ホール", "ドーム", "スタジアム", "スタジオ", "劇場", "会館", "公会堂",
+    "体育館", "メッセ", "フォーラム", "ガーデン", "センター", "Zepp", "国際展示場",
+    "サンプラザ", "ベイホール", "プラザ", "ピット", "ラウンジ",
+)
+SCHEDULE_LINK_HINTS = (
+    "live", "tour", "schedule", "concert", "event", "公演", "ライブ", "ツアー",
+    "スケジュール", "コンサート", "live-information", "liveinfo",
+)
+_VENUE_SUFFIX_RE = "|".join(re.escape(hint) for hint in VENUE_SUFFIX_HINTS)
+_PREFECTURE_RE = "|".join(re.escape(name) for name in JP_PREFECTURES)
+
+
+def tour_venue_from_window(window: str) -> str:
+    """Pull a concise venue/city out of the text following a tour date."""
+    window = clean_text(window)
+    prefecture_venue = re.search(
+        rf"(?:{_PREFECTURE_RE})\s*[・:：]?\s*[^\s、,，。]{{0,24}}?(?:{_VENUE_SUFFIX_RE})",
+        window,
+    )
+    if prefecture_venue:
+        return clean_text(prefecture_venue.group(0))
+    venue = re.search(rf"[^\s、,，。]{{1,24}}?(?:{_VENUE_SUFFIX_RE})", window)
+    if venue:
+        return clean_text(venue.group(0))
+    prefecture = re.search(rf"(?:{_PREFECTURE_RE})", window)
+    return prefecture.group(0) if prefecture else ""
+
+
+def extract_tour_dates(page: Page) -> tuple[dict[str, str], ...]:
+    """Parse an artist live/tour schedule into individual (date, venue) shows."""
+    text = page.text
+    entries: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in DATE_RE.finditer(text):
+        iso_date = normalized_iso_date(match.group(0))
+        if not iso_date:
+            continue
+        venue = tour_venue_from_window(text[match.end() : match.end() + 50])
+        if not venue:
+            continue
+        key = (iso_date, venue)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({"date": iso_date, "date_text": clean_text(match.group(0)), "venue": venue})
+    return tuple(entries)
+
+
 def split_event_notes(text: str) -> list[str]:
     normalized = clean_text(text)
     parts = re.split(r"(?=※)|[。\n\r]+", normalized)

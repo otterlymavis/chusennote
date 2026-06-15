@@ -386,6 +386,64 @@ def test_round_name_uses_label_governing_the_date_not_global_priority():
     assert by_dates.get(("2026-03-20", "2026-03-25")) == "先着先行"
 
 
+def test_streaming_and_profile_domains_are_filtered_as_noisy():
+    for url in (
+        "https://music.apple.com/us/artist/yoasobi/1490256993",
+        "https://jpop.fandom.com/wiki/YOASOBI",
+        "https://kprofiles.com/yoasobi-members-profile/",
+        "https://www.bilibili.tv/en/video/4793901433229824",
+    ):
+        assert lm.is_noisy_url(url)
+
+
+def test_extract_tour_dates_reads_date_and_venue():
+    text = "LIVE 2026年7月25日(土) 東京 有明アリーナ 2026年8月12日(水) 大阪 大阪城ホール"
+    page = lm.parse_page("https://artist.example/live/", f"<html><body>{text}</body></html>")
+
+    entries = lm.extract_tour_dates(page)
+
+    assert {(entry["date"], entry["venue"]) for entry in entries} == {
+        ("2026-07-25", "東京 有明アリーナ"),
+        ("2026-08-12", "大阪 大阪城ホール"),
+    }
+
+
+def test_build_artist_event_blocks_lists_shows_from_schedule(monkeypatch):
+    keyword = "YOASOBI"
+    results = [lm.SearchResult("YOASOBI Official", "https://www.yoasobi-music.jp/", keyword)]
+    schedule_html = (
+        "<html><head><title>YOASOBI Official</title></head><body>"
+        "YOASOBI LIVE 2026 ライブ情報 "
+        "2026年7月25日(土) 東京 有明アリーナ "
+        "2026年8月12日(水) 大阪 大阪城ホール"
+        "</body></html>"
+    )
+    monkeypatch.setattr(lm.pipeline, "search_web", lambda kw, limit=8: results)
+    monkeypatch.setattr(lm.pipeline, "choose_official_results", lambda res, kw, limit=8: res)
+    monkeypatch.setattr(lm.pipeline, "page_matches_keyword", lambda kw, page: True)
+    monkeypatch.setattr(lm.pipeline, "fetch_page", lambda url: lm.parse_page("https://www.yoasobi-music.jp/", schedule_html))
+
+    blocks = lm.build_artist_event_blocks(keyword)
+
+    titles = [block.general_info.title for block in blocks]
+    assert any("有明アリーナ" in title for title in titles)
+    assert any("大阪城ホール" in title for title in titles)
+    # Each show is a distinct, clickable event under the artist.
+    urls = [block.general_info.official_page for block in blocks]
+    assert len(set(urls)) == len(urls)
+    assert all(str(url).startswith("https://www.yoasobi-music.jp/#") for url in urls)
+    assert all(block.ticket_info == () for block in blocks)
+
+
+def test_build_artist_event_blocks_falls_back_when_no_shows_found(monkeypatch):
+    monkeypatch.setattr(lm.pipeline, "search_web", lambda kw, limit=8: [])
+
+    blocks = lm.build_artist_event_blocks("Unknown Artist")
+
+    assert len(blocks) == 1
+    assert blocks[0].general_info.title == "Unknown Artist ticket search"
+
+
 def test_round_name_keeps_additional_performance_prefix():
     text = "【追加公演・抽選先行】 2026年4月25日(土)10:00～5月10日(日)23:59"
     page = lm.Page("https://horipro-stage.jp/stage/example/", "Ticket", text, ())
