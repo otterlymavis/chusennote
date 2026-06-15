@@ -202,11 +202,13 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         meta_line = f"<p><small>{' · '.join(meta_parts)}</small></p>" if meta_parts else ""
         evidence_snippet = format_evidence_snippet(ticket.get("evidence"))
         evidence_line = f"<p><small>Evidence: {html.escape(evidence_snippet)}</small></p>" if evidence_snippet != "none" else ""
+        status = clean_text(str(ticket.get("status") or ""))
+        status_badge = f'<span class="status">{html.escape(status)}</span>' if status and status != "unknown" else ""
         return f"""
         <article class="round-card">
           <div class="round-head">
             <h3>{html.escape(str(ticket.get('name') or 'Ticket round'))}</h3>
-            <span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span>
+            {status_badge}
           </div>
           <div class="fact-grid">{fact_grid}</div>
           {meta_line}
