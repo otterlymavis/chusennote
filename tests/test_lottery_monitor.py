@@ -1727,12 +1727,12 @@ def test_artist_run_saves_multiple_discovered_events_under_artist_watch(tmp_path
 
 def test_artist_event_blocks_fall_back_to_ticket_portal_searches(monkeypatch):
     monkeypatch.setattr(
-        lm,
+        lm.pipeline,
         "search_web",
         lambda keyword, limit=8: [lm.SearchResult("Unrelated article", "https://example.com/noise", "libido sodomie")],
     )
     monkeypatch.setattr(
-        lm,
+        lm.pipeline,
         "fetch_page",
         lambda url: lm.Page(url=url, title="Unrelated article", text="libido sodomie menopause", links=()),
     )
