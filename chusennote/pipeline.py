@@ -41,6 +41,7 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
     for page in official_pages:
         rounds.extend(extract_ticket_rounds_for_page(page))
     rounds.extend(fetch_ticket_link_rounds(event_info.ticket_links))
+    rounds = list(clear_performance_window_rounds(rounds, event_info.event_dates))
     return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(rounds))
 
 
@@ -67,6 +68,7 @@ def build_exact_event_blocks(keyword: str, title: str, url: str, snippet: str = 
     rounds.extend(fetch_ticket_link_rounds(event_info.ticket_links))
     if snippet and not event_info.summary:
         event_info = dataclasses.replace(event_info, summary=snippet)
+    rounds = list(clear_performance_window_rounds(rounds, event_info.event_dates))
     return AppBlocks(general_info=event_info, ticket_info=dedupe_ticket_rounds(tuple(rounds)))
 
 
@@ -209,7 +211,10 @@ def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
     merged_links = info.ticket_links + tuple(link for link in manual_links if link.url not in existing_urls)
     merged_info = dataclasses.replace(info, ticket_links=merged_links)
     ticket_link_rounds = fetch_ticket_link_rounds(info.ticket_links)
-    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(base_rounds + tuple(extra_rounds) + tuple(ticket_link_rounds)))
+    all_rounds = clear_performance_window_rounds(
+        base_rounds + tuple(extra_rounds) + tuple(ticket_link_rounds), merged_info.event_dates
+    )
+    return AppBlocks(general_info=merged_info, ticket_info=dedupe_ticket_rounds(all_rounds))
 
 
 def comma_values(value: str) -> tuple[str, ...]:

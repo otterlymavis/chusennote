@@ -453,6 +453,25 @@ def test_round_name_keeps_additional_performance_prefix():
     assert rounds[0].name == "追加公演・抽選先行"
 
 
+def test_clear_performance_window_rounds_nulls_show_run_dates():
+    # tv-asahi prints the show's run beside a lottery label; it must not be kept
+    # as the application window, while a genuine lottery window is preserved.
+    performance = lm.TicketRound(
+        source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+        name="抽選先行", lottery_start="2026-07-25", lottery_end="2026-08-23",
+    )
+    genuine = lm.TicketRound(
+        source="horipro", platform="horipro-stage.jp", url="https://horipro-stage.jp/x",
+        name="抽選先行", lottery_start="2026-02-28", lottery_end="2026-03-15",
+    )
+    event_dates = ("2026年7月25日(土)～8月23日(日)",)
+
+    cleared = lm.clear_performance_window_rounds((performance, genuine), event_dates)
+
+    assert cleared[0].lottery_start is None and cleared[0].lottery_end is None
+    assert cleared[1].lottery_start == "2026-02-28" and cleared[1].lottery_end == "2026-03-15"
+
+
 def test_extract_ticket_rounds_names_seat_selection_presale():
     text = "先着 座席選択先行受付 受付期間:2026/3/14(土)10:00～2026/3/17(火)23:59 受付終了"
     page = lm.Page("https://eplus.jp/example/", "Ticket", text, ())

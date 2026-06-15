@@ -651,6 +651,63 @@ def extract_ticket_rounds_for_page(page: Page) -> tuple[TicketRound, ...]:
     return dedupe_ticket_rounds(extract_ticket_rounds(page))
 
 
+PERFORMANCE_PERIOD_CUT_LABELS = ("受付", "申込", "抽選", "先行", "発売", "販売", "入金", "支払", "エントリー")
+_EVIDENCE_RANGE_RE = re.compile(
+    r"(?:20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
+    r"(?:[^0-9]{0,14})?[〜～~–—](?:[^0-9]{0,14})?"
+    r"(?:20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
+)
+
+
+def performance_periods(event_dates: Sequence[str]) -> set[tuple[str, str]]:
+    """The event's performance-run date ranges as (start, end) ISO pairs.
+
+    An ``event_dates`` phrase can run on into an application window packed into
+    the same line, so read the range only from the text before the first
+    ticketing keyword — the performance dates always lead the phrase.
+    """
+    periods: set[tuple[str, str]] = set()
+    for value in event_dates:
+        text = str(value)
+        cut = min((text.find(label) for label in PERFORMANCE_PERIOD_CUT_LABELS if label in text), default=len(text))
+        start, end = extract_range(text[:cut])
+        if start and end:
+            periods.add((start, end))
+    return periods
+
+
+def clear_performance_window_rounds(
+    rounds: Sequence[TicketRound], event_dates: Sequence[str]
+) -> tuple[TicketRound, ...]:
+    """Null application windows that merely echo the event's performance run.
+
+    Some platforms (e.g. tv-asahi) print the show's run "2026年7月25日〜8月23日"
+    beside a lottery label, which would otherwise be stored as the application
+    window. When a round's window exactly matches a known performance period,
+    drop those dates so the round is not shown with the wrong schedule.
+    """
+    periods = performance_periods(event_dates)
+    if not periods:
+        return tuple(rounds)
+    cleared: list[TicketRound] = []
+    for ticket in rounds:
+        windows = ((ticket.lottery_start, ticket.lottery_end), (ticket.application_start_at, ticket.application_end_at))
+        if any(window in periods for window in windows):
+            # Also scrub the range from the evidence: normalize_ticket_round
+            # re-derives application dates from evidence, which would otherwise
+            # restore the performance run on the next normalization pass.
+            ticket = dataclasses.replace(
+                ticket,
+                lottery_start=None,
+                lottery_end=None,
+                application_start_at=None,
+                application_end_at=None,
+                evidence=clean_text(_EVIDENCE_RANGE_RE.sub(" ", ticket.evidence)),
+            )
+        cleared.append(ticket)
+    return tuple(cleared)
+
+
 JP_PREFECTURES = (
     "北海道", "青森", "岩手", "宮城", "秋田", "山形", "福島", "茨城", "栃木", "群馬",
     "埼玉", "千葉", "東京", "神奈川", "新潟", "富山", "石川", "福井", "山梨", "長野",
