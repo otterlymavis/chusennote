@@ -687,23 +687,45 @@ def tour_venue_from_window(window: str) -> str:
     return prefecture.group(0) if prefecture else ""
 
 
+_DAY_MARKER_RE = re.compile(r"^[\[\(（][^\]\)）]{1,12}[\]\)）]\s*")
+_ENDED_PREFIX_RE = re.compile(r"^[\[【]?\s*終了\s*[\]】]?\s*")
+
+
 def extract_tour_dates(page: Page) -> tuple[dict[str, str], ...]:
-    """Parse an artist live/tour schedule into individual (date, venue) shows."""
+    """Parse an artist live/tour schedule into individual shows.
+
+    Each schedule entry is a date followed by a title (the tour/show name) and
+    sometimes a venue. The text between one date and the next is the entry's
+    description, with any day-of-week marker (``[SATURDAY]`` / ``(土)``) and
+    past-event ``[終了]`` flag stripped off.
+    """
     text = page.text
+    matches = [match for match in DATE_RE.finditer(text) if normalized_iso_date(match.group(0))]
     entries: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for match in DATE_RE.finditer(text):
+    for index, match in enumerate(matches):
         iso_date = normalized_iso_date(match.group(0))
-        if not iso_date:
+        boundary = matches[index + 1].start() if index + 1 < len(matches) else min(len(text), match.end() + 80)
+        chunk = clean_text(text[match.end() : boundary])
+        chunk = _DAY_MARKER_RE.sub("", chunk)
+        ended = bool(_ENDED_PREFIX_RE.match(chunk)) or chunk.startswith("終了")
+        chunk = _ENDED_PREFIX_RE.sub("", chunk)
+        title = chunk[:60].strip(" 　・-—:：")
+        if not title:
             continue
-        venue = tour_venue_from_window(text[match.end() : match.end() + 50])
-        if not venue:
-            continue
-        key = (iso_date, venue)
+        key = (iso_date, title)
         if key in seen:
             continue
         seen.add(key)
-        entries.append({"date": iso_date, "date_text": clean_text(match.group(0)), "venue": venue})
+        entries.append(
+            {
+                "date": iso_date,
+                "date_text": clean_text(match.group(0)),
+                "title": title,
+                "venue": tour_venue_from_window(chunk),
+                "ended": "1" if ended else "",
+            }
+        )
     return tuple(entries)
 
 

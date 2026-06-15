@@ -106,16 +106,17 @@ def fetch_schedule_pages(page: Page, limit: int = 3) -> list[Page]:
 
 def artist_show_block(keyword: str, schedule_url: str, entry: dict[str, str]) -> AppBlocks:
     venue = entry.get("venue", "")
+    title = entry.get("title", "")
     date_text = entry.get("date_text", "")
     iso_date = entry.get("date", "")
     # A per-show fragment keeps each date a distinct event under the artist
     # (events are keyed by watch_id + official_url) while staying clickable.
-    fragment = f"{iso_date.replace('-', '')}-{stable_hash(f'{iso_date}|{venue}')[:6]}"
+    fragment = f"{iso_date.replace('-', '')}-{stable_hash(f'{iso_date}|{title or venue}')[:6]}"
     info = EventInfo(
         keyword=keyword,
         official_page=f"{schedule_url}#{fragment}",
-        title=" ".join(part for part in (keyword, iso_date, venue) if part),
-        summary=" ".join(part for part in (date_text, venue) if part),
+        title=title or venue or f"{keyword} live",
+        summary=" ".join(part for part in (date_text, title, venue) if part),
         event_dates=(date_text or iso_date,),
         venues=(venue,) if venue else (),
         ticket_links=(),
@@ -137,9 +138,15 @@ def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
             continue
         if not page_matches_keyword(keyword, page):
             continue
-        for schedule_page in (page, *fetch_schedule_pages(page)):
+        # Prefer a dedicated live/tour page; the landing page mixes news dates
+        # that are not shows. Fall back to the landing page only if there is no
+        # schedule sub-page.
+        schedule_pages = fetch_schedule_pages(page)
+        for schedule_page in (schedule_pages or [page]):
             for entry in extract_tour_dates(schedule_page):
-                key = (entry["date"], entry["venue"])
+                if entry.get("ended"):
+                    continue
+                key = (entry["date"], entry["title"])
                 if key in seen_shows:
                     continue
                 seen_shows.add(key)
