@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 from .models import (
     BROWSER_FETCH_ENV,
     BROWSER_MIN_TEXT_LENGTH,
+    BROWSER_SETTLE_MS,
     BROWSER_TIMEOUT_MS,
     BROWSER_USER_AGENT,
     Link,
@@ -154,7 +155,10 @@ def fetch_page_browser(url: str) -> Page:
             try:
                 context = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="ja-JP")
                 page = context.new_page()
-                page.goto(url, wait_until="networkidle", timeout=BROWSER_TIMEOUT_MS)
+                # "networkidle" never settles on ad/analytics-heavy JP sites;
+                # wait for the DOM then give client-side JS a moment to render.
+                page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
+                page.wait_for_timeout(BROWSER_SETTLE_MS)
                 html = page.content()
             finally:
                 browser.close()

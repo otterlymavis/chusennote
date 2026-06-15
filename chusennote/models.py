@@ -22,6 +22,8 @@ BROWSER_USER_AGENT = (
 # "always" renders every page; unset/"off" disables it (default).
 BROWSER_FETCH_ENV = "CHUSENNOTE_BROWSER_FETCH"
 BROWSER_TIMEOUT_MS = 30000
+# Settle delay after DOMContentLoaded to let client-side JS render content.
+BROWSER_SETTLE_MS = 2500
 # Below this rendered-text length a page is treated as a JS shell worth a
 # browser re-render in fallback mode.
 BROWSER_MIN_TEXT_LENGTH = 400
