@@ -1,1 +1,8 @@
-# No runtime dependencies; chusennote uses only the Python standard library.
+# Core: chusennote uses only the Python standard library — no runtime deps.
+
+# Optional: headless-browser fetch for JavaScript-heavy ticket platforms.
+# Enable at runtime with CHUSENNOTE_BROWSER_FETCH=fallback (or "always").
+# Install with:
+#   pip install playwright
+#   playwright install chromium
+# playwright>=1.40

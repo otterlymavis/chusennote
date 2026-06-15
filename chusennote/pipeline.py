@@ -49,13 +49,12 @@ def fetch_ticket_link_rounds(links: Sequence[Link]) -> list[TicketRound]:
     for link in links:
         if is_portal_search_url(link.url):
             continue
-        platform = source_name_for_url(link.url)
+        # A dead (404) or unreachable link contributes no rounds rather than a
+        # "Fetch failed" placeholder, which only cluttered the round list.
         try:
-            fetched_rounds = extract_ticket_rounds_for_page(fetch_page(link.url))
+            rounds.extend(extract_ticket_rounds_for_page(fetch_page(link.url)))
         except (OSError, ValueError):
-            rounds.append(TicketRound(source=platform, platform=platform, url=link.url, name="Fetch failed", evidence=link.label))
             continue
-        rounds.extend(fetched_rounds)
     return rounds
 
 
@@ -134,16 +133,6 @@ def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
         try:
             page = fetch_page(source.url)
         except (OSError, ValueError):
-            extra_rounds.append(
-                TicketRound(
-                    source=source.platform,
-                    platform=source.platform,
-                    url=source.url,
-                    name="Fetch failed",
-                    evidence=source.label,
-                    confidence=source.confidence,
-                )
-            )
             continue
         source_pages.append(page)
         extra_rounds.extend(extract_ticket_rounds_for_page(page))

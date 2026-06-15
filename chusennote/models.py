@@ -11,6 +11,20 @@ import re
 
 
 USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticket lottery monitor)"
+# A browser-like UA for the optional headless-browser fetch path, which renders
+# JavaScript-heavy ticket platforms that the plain HTTP fetch cannot read.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+# Enable the headless-browser fetch path. "fallback"/"auto"/"1" render with a
+# browser only when the plain fetch fails or returns a thin (JS-shell) page;
+# "always" renders every page; unset/"off" disables it (default).
+BROWSER_FETCH_ENV = "CHUSENNOTE_BROWSER_FETCH"
+BROWSER_TIMEOUT_MS = 30000
+# Below this rendered-text length a page is treated as a JS shell worth a
+# browser re-render in fallback mode.
+BROWSER_MIN_TEXT_LENGTH = 400
 SEARCH_URL = "https://duckduckgo.com/html/"
 BING_SEARCH_URL = "https://www.bing.com/search"
 # Optional managed search backend. HTML scraping of DuckDuckGo/Bing gets

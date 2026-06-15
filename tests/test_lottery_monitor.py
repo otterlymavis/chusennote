@@ -6,6 +6,8 @@ import threading
 import urllib.parse
 import urllib.request
 
+import pytest
+
 import lottery_monitor as lm
 
 
@@ -391,6 +393,83 @@ def test_round_name_keeps_additional_performance_prefix():
     rounds = lm.extract_ticket_rounds(page)
 
     assert rounds[0].name == "追加公演・抽選先行"
+
+
+def test_fetch_ticket_link_rounds_skips_unreachable_links_without_placeholder(monkeypatch):
+    links = (lm.Link("ｅ＋", "https://eplus.jp/dead/"), lm.Link("Pia", "https://t.pia.jp/live/"))
+
+    def fake_fetch(url):
+        if url == "https://t.pia.jp/live/":
+            return lm.parse_page(
+                url,
+                "<html><body><h2>第1次抽選先行</h2>"
+                "<p>受付期間 2026年6月10日 ～ 2026年6月18日</p></body></html>",
+            )
+        raise OSError("404")
+
+    monkeypatch.setattr(lm.pipeline, "fetch_page", fake_fetch)
+
+    rounds = lm.fetch_ticket_link_rounds(links)
+
+    assert all(round_.name != "Fetch failed" for round_ in rounds)
+    assert [round_.name for round_ in rounds] == ["第1次抽選先行"]
+
+
+def test_browser_fetch_mode_reads_environment(monkeypatch):
+    monkeypatch.delenv(lm.BROWSER_FETCH_ENV, raising=False)
+    assert lm.browser_fetch_mode() == "off"
+    monkeypatch.setenv(lm.BROWSER_FETCH_ENV, "fallback")
+    assert lm.browser_fetch_mode() == "fallback"
+    monkeypatch.setenv(lm.BROWSER_FETCH_ENV, "always")
+    assert lm.browser_fetch_mode() == "always"
+
+
+def test_fetch_page_uses_plain_http_when_browser_disabled(monkeypatch):
+    monkeypatch.delenv(lm.BROWSER_FETCH_ENV, raising=False)
+    monkeypatch.setattr(
+        lm.netio,
+        "request_html",
+        lambda url: "<html><head><title>Plain</title></head><body>" + ("x" * 600) + "</body></html>",
+    )
+
+    def fail_browser(url):
+        raise AssertionError("browser fetch must not run when disabled")
+
+    monkeypatch.setattr(lm.netio, "fetch_page_browser", fail_browser)
+
+    assert lm.fetch_page("https://example.test/").title == "Plain"
+
+
+def test_fetch_page_falls_back_to_browser_on_fetch_error(monkeypatch):
+    monkeypatch.setenv(lm.BROWSER_FETCH_ENV, "fallback")
+
+    def boom(url):
+        raise OSError("blocked")
+
+    rendered = lm.Page("https://example.test/", "Rendered", "rendered text", ())
+    monkeypatch.setattr(lm.netio, "request_html", boom)
+    monkeypatch.setattr(lm.netio, "fetch_page_browser", lambda url: rendered)
+
+    assert lm.fetch_page("https://example.test/") is rendered
+
+
+def test_fetch_page_falls_back_to_browser_for_thin_page(monkeypatch):
+    monkeypatch.setenv(lm.BROWSER_FETCH_ENV, "fallback")
+    monkeypatch.setattr(lm.netio, "request_html", lambda url: "<html><body>thin</body></html>")
+    rendered = lm.Page("https://example.test/", "Rendered", "y" * 700, ())
+    monkeypatch.setattr(lm.netio, "fetch_page_browser", lambda url: rendered)
+
+    assert lm.fetch_page("https://example.test/") is rendered
+
+
+def test_fetch_page_browser_degrades_to_oserror_without_playwright():
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        with pytest.raises(OSError):
+            lm.fetch_page_browser("https://example.test/")
+    else:  # pragma: no cover - depends on optional dependency being installed
+        pytest.skip("playwright installed; missing-dependency path not exercised")
 
 
 def test_render_blocks_has_two_expected_app_blocks():

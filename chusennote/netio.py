@@ -6,11 +6,21 @@ Depends on :mod:`chusennote.models` and :mod:`chusennote.util` only.
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
-from .models import Link, Page, TIMEOUT_SECONDS, USER_AGENT
+from .models import (
+    BROWSER_FETCH_ENV,
+    BROWSER_MIN_TEXT_LENGTH,
+    BROWSER_TIMEOUT_MS,
+    BROWSER_USER_AGENT,
+    Link,
+    Page,
+    TIMEOUT_SECONDS,
+    USER_AGENT,
+)
 from .util import absolute_url, clean_text
 
 
@@ -109,5 +119,65 @@ def parse_page(url: str, html: str) -> Page:
     )
 
 
+def browser_fetch_mode() -> str:
+    """Read the headless-browser fetch mode from the environment."""
+    value = os.environ.get(BROWSER_FETCH_ENV, "").strip().lower()
+    if value in {"always", "force"}:
+        return "always"
+    if value in {"1", "true", "on", "auto", "fallback"}:
+        return "fallback"
+    return "off"
+
+
+def page_needs_browser(page: Page) -> bool:
+    """A thin rendered page is likely a JS shell worth re-rendering."""
+    return len(page.text) < BROWSER_MIN_TEXT_LENGTH
+
+
+def fetch_page_browser(url: str) -> Page:
+    """Render a page with headless Chromium so JS-built ticket platforms parse.
+
+    Playwright is an optional dependency; a missing install or any browser
+    failure is surfaced as OSError so callers' existing fetch-error handling
+    treats it like any other unreachable page.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:
+        raise OSError(
+            "headless-browser fetch requires playwright "
+            "(pip install playwright && playwright install chromium)"
+        ) from error
+    try:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="ja-JP")
+                page = context.new_page()
+                page.goto(url, wait_until="networkidle", timeout=BROWSER_TIMEOUT_MS)
+                html = page.content()
+            finally:
+                browser.close()
+    except OSError:
+        raise
+    except Exception as error:  # playwright raises its own error hierarchy
+        raise OSError(f"headless-browser fetch failed for {url}: {error}") from error
+    return parse_page(url, html)
+
+
 def fetch_page(url: str) -> Page:
-    return parse_page(url, request_html(url))
+    mode = browser_fetch_mode()
+    if mode == "always":
+        return fetch_page_browser(url)
+    try:
+        page = parse_page(url, request_html(url))
+    except (OSError, ValueError):
+        if mode == "fallback":
+            return fetch_page_browser(url)
+        raise
+    if mode == "fallback" and page_needs_browser(page):
+        try:
+            return fetch_page_browser(url)
+        except (OSError, ValueError):
+            return page
+    return page
