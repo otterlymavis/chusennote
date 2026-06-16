@@ -108,6 +108,7 @@ def render_artist_detail_page(db_path: str, artist_id: int) -> str:
     <section>
       <h1>{html.escape(artist.keyword)}</h1>
       <small>{len(artist_events)} discovered events sorted by date</small>
+      <div class="round-actions">{subscribe_button(artist.id, NOTIFY_SCOPE_ARTIST_ALL, "Notify me for all shows", redirect=f"/artists/{artist.id}")}</div>
     </section>
     <section>
       <h2>Events</h2>
@@ -214,7 +215,10 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
           <div class="fact-grid">{fact_grid}</div>
           {meta_line}
           {evidence_line}
-          {web_source_link(ticket.get('url'), 'Open source')}
+          <div class="round-actions">
+            {web_source_link(ticket.get('url'), 'Open source')}
+            {subscribe_button(event.get('watch_id'), NOTIFY_SCOPE_ROUND, 'Notify me', round_key=str(ticket.get('round_key') or ''), redirect=f"/events/{event_id}")}
+          </div>
         </article>
         """
 
@@ -253,6 +257,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
           <span><strong>{html.escape(city or venue or 'Venue TBA')}</strong>
           <small>{html.escape(venue)}</small></span>
           <span class="mini-stat wide">{html.escape(date or 'dates TBA')}</span>
+          {subscribe_button(event.get('watch_id'), NOTIFY_SCOPE_EVENT_LOCATION, 'Notify', location=(city or venue), redirect=f"/events/{event_id}")}
         </li>
         """
         for city, venue, date in stops
@@ -261,6 +266,9 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         f'<section><h2>Locations &amp; Tour Dates</h2><ul class="tour-list">{tour_items}</ul></section>'
         if len(stops) > 1
         else ""
+    )
+    event_subscribe = subscribe_button(
+        event.get("watch_id"), NOTIFY_SCOPE_EVENT_ALL, "Notify me for all rounds", redirect=f"/events/{event_id}"
     )
     manual_source_items = "".join(
         f"""
@@ -311,6 +319,9 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     .round-group-head h3 {{ margin: 0; font-size: 16px; }}
     .round-group-list {{ display: grid; gap: 10px; }}
     .round-card {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; box-shadow: var(--shadow); }}
+    .round-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }}
+    .subscribe-form {{ margin: 0; }}
+    button.action-link {{ cursor: pointer; }}
     .round-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }}
     @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} .summary-grid, .fact-grid {{ grid-template-columns: 1fr; }} li {{ align-items: flex-start; flex-direction: column; }} }}
   </style>
@@ -338,8 +349,103 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     <section><h2>Ticket Rules</h2><ul>{ticket_rule_items}</ul></section>
     <section><h2>Ticket Price</h2><ul>{ticket_price_items}</ul></section>
     <section><h2>Ticket Links</h2><ul>{ticket_link_items}</ul></section>
-    <section><h2>Lottery Rounds</h2><div class="rounds">{round_items}</div></section>
+    <section><h2>Lottery Rounds</h2><div class="round-actions">{event_subscribe}</div><div class="rounds">{round_items}</div></section>
     <section><h2>Manual Sources</h2><ul>{manual_source_items}</ul></section>
+  </main>
+</body>
+</html>"""
+
+
+NOTIFY_CHANNEL_PRESET = "feed,push,email"
+NOTIFY_SCOPE_LABELS = {
+    NOTIFY_SCOPE_ARTIST_ALL: "Artist — all shows",
+    NOTIFY_SCOPE_EVENT_ALL: "Event — all locations",
+    NOTIFY_SCOPE_EVENT_LOCATION: "Event — single location",
+    NOTIFY_SCOPE_ROUND: "Single round",
+}
+
+
+def subscribe_button(
+    watch_id: object,
+    scope: str,
+    label: str,
+    *,
+    location: str = "",
+    round_key: str = "",
+    redirect: str = "",
+    channels: str = NOTIFY_CHANNEL_PRESET,
+) -> str:
+    return f"""
+    <form method="post" action="/subscribe" class="subscribe-form">
+      <input type="hidden" name="watch" value="{html.escape(str(watch_id))}">
+      <input type="hidden" name="scope" value="{html.escape(scope)}">
+      <input type="hidden" name="location" value="{html.escape(location)}">
+      <input type="hidden" name="round_key" value="{html.escape(round_key)}">
+      <input type="hidden" name="channels" value="{html.escape(channels)}">
+      <input type="hidden" name="redirect" value="{html.escape(redirect)}">
+      <button class="action-link" type="submit" title="Notify me">{html.escape(label)}</button>
+    </form>
+    """
+
+
+def render_notifications_page(db_path: str) -> str:
+    watches = {watch.id: watch.keyword for watch in list_watches(db_path, include_muted=True)}
+    subscriptions = list_subscriptions(db_path)
+    feed = notification_feed(db_path, limit=100)
+    subscription_items = "".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(watches.get(subscription.watch_id, str(subscription.watch_id)))}</strong>
+          <small>{html.escape(NOTIFY_SCOPE_LABELS.get(subscription.scope, subscription.scope))}{(' · ' + html.escape(subscription.location)) if subscription.location else ''} · {html.escape(subscription.channels)} · lead {html.escape(subscription.lead_days)}</small></span>
+          <form method="post" action="/subscribe/remove">
+            <input type="hidden" name="identifier" value="{subscription.id}">
+            <input type="hidden" name="redirect" value="/notifications">
+            <button class="action-link" type="submit">Remove</button>
+          </form>
+        </li>
+        """
+        for subscription in subscriptions
+    ) or "<li>No subscriptions yet. Open an event and tap “Notify me”.</li>"
+    feed_items = "".join(
+        f"""
+        <li>
+          <span><strong>{html.escape(str(item.get('title') or ''))}</strong>
+          <small>{html.escape(str(item.get('body') or ''))}</small>
+          <small>{html.escape(str(item.get('created_at') or ''))} · {html.escape(','.join(channel for channel, ok in (item.get('delivered') or {}).items() if ok))}</small></span>
+        </li>
+        """
+        for item in feed
+    ) or "<li>No reminders yet. They appear here as ticket dates approach.</li>"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notifications</title>
+  <style>
+    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent-strong: #9b2446; --shadow: 0 10px 28px rgba(28, 36, 52, 0.08); }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }}
+    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
+    header {{ background: rgba(255,255,255,0.96); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
+    .topbar, main {{ max-width: 900px; margin: 0 auto; }}
+    .topbar {{ display: flex; align-items: center; gap: 12px; }}
+    main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
+    .back {{ display: inline-flex; align-items: center; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-weight: 850; }}
+    section {{ border-top: 1px solid var(--line); padding-top: 18px; }}
+    h1, h2 {{ margin-top: 0; }}
+    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
+    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); overflow-wrap: anywhere; }}
+    small {{ display: block; color: var(--muted); line-height: 1.45; }}
+    .action-link {{ display: inline-flex; align-items: center; min-height: 32px; padding: 6px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; cursor: pointer; }}
+    form {{ margin: 0; }}
+  </style>
+</head>
+<body>
+  <header><div class="topbar"><a class="back" href="/" title="Back">‹</a><strong>Notifications</strong></div></header>
+  <main>
+    <section><h1>Subscriptions</h1><ul>{subscription_items}</ul></section>
+    <section><h2>Recent reminders</h2><ul>{feed_items}</ul></section>
   </main>
 </body>
 </html>"""
@@ -793,6 +899,7 @@ def render_web_page(
   <header>
     <div class="topbar">
       <a class="brand" href="/"><span class="brand-mark">cn</span><span>chusennote</span></a>
+      <a class="back" href="/notifications" title="Notifications">Notifications</a>
     </div>
   </header>
   <main>
@@ -940,6 +1047,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 html_response(self, render_artist_detail_page(db_path, int(path.rsplit("/", 1)[1])))
             elif re.fullmatch(r"/events/\d+", path):
                 html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1])))
+            elif path == "/notifications":
+                html_response(self, render_notifications_page(db_path))
             elif path == "/api/health":
                 json_response(self, api_health(db_path))
             elif path == "/api/watchlist":
@@ -1059,6 +1168,25 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, {"unmuted": set_watch_muted(db_path, form.get("identifier", ""), False)})
             elif path == "/api/run":
                 json_response(self, run_watches(db_path, kind=form.get("kind") or None))
+            elif path == "/subscribe":
+                try:
+                    add_subscription(
+                        db_path,
+                        form.get("watch", ""),
+                        form.get("scope", NOTIFY_SCOPE_EVENT_ALL),
+                        location=form.get("location", ""),
+                        round_key=form.get("round_key", ""),
+                        channels=form.get("channels", NOTIFY_CHANNEL_PRESET),
+                        lead_days=form.get("lead_days", "7,1,0"),
+                    )
+                except ValueError:
+                    pass
+                redirect_response(self, form.get("redirect") or "/notifications")
+            elif path == "/subscribe/remove":
+                identifier = form.get("identifier", "")
+                if str(identifier).isdigit():
+                    remove_subscription(db_path, int(identifier))
+                redirect_response(self, form.get("redirect") or "/notifications")
             elif path == "/api/subscriptions":
                 try:
                     subscription = add_subscription(

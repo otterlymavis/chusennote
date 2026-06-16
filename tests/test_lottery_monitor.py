@@ -644,6 +644,40 @@ def test_web_api_registers_device_and_serves_notifications(tmp_path):
         thread.join(timeout=5)
 
 
+def test_web_ui_subscribe_buttons_and_notifications_page(tmp_path):
+    db_path = tmp_path / "ui.sqlite3"
+    watch = lm.add_watch(str(db_path), "UITour", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(
+        str(db_path),
+        _subscription_event_blocks("UITour", venues=("EXシアター有明", "梅田芸術劇場メインホール")),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
+        assert "Notify me" in detail
+        assert 'value="event_location"' in detail
+        assert 'value="round"' in detail
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base}/subscribe", data=b"watch=1&scope=event_all&channels=feed&redirect=/events/1", method="POST"
+            ),
+            timeout=5,
+        )
+        subs = json.loads(urllib.request.urlopen(f"{base}/api/subscriptions", timeout=5).read().decode("utf-8"))
+        assert any(subscription["scope"] == "event_all" for subscription in subs)
+        page = urllib.request.urlopen(f"{base}/notifications", timeout=5).read().decode("utf-8")
+        assert "Subscriptions" in page
+        assert "Event — all locations" in page
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def test_clear_performance_window_rounds_nulls_show_run_dates():
     # tv-asahi prints the show's run beside a lottery label; it must not be kept
     # as the application window, while a genuine lottery window is preserved.
