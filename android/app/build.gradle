@@ -1,6 +1,5 @@
 plugins {
     id "com.android.application"
-    id "com.google.gms.google-services"
 }
 
 android {
@@ -19,4 +18,11 @@ android {
 dependencies {
     implementation platform("com.google.firebase:firebase-bom:33.5.1")
     implementation "com.google.firebase:firebase-messaging"
+}
+
+// Apply Firebase's google-services plugin only once you have added
+// app/google-services.json from your Firebase project. Until then the app
+// still builds and runs; push registration is simply disabled at runtime.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
 }

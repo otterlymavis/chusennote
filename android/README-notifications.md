@@ -44,8 +44,10 @@ If a channel is unconfigured it silently no-ops; the in-app feed
    `chusennote_reminders` channel, fetches its FCM token, and registers it with
    the backend (`POST /api/devices`). Incoming pushes show in the channel.
 
-(The Firebase Messaging dependency and `google-services` plugin are already
-wired in `android/build.gradle` and `android/app/build.gradle`.)
+The app **builds and runs without Firebase**: `android/app/build.gradle`
+applies the `google-services` plugin only when `google-services.json` is
+present, and push registration is skipped at runtime until then. Just drop the
+file in and rebuild to enable push — no gradle edits needed.
 
 ## 4. iOS
 
