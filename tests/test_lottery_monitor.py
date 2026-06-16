@@ -492,6 +492,119 @@ def test_save_blocks_prunes_search_fallback_once_real_show_exists(tmp_path):
     assert titles == ["YOASOBI ASIA TOUR 2026"]
 
 
+def _subscription_event_blocks(keyword="Sub", venues=("EXシアター有明",), rounds=None):
+    if rounds is None:
+        rounds = (
+            lm.TicketRound(
+                source="pia", platform="pia", url="https://t.pia.jp/x", name="第1次抽選先行",
+                lottery_start="2026-06-23", lottery_end="2026-06-30", results_date="2026-07-05",
+                evidence="東京 EXシアター有明 抽選先行",
+            ),
+        )
+    return lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword=keyword, official_page="https://official.example/", title=f"{keyword} Tour",
+            summary="", event_dates=("2026年8月10日",), venues=venues, ticket_links=(),
+        ),
+        ticket_info=rounds,
+    )
+
+
+def test_notification_run_delivers_due_reminders_and_is_idempotent(tmp_path):
+    db_path = tmp_path / "n.sqlite3"
+    watch = lm.add_watch(str(db_path), "Sub", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(str(db_path), _subscription_event_blocks("Sub"), now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    lm.add_subscription(str(db_path), "Sub", lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed")
+
+    # 7 days before the 2026-06-23 open date.
+    first = lm.run_notifications(str(db_path), now="2026-06-16T00:00:00+00:00")
+    assert any(n["label"] == "Lottery application opens" and n["lead_days"] == 7 for n in first)
+    assert lm.run_notifications(str(db_path), now="2026-06-16T00:00:00+00:00") == []
+    # 1 day before the 2026-06-30 close date.
+    later = lm.run_notifications(str(db_path), now="2026-06-29T00:00:00+00:00")
+    assert any(n["label"] == "Lottery application closes" and n["lead_days"] == 1 for n in later)
+    assert lm.notification_feed(str(db_path))
+
+
+def test_event_location_subscription_filters_rounds_by_city(tmp_path):
+    db_path = tmp_path / "n.sqlite3"
+    watch = lm.add_watch(str(db_path), "Tour", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    blocks = _subscription_event_blocks(
+        "Tour",
+        venues=("EXシアター有明", "梅田芸術劇場メインホール"),
+        rounds=(
+            lm.TicketRound(source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+                           name="抽選先行", general_sale_date="2026-06-23", evidence="東京 EXシアター有明 抽選先行"),
+            lm.TicketRound(source="pia", platform="pia", url="https://w.pia.jp/t/x",
+                           name="一般発売", general_sale_date="2026-06-23", evidence="大阪 梅田芸術劇場 一般発売"),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    lm.add_subscription(str(db_path), "Tour", lm.NOTIFY_SCOPE_EVENT_LOCATION, location="東京", channels="feed")
+
+    delivered = lm.run_notifications(str(db_path), now="2026-06-16T00:00:00+00:00")
+    locations = {n["location"] for n in delivered if n["field"] == "general_sale_date"}
+    assert locations == {"東京"}
+
+
+def test_round_subscription_targets_a_single_round(tmp_path):
+    db_path = tmp_path / "n.sqlite3"
+    watch = lm.add_watch(str(db_path), "One", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    blocks = _subscription_event_blocks(
+        "One",
+        rounds=(
+            lm.TicketRound(source="pia", platform="pia", url="https://t.pia.jp/a", name="第1次抽選先行", lottery_start="2026-06-23"),
+            lm.TicketRound(source="eplus", platform="eplus", url="https://eplus.jp/b", name="第2次抽選先行", lottery_start="2026-06-23"),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    event = lm.recent_events(str(db_path))[0]
+    target = next(r for r in event["rounds"] if r["name"] == "第2次抽選先行")
+    lm.add_subscription(str(db_path), "One", lm.NOTIFY_SCOPE_ROUND, round_key=target["round_key"], channels="feed")
+
+    delivered = lm.run_notifications(str(db_path), now="2026-06-16T00:00:00+00:00")
+    assert {n["subject"] for n in delivered} == {"第2次抽選先行"}
+
+
+def test_notify_cli_and_device_registration(tmp_path, capsys):
+    db_path = tmp_path / "n.sqlite3"
+    watch = lm.add_watch(str(db_path), "CLI", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(str(db_path), _subscription_event_blocks("CLI"), now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+
+    assert lm.main(["notify", "subscribe", "CLI", "--scope", "event_all", "--channels", "feed,push", "--db", str(db_path)]) == 0
+    assert "Subscribed" in capsys.readouterr().out
+    assert lm.main(["notify", "device", "add", "device-token-xyz", "--platform", "android", "--db", str(db_path)]) == 0
+    assert "Registered device" in capsys.readouterr().out
+    assert lm.main(["notify", "list", "--json", "--db", str(db_path)]) == 0
+    assert '"scope": "event_all"' in capsys.readouterr().out
+
+
+def test_web_api_registers_device_and_serves_notifications(tmp_path):
+    db_path = tmp_path / "n.sqlite3"
+    watch = lm.add_watch(str(db_path), "Web", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(str(db_path), _subscription_event_blocks("Web"), now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    lm.add_subscription(str(db_path), "Web", lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed")
+    lm.run_notifications(str(db_path), now="2026-06-16T00:00:00+00:00")
+
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        register = json.loads(
+            urllib.request.urlopen(
+                urllib.request.Request(f"{base}/api/devices", data=b"token=abc123&platform=ios", method="POST"),
+                timeout=5,
+            ).read().decode("utf-8")
+        )
+        assert register["platform"] == "ios"
+        feed = json.loads(urllib.request.urlopen(f"{base}/api/notifications", timeout=5).read().decode("utf-8"))
+        assert any(item["label"] == "Lottery application opens" for item in feed)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def test_clear_performance_window_rounds_nulls_show_run_dates():
     # tv-asahi prints the show's run beside a lottery label; it must not be kept
     # as the application window, while a genuine lottery window is preserved.

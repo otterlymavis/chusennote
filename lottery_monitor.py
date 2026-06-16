@@ -22,6 +22,7 @@ from chusennote import (  # noqa: F401  (re-exported for monkeypatch targets)
     extract,
     models,
     netio,
+    notifications,
     pipeline,
     read_models,
     schema,
@@ -39,6 +40,7 @@ from chusennote.crud import *  # noqa: F401,F403
 from chusennote.read_models import *  # noqa: F401,F403
 from chusennote.pipeline import *  # noqa: F401,F403
 from chusennote.web import *  # noqa: F401,F403
+from chusennote.notifications import *  # noqa: F401,F403
 
 
 def render_blocks(blocks: AppBlocks) -> str:
@@ -82,7 +84,7 @@ def render_blocks(blocks: AppBlocks) -> str:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     cleaned_argv, session_log, session_log_dir = split_session_log_args(argv)
-    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "db", "-h", "--help"}:
+    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "db", "notify", "-h", "--help"}:
         parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
         parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
         parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
@@ -204,6 +206,49 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
     web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
 
+    notify_parser = subparsers.add_parser("notify", help="Manage notification subscriptions and delivery")
+    notify_subparsers = notify_parser.add_subparsers(dest="notify_command", required=True)
+
+    notify_sub = notify_subparsers.add_parser("subscribe", help="Subscribe a watch to date reminders")
+    notify_sub.add_argument("watch", help="Artist/event watch id or keyword")
+    notify_sub.add_argument("--scope", choices=NOTIFY_SCOPES, default=NOTIFY_SCOPE_EVENT_ALL)
+    notify_sub.add_argument("--location", default="", help="City/location for event_location scope")
+    notify_sub.add_argument("--round-key", default="", help="Round key for round scope")
+    notify_sub.add_argument("--channels", default=DEFAULT_NOTIFY_CHANNELS, help="Comma list: feed,email,push")
+    notify_sub.add_argument("--lead-days", default="7,1,0", help="Days before each date to remind")
+    notify_sub.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
+    notify_list = notify_subparsers.add_parser("list", help="List notification subscriptions")
+    notify_list.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    notify_list.add_argument("--json", action="store_true")
+
+    notify_remove = notify_subparsers.add_parser("remove", help="Remove a subscription by id")
+    notify_remove.add_argument("identifier")
+    notify_remove.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
+    notify_run = notify_subparsers.add_parser("run", help="Generate and deliver due reminders")
+    notify_run.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    notify_run.add_argument("--json", action="store_true")
+    notify_run.add_argument("--no-deliver", action="store_true", help="Record reminders without sending email/push")
+
+    notify_feed = notify_subparsers.add_parser("feed", help="Show recent reminders")
+    notify_feed.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    notify_feed.add_argument("--json", action="store_true")
+
+    device_parser = notify_subparsers.add_parser("device", help="Manage mobile push device tokens")
+    device_subparsers = device_parser.add_subparsers(dest="device_command", required=True)
+    device_add = device_subparsers.add_parser("add", help="Register a device push token")
+    device_add.add_argument("token")
+    device_add.add_argument("--platform", choices=("android", "ios"), default="android")
+    device_add.add_argument("--label", default="")
+    device_add.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    device_list = device_subparsers.add_parser("list", help="List registered devices")
+    device_list.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    device_list.add_argument("--json", action="store_true")
+    device_remove = device_subparsers.add_parser("remove", help="Remove a device by token or id")
+    device_remove.add_argument("identifier")
+    device_remove.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+
     db_parser = subparsers.add_parser("db", help="Maintain the local SQLite database")
     db_subparsers = db_parser.add_subparsers(dest="db_command", required=True)
     cleanup_parser = db_subparsers.add_parser("cleanup", help="Remove stale fallback and orphaned rows")
@@ -252,6 +297,93 @@ def render_watch_sources(sources: Sequence[WatchSource]) -> str:
     return "\n".join(lines)
 
 
+def subscriptions_to_json(subscriptions: Sequence[NotificationSubscription]) -> str:
+    return json.dumps([dataclasses.asdict(subscription) for subscription in subscriptions], ensure_ascii=False, indent=2)
+
+
+def devices_to_json(devices: Sequence[DeviceToken]) -> str:
+    return json.dumps([dataclasses.asdict(device) for device in devices], ensure_ascii=False, indent=2)
+
+
+def run_notify_command(args: argparse.Namespace) -> int:
+    if args.notify_command == "subscribe":
+        try:
+            subscription = add_subscription(
+                args.db,
+                args.watch,
+                args.scope,
+                location=args.location,
+                round_key=args.round_key,
+                channels=args.channels,
+                lead_days=args.lead_days,
+            )
+        except ValueError as error:
+            print(str(error))
+            return 1
+        print(f"Subscribed ({subscription.id}): watch {subscription.watch_id} · {subscription.scope} · channels {subscription.channels}")
+        return 0
+    if args.notify_command == "list":
+        subscriptions = list_subscriptions(args.db)
+        if args.json:
+            print(subscriptions_to_json(subscriptions))
+        elif not subscriptions:
+            print("No subscriptions.")
+        else:
+            for subscription in subscriptions:
+                location = f" location={subscription.location}" if subscription.location else ""
+                round_key = f" round={subscription.round_key}" if subscription.round_key else ""
+                disabled = "" if subscription.enabled else " [disabled]"
+                print(f"- {subscription.id}: watch {subscription.watch_id} · {subscription.scope}{location}{round_key} · {subscription.channels} · lead {subscription.lead_days}{disabled}")
+        return 0
+    if args.notify_command == "remove":
+        removed = remove_subscription(args.db, int(args.identifier)) if str(args.identifier).isdigit() else False
+        print("Removed subscription." if removed else "Subscription not found.")
+        return 0 if removed else 1
+    if args.notify_command == "run":
+        delivered = run_notifications(args.db, deliver=not args.no_deliver)
+        if args.json:
+            print(json.dumps(delivered, ensure_ascii=False, indent=2))
+        else:
+            print(f"Delivered {len(delivered)} reminder(s).")
+            for notification in delivered:
+                print(f"- {notification['title']}: {notification['body']}")
+        return 0
+    if args.notify_command == "feed":
+        feed = notification_feed(args.db)
+        if args.json:
+            print(json.dumps(feed, ensure_ascii=False, indent=2))
+        elif not feed:
+            print("No reminders yet.")
+        else:
+            for notification in feed:
+                print(f"- {notification.get('created_at')} {notification.get('title')}: {notification.get('body')}")
+        return 0
+    if args.notify_command == "device":
+        if args.device_command == "add":
+            try:
+                device = register_device(args.db, args.token, platform=args.platform, label=args.label)
+            except ValueError as error:
+                print(str(error))
+                return 1
+            print(f"Registered device {device.id} ({device.platform}).")
+            return 0
+        if args.device_command == "list":
+            devices = list_devices(args.db)
+            if args.json:
+                print(devices_to_json(devices))
+            elif not devices:
+                print("No registered devices.")
+            else:
+                for device in devices:
+                    print(f"- {device.id}: {device.platform} · {device.label or device.token[:16]}")
+            return 0
+        if args.device_command == "remove":
+            removed = remove_device(args.db, args.identifier)
+            print("Removed device." if removed else "Device not found.")
+            return 0 if removed else 1
+    return 0
+
+
 def run_command(args: argparse.Namespace) -> int:
     if args.command == "web":
         run_web(args.db, args.port, args.host)
@@ -268,6 +400,8 @@ def run_command(args: argparse.Namespace) -> int:
                     if count:
                         print(f"- {key}: {count}")
             return 0
+    if args.command == "notify":
+        return run_notify_command(args)
     if args.command == "export":
         if args.target == "events":
             print(

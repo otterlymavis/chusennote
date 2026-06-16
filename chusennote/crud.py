@@ -982,3 +982,170 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_i
         alerts.extend(record_lifecycle_alerts(connection, event_id, event_title, normalized_rounds, timestamp))
         save_snapshot(connection, event_id, dataclasses.replace(blocks, ticket_info=normalized_rounds), timestamp)
         return alerts
+
+
+# --- Notification subscriptions, device tokens, and the delivery log ----------
+
+
+def subscription_from_row(row: sqlite3.Row | tuple[object, ...]) -> NotificationSubscription:
+    return NotificationSubscription(
+        id=int(row[0]),
+        watch_id=int(row[1]),
+        scope=str(row[2]),
+        location=str(row[3] or ""),
+        round_key=str(row[4] or ""),
+        channels=str(row[5] or DEFAULT_NOTIFY_CHANNELS),
+        lead_days=str(row[6] or "7,1,0"),
+        enabled=bool(row[7]),
+    )
+
+
+def add_subscription(
+    db_path: str,
+    watch_identifier: str,
+    scope: str,
+    location: str = "",
+    round_key: str = "",
+    channels: str = DEFAULT_NOTIFY_CHANNELS,
+    lead_days: str = "7,1,0",
+    now: str | None = None,
+) -> NotificationSubscription:
+    if scope not in NOTIFY_SCOPES:
+        raise ValueError(f"Unknown notification scope: {scope}")
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        watch = resolve_watch(connection, watch_identifier)
+        if not watch:
+            raise ValueError(f"Watch not found: {watch_identifier}")
+        connection.execute(
+            """
+            INSERT INTO notification_subscriptions(
+                watch_id, scope, location, round_key, channels, lead_days, enabled, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(watch_id, scope, location, round_key) DO UPDATE SET
+                channels = excluded.channels,
+                lead_days = excluded.lead_days,
+                enabled = 1,
+                updated_at = excluded.updated_at
+            """,
+            (watch.id, scope, location, round_key, channels, lead_days, timestamp, timestamp),
+        )
+        row = connection.execute(
+            """
+            SELECT id, watch_id, scope, location, round_key, channels, lead_days, enabled
+            FROM notification_subscriptions
+            WHERE watch_id = ? AND scope = ? AND location = ? AND round_key = ?
+            """,
+            (watch.id, scope, location, round_key),
+        ).fetchone()
+        return subscription_from_row(row)
+
+
+def list_subscriptions(db_path: str, watch_id: int | None = None, enabled_only: bool = False) -> list[NotificationSubscription]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        clauses: list[str] = []
+        params: list[object] = []
+        if watch_id is not None:
+            clauses.append("watch_id = ?")
+            params.append(watch_id)
+        if enabled_only:
+            clauses.append("enabled = 1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = connection.execute(
+            f"""
+            SELECT id, watch_id, scope, location, round_key, channels, lead_days, enabled
+            FROM notification_subscriptions
+            {where}
+            ORDER BY id
+            """,
+            params,
+        ).fetchall()
+        return [subscription_from_row(row) for row in rows]
+
+
+def remove_subscription(db_path: str, subscription_id: int) -> bool:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        cursor = connection.execute("DELETE FROM notification_subscriptions WHERE id = ?", (subscription_id,))
+        return cursor.rowcount > 0
+
+
+def set_subscription_enabled(db_path: str, subscription_id: int, enabled: bool, now: str | None = None) -> bool:
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        cursor = connection.execute(
+            "UPDATE notification_subscriptions SET enabled = ?, updated_at = ? WHERE id = ?",
+            (int(enabled), timestamp, subscription_id),
+        )
+        return cursor.rowcount > 0
+
+
+def device_token_from_row(row: sqlite3.Row | tuple[object, ...]) -> DeviceToken:
+    return DeviceToken(id=int(row[0]), token=str(row[1]), platform=str(row[2] or "android"), label=str(row[3] or ""))
+
+
+def register_device(db_path: str, token: str, platform: str = "android", label: str = "", now: str | None = None) -> DeviceToken:
+    token = clean_text(token)
+    if not token:
+        raise ValueError("Device token is required")
+    timestamp = now or utc_now_iso()
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        connection.execute(
+            """
+            INSERT INTO device_tokens(token, platform, label, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token) DO UPDATE SET platform = excluded.platform, label = excluded.label, updated_at = excluded.updated_at
+            """,
+            (token, platform, label, timestamp, timestamp),
+        )
+        row = connection.execute(
+            "SELECT id, token, platform, label FROM device_tokens WHERE token = ?", (token,)
+        ).fetchone()
+        return device_token_from_row(row)
+
+
+def list_devices(db_path: str) -> list[DeviceToken]:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        rows = connection.execute("SELECT id, token, platform, label FROM device_tokens ORDER BY id").fetchall()
+        return [device_token_from_row(row) for row in rows]
+
+
+def remove_device(db_path: str, identifier: str) -> bool:
+    with sqlite3.connect(db_path) as connection:
+        init_db(connection)
+        cursor = connection.execute(
+            "DELETE FROM device_tokens WHERE token = ? OR id = ?",
+            (identifier, identifier if str(identifier).isdigit() else -1),
+        )
+        return cursor.rowcount > 0
+
+
+def notification_already_sent(connection: sqlite3.Connection, notification_key: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM notification_log WHERE notification_key = ?", (notification_key,)
+    ).fetchone() is not None
+
+
+def record_notification(
+    connection: sqlite3.Connection,
+    notification_key: str,
+    subscription_id: int | None,
+    event_id: int | None,
+    channel: str,
+    payload: dict[str, object],
+    now: str,
+) -> bool:
+    cursor = connection.execute(
+        """
+        INSERT OR IGNORE INTO notification_log(notification_key, subscription_id, event_id, channel, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (notification_key, subscription_id, event_id, channel, json.dumps(payload, ensure_ascii=False, sort_keys=True), now),
+    )
+    return cursor.rowcount > 0

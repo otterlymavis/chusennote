@@ -12,6 +12,7 @@ import dataclasses
 import datetime as dt
 import json
 import sqlite3
+from collections.abc import Sequence
 
 from .models import *  # noqa: F401,F403
 from .util import *  # noqa: F401,F403
@@ -20,6 +21,54 @@ from .search import *  # noqa: F401,F403
 from .extract import *  # noqa: F401,F403
 from .schema import *  # noqa: F401,F403
 from .crud import *  # noqa: F401,F403
+
+
+TOUR_CITY_KEYWORDS = (
+    "東京", "大阪", "名古屋", "福岡", "札幌", "仙台", "横浜", "京都", "神戸", "広島",
+    "金沢", "静岡", "北海道", "愛知", "兵庫", "群馬", "埼玉", "千葉", "神奈川", "新潟",
+)
+# Famous touring venues whose name does not contain their city.
+VENUE_CITY_HINTS = (
+    ("御園座", "名古屋"), ("梅田", "大阪"), ("有明", "東京"), ("EXシアター", "東京"),
+    ("日生劇場", "東京"), ("帝国劇場", "東京"), ("博多座", "福岡"), ("南座", "京都"),
+    ("シアターBRAVA", "大阪"), ("オリックス", "大阪"), ("キャナルシティ", "福岡"),
+)
+UNSPECIFIED_LOCATION = "公演共通 (all performances)"
+
+
+def city_for_text(text: str) -> str:
+    """Infer a city from free text via direct names then known venue hints."""
+    for city in TOUR_CITY_KEYWORDS:
+        if city in text:
+            return city
+    for hint, city in VENUE_CITY_HINTS:
+        if hint in text:
+            return city
+    return ""
+
+
+def detect_round_location(ticket: dict[str, object], venues: Sequence[str]) -> str:
+    """Best-effort location for a round from its name, evidence, and venues."""
+    name = clean_text(str(ticket.get("name") or ""))
+    haystack = f"{name} {clean_text(str(ticket.get('evidence') or ''))}"
+    city = city_for_text(haystack)
+    if city:
+        return city
+    for venue in venues:
+        if venue and venue in haystack:
+            return city_for_text(venue) or venue
+    if "追加公演" in name:
+        return "追加公演"
+    return ""
+
+
+def tour_stops(venues: Sequence[str], event_dates: Sequence[str]) -> list[tuple[str, str, str]]:
+    """Pair each venue with its performance period as (city, venue, date)."""
+    stops: list[tuple[str, str, str]] = []
+    for index, venue in enumerate(venues):
+        date = event_dates[index] if index < len(event_dates) else ""
+        stops.append((city_for_text(venue), venue, date))
+    return stops
 
 
 def event_match_reasons(event: dict[str, object]) -> list[str]:
@@ -115,7 +164,7 @@ def recent_events(
                 """
                 SELECT name, platform, url, application_start_at, application_end_at,
                        results_date, general_sale_date, payment_end_at, status, confidence,
-                       round_type, membership_required, evidence
+                       round_type, membership_required, evidence, round_key
                 FROM ticket_rounds
                 WHERE event_id = ?
                 ORDER BY platform, round_number, name
@@ -146,6 +195,7 @@ def recent_events(
                     "round_type": ticket[10],
                     "membership_required": ticket[11],
                     "evidence": ticket[12],
+                    "round_key": ticket[13],
                 }
                 for ticket in rounds
                 if not is_noisy_url(ticket[2])

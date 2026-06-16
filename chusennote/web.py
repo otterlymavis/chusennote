@@ -26,6 +26,7 @@ from .schema import *  # noqa: F401,F403
 from .crud import *  # noqa: F401,F403
 from .read_models import *  # noqa: F401,F403
 from .pipeline import *  # noqa: F401,F403
+from .notifications import *  # noqa: F401,F403
 
 
 def web_source_link(url: object, label: str = "Open") -> str:
@@ -145,54 +146,6 @@ def format_evidence_snippet(value: object, limit: int = 180) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}..."
-
-
-TOUR_CITY_KEYWORDS = (
-    "東京", "大阪", "名古屋", "福岡", "札幌", "仙台", "横浜", "京都", "神戸", "広島",
-    "金沢", "静岡", "北海道", "愛知", "兵庫", "群馬", "埼玉", "千葉", "神奈川", "新潟",
-)
-# Famous touring venues whose name does not contain their city.
-VENUE_CITY_HINTS = (
-    ("御園座", "名古屋"), ("梅田", "大阪"), ("有明", "東京"), ("EXシアター", "東京"),
-    ("日生劇場", "東京"), ("帝国劇場", "東京"), ("博多座", "福岡"), ("南座", "京都"),
-    ("シアターBRAVA", "大阪"), ("オリックス", "大阪"), ("キャナルシティ", "福岡"),
-)
-UNSPECIFIED_LOCATION = "公演共通 (all performances)"
-
-
-def city_for_text(text: str) -> str:
-    """Infer a city from free text via direct names then known venue hints."""
-    for city in TOUR_CITY_KEYWORDS:
-        if city in text:
-            return city
-    for hint, city in VENUE_CITY_HINTS:
-        if hint in text:
-            return city
-    return ""
-
-
-def detect_round_location(ticket: dict[str, object], venues: Sequence[str]) -> str:
-    """Best-effort location for a round from its name, evidence, and venues."""
-    name = clean_text(str(ticket.get("name") or ""))
-    haystack = f"{name} {clean_text(str(ticket.get('evidence') or ''))}"
-    city = city_for_text(haystack)
-    if city:
-        return city
-    for venue in venues:
-        if venue and venue in haystack:
-            return city_for_text(venue) or venue
-    if "追加公演" in name:
-        return "追加公演"
-    return ""
-
-
-def tour_stops(venues: Sequence[str], event_dates: Sequence[str]) -> list[tuple[str, str, str]]:
-    """Pair each venue with its performance period as (city, venue, date)."""
-    stops: list[tuple[str, str, str]] = []
-    for index, venue in enumerate(venues):
-        date = event_dates[index] if index < len(event_dates) else ""
-        stops.append((city_for_text(venue), venue, date))
-    return stops
 
 
 def render_event_detail_page(db_path: str, event_id: int) -> str:
@@ -1007,6 +960,13 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, upcoming_priority_rows(db_path, include_muted_watches=include_muted))
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path))
+            elif path == "/api/notifications":
+                limit = int(query.get("limit", ["100"])[0] or "100")
+                json_response(self, notification_feed(db_path, limit=limit))
+            elif path == "/api/subscriptions":
+                json_response(self, [dataclasses.asdict(subscription) for subscription in list_subscriptions(db_path)])
+            elif path == "/api/devices":
+                json_response(self, [dataclasses.asdict(device) for device in list_devices(db_path)])
             elif path == "/api/sources":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=include_muted)])
@@ -1099,6 +1059,39 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, {"unmuted": set_watch_muted(db_path, form.get("identifier", ""), False)})
             elif path == "/api/run":
                 json_response(self, run_watches(db_path, kind=form.get("kind") or None))
+            elif path == "/api/subscriptions":
+                try:
+                    subscription = add_subscription(
+                        db_path,
+                        form.get("watch", ""),
+                        form.get("scope", NOTIFY_SCOPE_EVENT_ALL),
+                        location=form.get("location", ""),
+                        round_key=form.get("round_key", ""),
+                        channels=form.get("channels", DEFAULT_NOTIFY_CHANNELS),
+                        lead_days=form.get("lead_days", "7,1,0"),
+                    )
+                except ValueError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, dataclasses.asdict(subscription))
+            elif path == "/api/subscriptions/remove":
+                identifier = form.get("identifier", "")
+                removed = remove_subscription(db_path, int(identifier)) if str(identifier).isdigit() else False
+                json_response(self, {"removed": removed})
+            elif path == "/api/devices":
+                try:
+                    device = register_device(
+                        db_path,
+                        form.get("token", ""),
+                        platform=form.get("platform", "android"),
+                        label=form.get("label", ""),
+                    )
+                except ValueError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, dataclasses.asdict(device))
+            elif path == "/api/notifications/run":
+                json_response(self, run_notifications(db_path))
             elif path == "/api/sources":
                 try:
                     source = add_watch_source(

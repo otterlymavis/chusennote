@@ -37,7 +37,7 @@ SEARCH_API_KEY_ENV = "CHUSENNOTE_SEARCH_API_KEY"
 TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
 DEFAULT_SESSION_LOG_DIR = "history_logs"
-DB_SCHEMA_VERSION = 4
+DB_SCHEMA_VERSION = 5
 MIN_KEYWORD_OVERLAP = 0.45
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
@@ -257,3 +257,52 @@ class WatchSource:
     confidence: int
     private_note: bool = False
     muted: bool = False
+
+
+# Notification subscriptions: how granular a user wants to be reminded.
+#   artist_all     - every event/show discovered under an artist watch
+#   event_all      - every location and round of a tracked event
+#   event_location - only rounds/shows at one location (city) of an event
+#   round          - a single named lottery round
+NOTIFY_SCOPE_ARTIST_ALL = "artist_all"
+NOTIFY_SCOPE_EVENT_ALL = "event_all"
+NOTIFY_SCOPE_EVENT_LOCATION = "event_location"
+NOTIFY_SCOPE_ROUND = "round"
+NOTIFY_SCOPES = (
+    NOTIFY_SCOPE_ARTIST_ALL,
+    NOTIFY_SCOPE_EVENT_ALL,
+    NOTIFY_SCOPE_EVENT_LOCATION,
+    NOTIFY_SCOPE_ROUND,
+)
+NOTIFY_CHANNELS = ("feed", "email", "push")
+DEFAULT_NOTIFY_CHANNELS = "feed"
+# Remind ahead of and on each date: 7 days before, 1 day before, the day itself.
+DEFAULT_LEAD_DAYS = (7, 1, 0)
+# Push delivery (FCM) and email (SMTP) are configured through the environment.
+FCM_SERVER_KEY_ENV = "CHUSENNOTE_FCM_SERVER_KEY"
+SMTP_HOST_ENV = "CHUSENNOTE_SMTP_HOST"
+SMTP_PORT_ENV = "CHUSENNOTE_SMTP_PORT"
+SMTP_USER_ENV = "CHUSENNOTE_SMTP_USER"
+SMTP_PASSWORD_ENV = "CHUSENNOTE_SMTP_PASSWORD"
+SMTP_FROM_ENV = "CHUSENNOTE_SMTP_FROM"
+NOTIFY_EMAIL_ENV = "CHUSENNOTE_NOTIFY_EMAIL"
+
+
+@dataclasses.dataclass(frozen=True)
+class NotificationSubscription:
+    id: int
+    watch_id: int
+    scope: str
+    location: str = ""
+    round_key: str = ""
+    channels: str = DEFAULT_NOTIFY_CHANNELS
+    lead_days: str = "7,1,0"
+    enabled: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class DeviceToken:
+    id: int
+    token: str
+    platform: str = "android"
+    label: str = ""

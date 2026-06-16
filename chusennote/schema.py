@@ -195,6 +195,40 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             UNIQUE(watch_id, url),
             FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
         );
+
+        CREATE TABLE IF NOT EXISTS notification_subscriptions (
+            id INTEGER PRIMARY KEY,
+            watch_id INTEGER NOT NULL,
+            scope TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '',
+            round_key TEXT NOT NULL DEFAULT '',
+            channels TEXT NOT NULL DEFAULT 'feed',
+            lead_days TEXT NOT NULL DEFAULT '7,1,0',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(watch_id, scope, location, round_key),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_log (
+            id INTEGER PRIMARY KEY,
+            notification_key TEXT NOT NULL UNIQUE,
+            subscription_id INTEGER,
+            event_id INTEGER,
+            channel TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            id INTEGER PRIMARY KEY,
+            token TEXT NOT NULL UNIQUE,
+            platform TEXT NOT NULL DEFAULT 'android',
+            label TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
     connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
