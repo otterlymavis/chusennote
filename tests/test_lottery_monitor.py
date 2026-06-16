@@ -1718,11 +1718,46 @@ def test_event_detail_groups_lottery_rounds_by_ticket_website(tmp_path):
 
     detail = lm.render_event_detail_page(str(db_path), 1)
 
+    # Rounds are grouped by performance location; with no venue stated both fall
+    # under the shared group, and the platform is shown on each card.
     assert '<div class="round-group-head">' in detail
-    assert "<h3>pia</h3>" in detail
-    assert "<h3>eplus</h3>" in detail
+    assert "公演共通" in detail
+    assert "<strong>pia</strong>" in detail
+    assert "<strong>eplus</strong>" in detail
     assert "先着先行 / ゴールド会員" in detail
     assert "プレオーダー / 無料会員" in detail
+
+
+def test_event_detail_groups_touring_rounds_by_city(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Tour",
+            official_page="https://official.example/",
+            title="Tour Event",
+            summary="",
+            event_dates=("2026年7月25日(土)～8月23日(日)", "2026年9月10日(木)～21日(月祝)"),
+            venues=("EXシアター有明", "梅田芸術劇場メインホール"),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+                name="抽選先行", general_sale_date="2026-07-25", evidence="東京 EXシアター有明 抽選先行",
+            ),
+            lm.TicketRound(
+                source="pia", platform="pia", url="https://w.pia.jp/t/x/",
+                name="一般発売", general_sale_date="2026-09-10", evidence="大阪 梅田芸術劇場 一般発売",
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-04T00:00:00+00:00")
+
+    detail = lm.render_event_detail_page(str(db_path), 1)
+
+    assert "Locations &amp; Tour Dates" in detail
+    # Each city is its own round group, ordered as the tour runs.
+    assert detail.index("<h3>東京</h3>") < detail.index("<h3>大阪</h3>")
 
 
 def test_tracked_event_display_key_prioritizes_official_pages():
