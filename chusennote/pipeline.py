@@ -288,6 +288,7 @@ def run_watch_loop(
     stop_after_errors: int | None = None,
     sleep_func=time.sleep,
     run_func=run_watches,
+    notify_func=None,
 ) -> int:
     interval_seconds = interval_minutes * 60
     run_count = 0
@@ -302,11 +303,16 @@ def run_watch_loop(
                 alerts = run_func(db_path, kind=kind)
                 run_count += 1
                 error_count = 0
+                reminders = notify_func(db_path) if notify_func else []
                 if alerts_json:
-                    print(json.dumps({"run": run_count, "alerts": alerts}, ensure_ascii=False))
+                    payload = {"run": run_count, "alerts": alerts}
+                    if notify_func:
+                        payload["reminders"] = len(reminders)
+                    print(json.dumps(payload, ensure_ascii=False))
                 else:
                     scope = kind or "all"
-                    print(f"Run {run_count}: checked {scope} watches; {len(alerts)} alerts.")
+                    reminder_note = f" {len(reminders)} reminders sent." if notify_func else ""
+                    print(f"Run {run_count}: checked {scope} watches; {len(alerts)} alerts.{reminder_note}")
             except (OSError, ValueError, sqlite3.Error) as error:
                 run_count += 1
                 error_count += 1

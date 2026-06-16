@@ -459,10 +459,11 @@ def run_command(args: argparse.Namespace) -> int:
             return 0 if unmuted else 1
         if args.kind_command == "run":
             alerts = run_watches(args.db, kind=args.kind)
+            reminders = run_notifications(args.db)
             if args.alerts_json:
                 print(json.dumps(alerts, ensure_ascii=False, indent=2))
             else:
-                print(f"Ran {len(list_watches(args.db, kind=args.kind))} active tracked {args.kind}s; {len(alerts)} alerts.")
+                print(f"Ran {len(list_watches(args.db, kind=args.kind))} active tracked {args.kind}s; {len(alerts)} alerts; {len(reminders)} reminders sent.")
             return 0
     if args.command == "watch":
         if args.watch_command == "source":
@@ -519,10 +520,11 @@ def run_command(args: argparse.Namespace) -> int:
             return 0 if unmuted else 1
         if args.watch_command == "run":
             alerts = run_watches(args.db)
+            reminders = run_notifications(args.db)
             if args.alerts_json:
                 print(json.dumps(alerts, ensure_ascii=False, indent=2))
             else:
-                print(f"Ran {len(list_watches(args.db))} active watches; {len(alerts)} alerts.")
+                print(f"Ran {len(list_watches(args.db))} active watches; {len(alerts)} alerts; {len(reminders)} reminders sent.")
             return 0
         if args.watch_command == "loop":
             return run_watch_loop(
@@ -533,6 +535,7 @@ def run_command(args: argparse.Namespace) -> int:
                 max_runs=args.max_runs,
                 run_immediately=args.run_immediately,
                 stop_after_errors=args.stop_after_errors,
+                notify_func=run_notifications,
             )
 
     blocks = build_blocks(args.keyword)

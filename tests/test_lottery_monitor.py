@@ -579,6 +579,45 @@ def test_notify_cli_and_device_registration(tmp_path, capsys):
     assert '"scope": "event_all"' in capsys.readouterr().out
 
 
+def test_watch_loop_delivers_reminders_each_run(capsys):
+    calls = []
+
+    def fake_notify(db_path):
+        calls.append(db_path)
+        return [{"title": "reminder"}]
+
+    assert lm.run_watch_loop(
+        "loop.sqlite3",
+        interval_minutes=0,
+        kind=lm.WATCH_KIND_EVENT,
+        max_runs=1,
+        run_func=lambda db_path, kind=None: [],
+        sleep_func=lambda seconds: None,
+        notify_func=fake_notify,
+    ) == 0
+
+    assert calls == ["loop.sqlite3"]
+    assert "1 reminders sent." in capsys.readouterr().out
+
+
+def test_event_run_cli_invokes_reminder_delivery(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "n.sqlite3"
+    lm.add_watch(str(db_path), "RunSub", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    monkeypatch.setattr(lm, "run_watches", lambda db, kind=None: [])
+    seen = {}
+
+    def fake_notify(db):
+        seen["db"] = db
+        return [{"title": "x"}]
+
+    monkeypatch.setattr(lm, "run_notifications", fake_notify)
+
+    assert lm.main(["event", "run", "--db", str(db_path)]) == 0
+
+    assert seen.get("db") == str(db_path)
+    assert "1 reminders sent." in capsys.readouterr().out
+
+
 def test_web_api_registers_device_and_serves_notifications(tmp_path):
     db_path = tmp_path / "n.sqlite3"
     watch = lm.add_watch(str(db_path), "Web", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")

@@ -7,11 +7,14 @@ email (SMTP), and mobile push (Firebase Cloud Messaging).
 
 ## 1. Backend
 
-Subscribe and run the deliverer (schedule `notify run` next to `event run`):
+Subscribe; the scheduled monitor task (`<kind> run`) and `watch loop` now
+deliver due reminders automatically after each pass, so no extra scheduling is
+needed. `notify run` is still available for a standalone delivery pass.
 
 ```
 python lottery_monitor.py notify subscribe "<artist or event>" --scope event_all --channels feed,push,email
-python lottery_monitor.py notify run --db chusennote.sqlite3
+python lottery_monitor.py event run --db chusennote.sqlite3   # discovers updates AND delivers reminders
+python lottery_monitor.py notify run --db chusennote.sqlite3  # delivery only (optional)
 ```
 
 Configure the channels via environment variables:
