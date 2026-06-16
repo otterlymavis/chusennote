@@ -1,12 +1,19 @@
 package com.chusennote.mobile;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+
+import com.google.firebase.messaging.FirebaseMessaging;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -60,7 +67,45 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(buildLayout());
+        ensureNotificationChannel();
+        requestNotificationPermissionIfNeeded();
+        registerPushToken();
         refresh();
+    }
+
+    private void ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                NotificationChannel channel = new NotificationChannel(
+                        ChusennoteMessagingService.CHANNEL_ID,
+                        "Ticket reminders",
+                        NotificationManager.IMPORTANCE_HIGH);
+                channel.setDescription("Lottery application, results, payment, and sale reminders.");
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+    }
+
+    private void registerPushToken() {
+        saveBaseUrl();
+        try {
+            FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
+                if (task.isSuccessful() && task.getResult() != null) {
+                    ChusennoteMessagingService.registerToken(getApplicationContext(), task.getResult());
+                }
+            });
+        } catch (Throwable error) {
+            // Firebase is not configured (no google-services.json) — push stays off.
+            statusText.setText("Push disabled: add google-services.json to enable notifications.");
+        }
     }
 
     private View buildLayout() {

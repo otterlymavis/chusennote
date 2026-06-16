@@ -1,3 +1,6 @@
 plugins {
     id "com.android.application" version "8.5.2" apply false
+    // Firebase Cloud Messaging: requires app/google-services.json from your
+    // Firebase project. See android/README-notifications.md.
+    id "com.google.gms.google-services" version "4.4.2" apply false
 }
