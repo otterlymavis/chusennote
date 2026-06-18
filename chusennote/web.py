@@ -223,33 +223,46 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         """
 
     stops = tour_stops(venues, event_dates)
-    # Group rounds by location: a touring production runs a separate lottery per
-    # city. Order known stops first (in tour order), then 追加公演, then rounds
-    # whose location the source does not state.
-    location_order = [city or venue for city, venue, _ in stops]
-    location_order += ["追加公演", UNSPECIFIED_LOCATION]
-    rounds_by_location: dict[str, list[dict[str, object]]] = {}
+    # Group rounds by ticket website so membership-specific rounds stay attached
+    # to the platform that publishes them.
+    rounds_by_platform: dict[str, list[dict[str, object]]] = {}
     for ticket in event.get("rounds", []):
         if not isinstance(ticket, dict):
             continue
-        location = detect_round_location(ticket, venues) or UNSPECIFIED_LOCATION
-        rounds_by_location.setdefault(location, []).append(ticket)
+        platform = clean_text(str(ticket.get("platform") or ticket.get("source") or "unknown")) or "unknown"
+        rounds_by_platform.setdefault(platform, []).append(ticket)
 
-    def location_sort_key(location: str) -> tuple[int, str]:
-        return (location_order.index(location) if location in location_order else len(location_order), location)
+    platform_links: dict[str, list[dict[str, object]]] = {}
+    for link in event.get("ticket_links", []):
+        if not isinstance(link, dict):
+            continue
+        platform = clean_text(str(link.get("platform") or "unknown")) or "unknown"
+        platform_links.setdefault(platform, []).append(link)
+        rounds_by_platform.setdefault(platform, [])
+
+    def platform_sort_key(platform: str) -> tuple[int, str]:
+        latest = max((round_latest_date_ordinal(ticket) for ticket in rounds_by_platform.get(platform, [])), default=0)
+        return (-latest, platform)
+
+    def render_platform_links(platform: str) -> str:
+        links = platform_links.get(platform, [])
+        if not links:
+            return ""
+        return '<div class="round-platform-links">' + "".join(web_source_link(link.get("url"), "Open tickets") for link in links[:3]) + "</div>"
 
     round_items = "".join(
         f"""
         <div class="round-group">
           <div class="round-group-head">
-            <h3>{html.escape(location)}</h3>
+            <h3>{html.escape(platform)}</h3>
             <small>{len(tickets)} round{'s' if len(tickets) != 1 else ''}</small>
           </div>
-          <div class="round-group-list">{''.join(render_round_card(ticket) for ticket in tickets)}</div>
+          {render_platform_links(platform)}
+          <div class="round-group-list">{''.join(render_round_card(ticket) for ticket in tickets) or '<p>No parsed lottery rounds from this website yet.</p>'}</div>
         </div>
         """
-        for location in sorted(rounds_by_location, key=location_sort_key)
-        for tickets in (rounds_by_location[location],)
+        for platform in sorted(rounds_by_platform, key=platform_sort_key)
+        for tickets in (rounds_by_platform[platform],)
     ) or "<p>No lottery rounds saved yet.</p>"
     tour_items = "".join(
         f"""
@@ -317,6 +330,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     .round-group {{ display: grid; gap: 10px; }}
     .round-group-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 2px; }}
     .round-group-head h3 {{ margin: 0; font-size: 16px; }}
+    .round-platform-links {{ display: flex; flex-wrap: wrap; gap: 8px; }}
     .round-group-list {{ display: grid; gap: 10px; }}
     .round-card {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; box-shadow: var(--shadow); }}
     .round-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }}

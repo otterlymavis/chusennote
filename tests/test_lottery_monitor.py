@@ -1904,12 +1904,10 @@ def test_event_detail_groups_lottery_rounds_by_ticket_website(tmp_path):
 
     detail = lm.render_event_detail_page(str(db_path), 1)
 
-    # Rounds are grouped by performance location; with no venue stated both fall
-    # under the shared group, and the platform is shown on each card.
+    # Rounds are grouped by ticket website, keeping membership-specific names.
     assert '<div class="round-group-head">' in detail
-    assert "公演共通" in detail
-    assert "<strong>pia</strong>" in detail
-    assert "<strong>eplus</strong>" in detail
+    assert "<h3>pia</h3>" in detail
+    assert "<h3>eplus</h3>" in detail
     assert "先着先行 / ゴールド会員" in detail
     assert "プレオーダー / 無料会員" in detail
 
@@ -1942,8 +1940,10 @@ def test_event_detail_groups_touring_rounds_by_city(tmp_path):
     detail = lm.render_event_detail_page(str(db_path), 1)
 
     assert "Locations &amp; Tour Dates" in detail
-    # Each city is its own round group, ordered as the tour runs.
-    assert detail.index("<h3>東京</h3>") < detail.index("<h3>大阪</h3>")
+    assert 'class="tour-list"' in detail
+    # Lottery rounds are grouped by ticket website, not simplified by city.
+    assert "<h3>pia</h3>" in detail
+    assert "<h3>tv-asahi-ticket</h3>" in detail
 
 
 def test_tracked_event_display_key_prioritizes_official_pages():
