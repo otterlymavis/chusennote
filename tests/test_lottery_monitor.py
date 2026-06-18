@@ -324,6 +324,32 @@ def test_extract_ticket_rounds_reads_member_presale_ranges_from_evidence():
     )
 
 
+def test_extract_ticket_rounds_keeps_adjacent_round_dates_separate():
+    text = (
+        "ホリプロステージで購入 【抽選先行】 "
+        "2026年1月24日(土)12:00～2月1日(日)23:59 "
+        "【先着先行】 "
+        "ゴールド会員：2月28日(土)12:00～3月15日(日)23:59 "
+        "レギュラー会員：2月28日(土)13:00～3月15日(日)23:59 "
+        "【一般発売】 3月18日(水)11:00～"
+    )
+    page = lm.Page("https://horipro-stage.jp/stage/example/", "Ticket", text, ())
+
+    rounds = lm.extract_ticket_rounds(page)
+    lottery = next(round_ for round_ in rounds if round_.name == "抽選先行")
+    member_rounds = [round_ for round_ in rounds if round_.name.startswith("先着先行 /")]
+
+    assert (lottery.lottery_start, lottery.lottery_end) == ("2026-01-24", "2026-02-01")
+    assert "先着先行" not in lottery.evidence
+    assert {
+        (round_.name, round_.lottery_start, round_.lottery_end)
+        for round_ in member_rounds
+    } == {
+        ("先着先行 / ゴールド会員", "2026-02-28", "2026-03-15"),
+        ("先着先行 / レギュラー会員", "2026-02-28", "2026-03-15"),
+    }
+
+
 def test_extract_ticket_rounds_reads_shiki_dates_before_labels():
     text = (
         "東京公演はこちら 1月10日（火）～8月26日（土）長期保守点検 "

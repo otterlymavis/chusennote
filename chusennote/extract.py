@@ -535,6 +535,21 @@ def round_name_from_context(context: str, fallback: str | None = None) -> str | 
     return min((start - date_pos, name) for start, name in candidates)[1]
 
 
+def round_section_from_context(context: str, name: str) -> str:
+    """Limit a multi-round context to the section governed by ``name``."""
+    start = context.find(name)
+    if start < 0:
+        return context
+    section_start = start - 1 if start > 0 and context[start - 1] in "【[" else start
+    end = len(context)
+    search_start = start + len(name)
+    for label in ROUND_NAME_LABELS:
+        position = context.find(label, search_start)
+        if position >= 0:
+            end = min(end, position)
+    return context[section_start:end].rstrip(" \t\r\n【[")
+
+
 def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     contexts = context_windows(page.text, ROUND_LABEL_PATTERNS + ("受付期間", "申込期間", "抽選結果", "当落", "一般発売"))
     contexts = contexts + label_forward_contexts(page.text, ("先行先着販売", "先着先行"))
@@ -542,13 +557,21 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
     for context in contexts:
+        name = round_name_from_context(context) or application_round_name(context)
+        if not name:
+            continue
+        round_context = round_section_from_context(context, name)
         start, end = extract_range_after_label(
-            context,
-            ADVANCE_RANGE_LABELS,
+            round_context,
+            (name,),
         )
+        if not (start or end):
+            start, end = extract_range_after_label(round_context, ADVANCE_RANGE_LABELS)
         results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
         general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
         payment_deadline = extract_first_date(context, ("入金", "支払", "払込", "決済"))
+        if any(label in name for label in ("会員先行予約", "先行予約")):
+            start = extract_last_date_before_label(context, ("会員先行予約", "先行予約")) or start
         start = start or extract_last_date_before_label(context, ("会員先行予約", "先行予約", "先着先行"))
         start = start or extract_first_date_after_label(context, ("先行先着販売", "先着先行"))
         results_date = results_date or extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
@@ -559,15 +582,12 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
             continue
         # Require a round label or a real application/sale signal. A date that
         # carries neither is incidental noise (legal/terms prose), not a round.
-        name = round_name_from_context(context) or application_round_name(context)
-        if not name:
-            continue
         if "一般発売" in name or "一般前売" in name:
             start, end = None, None
             membership_rounds = ()
         else:
             membership_rounds = membership_rounds_from_context(
-                context,
+                round_context,
                 name,
                 source_name_for_url(page.url),
                 page.url,
@@ -597,7 +617,7 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
                 results_date=results_date,
                 general_sale_date=general_sale_date,
                 payment_deadline=payment_deadline,
-                evidence=context[:260],
+                evidence=round_context[:260],
             )
         )
     return tuple(rounds)
