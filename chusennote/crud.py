@@ -325,13 +325,18 @@ def upsert_event(
     ).fetchone()
     connection.execute(
         """
-        INSERT INTO events(watch_id, canonical_title, official_url, summary, event_dates_json, venues_json, status, event_key, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO events(
+            watch_id, canonical_title, official_url, summary, event_dates_json, venues_json,
+            ticket_rules_json, ticket_prices_json, status, event_key, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(watch_id, official_url) DO UPDATE SET
             canonical_title = excluded.canonical_title,
             summary = excluded.summary,
             event_dates_json = excluded.event_dates_json,
             venues_json = excluded.venues_json,
+            ticket_rules_json = excluded.ticket_rules_json,
+            ticket_prices_json = excluded.ticket_prices_json,
             status = excluded.status,
             event_key = excluded.event_key,
             updated_at = excluded.updated_at
@@ -343,6 +348,8 @@ def upsert_event(
             info.summary,
             json.dumps(list(info.event_dates), ensure_ascii=False),
             json.dumps(list(info.venues), ensure_ascii=False),
+            json.dumps(list(info.ticket_rules), ensure_ascii=False),
+            json.dumps(list(info.ticket_prices), ensure_ascii=False),
             compute_event_status(info, rounds, parse_iso_date(now)),
             event_identity_key(info),
             now,

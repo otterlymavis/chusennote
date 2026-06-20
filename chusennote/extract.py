@@ -194,6 +194,8 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
     seen: set[str] = set()
     event_dates: list[str] = []
     venues: list[str] = []
+    ticket_rules: list[str] = []
+    ticket_prices: list[str] = []
     for page in official_pages:
         for link in extract_ticket_links(page):
             if link.url not in seen:
@@ -205,6 +207,12 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
         for venue in extract_venues(page.text):
             if venue not in venues:
                 venues.append(venue)
+        for rule in extract_ticket_rule_items(page.text):
+            if rule not in ticket_rules:
+                ticket_rules.append(rule)
+        for price in extract_ticket_price_items(page.text):
+            if price not in ticket_prices:
+                ticket_prices.append(price)
     if not ticket_links:
         ticket_links.extend(portal_search_links(keyword))
 
@@ -212,17 +220,11 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
     if official:
         summary_phrases = nearby_phrases(
             official.text,
-            ("公演", "開催", "チケット", "料金", "S席", "A席", "未就学", "有償譲渡", "車椅子"),
-            width=260,
-            limit=6,
+            ("公演概要", "ストーリー", "あらすじ"),
+            width=180,
+            limit=2,
         )
-        summary_parts: list[str] = []
-        seen_summary_parts: set[str] = set()
-        for part in (*summary_phrases, *extract_ticket_price_items(official.text), *extract_ticket_rule_items(official.text)):
-            if part and part not in seen_summary_parts:
-                summary_parts.append(part)
-                seen_summary_parts.add(part)
-        summary = " ".join(summary_parts) if summary_parts else official.text[:520]
+        summary = " ".join(dict.fromkeys(summary_phrases)) or None
 
     return EventInfo(
         keyword=keyword,
@@ -232,6 +234,8 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
         event_dates=tuple(event_dates),
         venues=tuple(venues),
         ticket_links=tuple(ticket_links),
+        ticket_rules=tuple(ticket_rules),
+        ticket_prices=tuple(ticket_prices),
     )
 
 
@@ -812,11 +816,21 @@ def split_event_notes(text: str) -> list[str]:
     return [part.strip(" ・:：。") for part in parts if part.strip(" ・:：。")]
 
 
+def sanitize_ticket_note(value: str) -> str:
+    value = re.sub(r"https?://\S+", " ", value)
+    value = re.sub(r"(?<!:)//\S+", " ", value)
+    value = re.sub(r"(?:^|\s)(?:同意|注意)$", " ", value)
+    return clean_text(value).strip(" ・:：。")
+
+
 def extract_ticket_rule_items(text: str, limit: int = 6) -> tuple[str, ...]:
     hints = ("未就学", "入場", "有償譲渡", "転売", "車椅子", "身分証", "本人確認", "禁止", "注意", "同意")
     items: list[str] = []
     seen: set[str] = set()
-    for note in split_event_notes(text):
+    for raw_note in split_event_notes(text):
+        note = sanitize_ticket_note(raw_note)
+        if not note or note in {"同意", "注意", "禁止", "入場"}:
+            continue
         if (
             "重要なお知らせ" in note
             or "＞＞" in note

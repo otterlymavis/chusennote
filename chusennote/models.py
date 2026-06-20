@@ -37,7 +37,7 @@ SEARCH_API_KEY_ENV = "CHUSENNOTE_SEARCH_API_KEY"
 TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
 DEFAULT_SESSION_LOG_DIR = "history_logs"
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 MIN_KEYWORD_OVERLAP = 0.45
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
@@ -201,6 +201,8 @@ class EventInfo:
     event_dates: tuple[str, ...]
     venues: tuple[str, ...]
     ticket_links: tuple[Link, ...]
+    ticket_rules: tuple[str, ...] = ()
+    ticket_prices: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)

@@ -139,7 +139,8 @@ def recent_events(
         rows = connection.execute(
             f"""
             SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary,
-                   e.event_dates_json, e.venues_json, e.status, e.updated_at
+                   e.event_dates_json, e.venues_json, e.ticket_rules_json, e.ticket_prices_json,
+                   e.status, e.updated_at
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
             {watch_muted_clause}
@@ -217,8 +218,10 @@ def recent_events(
                     "summary": row[6],
                     "event_dates": json.loads(row[7] or "[]"),
                     "venues": json.loads(row[8] or "[]"),
-                    "status": row[9],
-                    "updated_at": row[10],
+                    "ticket_rules": json.loads(row[9] or "[]"),
+                    "ticket_prices": json.loads(row[10] or "[]"),
+                    "status": row[11],
+                    "updated_at": row[12],
                     "ticket_links": [
                         {
                             "label": link[0],

@@ -159,8 +159,12 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     venue_label = "; ".join(venues[:3]) if venues else "Unknown"
     location_label = infer_event_location(venues) or "Unknown"
     summary_text = str(event.get("summary") or "")
-    ticket_rules = extract_ticket_rule_items(summary_text)
-    ticket_prices = extract_ticket_price_items(summary_text)
+    ticket_rules = tuple(
+        clean_text(str(item)) for item in event.get("ticket_rules", []) if clean_text(str(item))
+    ) or extract_ticket_rule_items(summary_text)
+    ticket_prices = tuple(
+        clean_text(str(item)) for item in event.get("ticket_prices", []) if clean_text(str(item))
+    ) or extract_ticket_price_items(summary_text)
     ticket_rule_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_rules) or "<li>Ticket rules not captured yet.</li>"
     ticket_price_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_prices) or "<li>Ticket prices not captured yet.</li>"
     ticket_link_items = "".join(

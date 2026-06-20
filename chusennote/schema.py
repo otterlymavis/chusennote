@@ -51,6 +51,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             summary TEXT,
             event_dates_json TEXT NOT NULL DEFAULT '[]',
             venues_json TEXT NOT NULL DEFAULT '[]',
+            ticket_rules_json TEXT NOT NULL DEFAULT '[]',
+            ticket_prices_json TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL DEFAULT 'watching',
             event_key TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -165,6 +167,8 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "events", "event_key", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "events", "event_dates_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column_if_missing(connection, "events", "venues_json", "TEXT NOT NULL DEFAULT '[]'")
+    add_column_if_missing(connection, "events", "ticket_rules_json", "TEXT NOT NULL DEFAULT '[]'")
+    add_column_if_missing(connection, "events", "ticket_prices_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column_if_missing(connection, "sources", "provenance", "TEXT NOT NULL DEFAULT 'low_confidence'")
 
     add_column_if_missing(connection, "ticket_rounds", "round_number", "INTEGER")

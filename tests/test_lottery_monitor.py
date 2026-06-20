@@ -241,6 +241,14 @@ def test_ticket_rule_extractor_dedupes_contained_notes_and_skips_cookie_consent(
     assert all("クッキー" not in rule for rule in rules)
 
 
+def test_ticket_rule_extractor_removes_embedded_ticket_urls():
+    rules = lm.extract_ticket_rule_items(
+        "※未就学児入場不可 https://l-tike.com/example/ ※転売は禁止です //eplus.jp/example/ 同意"
+    )
+
+    assert rules == ("※未就学児入場不可", "※転売は禁止です")
+
+
 def test_format_evidence_snippet_removes_notice_links_and_truncates():
     evidence = "noise before label ※【重要なお知らせ】高額転売チケットに関する注意喚起 ＞＞ 【抽選先行】 2026年1月24日(土)12:00～2月1日(日)23:59 https://example.com/source " + ("details " * 40)
 
@@ -253,7 +261,7 @@ def test_format_evidence_snippet_removes_notice_links_and_truncates():
     assert len(snippet) <= 83
 
 
-def test_build_event_info_summary_keeps_ticket_price_notes():
+def test_build_event_info_separates_ticket_prices_and_rules_from_summary():
     page = lm.parse_page(
         "https://official.example/stage",
         """
@@ -267,8 +275,10 @@ def test_build_event_info_summary_keeps_ticket_price_notes():
 
     info = lm.build_event_info("Example", [page])
 
-    assert "14,000円" in (info.summary or "")
-    assert "未就学児" in (info.summary or "")
+    assert info.ticket_prices == ("S席：平日14,000円／土日祝15,000円", "A席：9,000円")
+    assert info.ticket_rules == ("※未就学児のご入場はご遠慮ください",)
+    assert "14,000円" not in (info.summary or "")
+    assert "未就学児" not in (info.summary or "")
 
 
 def test_extract_ticket_rounds_with_japanese_lottery_dates():
@@ -1376,7 +1386,7 @@ def test_init_db_migrates_existing_current_schema(tmp_path):
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert {"tags", "preferred_regions", "preferred_venues", "muted", "last_checked_at"} <= watched_columns
-    assert {"event_dates_json", "venues_json"} <= event_columns
+    assert {"event_dates_json", "venues_json", "ticket_rules_json", "ticket_prices_json"} <= event_columns
     assert {"platform", "application_start_at", "application_end_at", "confidence", "status"} <= round_columns
     assert {"watch_id", "url", "private_note", "muted"} <= source_columns
     assert user_version == lm.DB_SCHEMA_VERSION
@@ -2198,6 +2208,35 @@ def test_recent_events_sorts_lottery_rounds_latest_to_oldest(tmp_path):
     event = lm.recent_events(str(db_path))[0]
 
     assert [round_["name"] for round_ in event["rounds"]] == ["New", "Middle", "Old"]
+
+
+def test_ticket_rules_and_prices_round_trip_into_event_sections(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Example",
+            official_page="https://official.example/",
+            title="Example Event",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+            ticket_rules=("※未就学児入場不可",),
+            ticket_prices=("S席：14,000円",),
+        ),
+        ticket_info=(),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-04T00:00:00+00:00")
+
+    event = lm.recent_events(str(db_path))[0]
+    detail = lm.render_event_detail_page(str(db_path), int(event["id"]))
+
+    assert event["ticket_rules"] == ["※未就学児入場不可"]
+    assert event["ticket_prices"] == ["S席：14,000円"]
+    assert "※未就学児入場不可" in detail
+    assert "S席：14,000円" in detail
+    assert "Ticket rules not captured yet" not in detail
+    assert "Ticket prices not captured yet" not in detail
 
 
 def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path, capsys):
