@@ -27,4 +27,4 @@ jobs:
       - name: Build image
         run: docker build -t chusennote:ci .
       - name: Smoke test (imports load under the image's Python)
-        run: docker run --rm chusennote:ci python -c "import chusennote.pipeline, chusennote.web; print('import OK')"
+        run: docker run --rm chusennote:ci python3 -c "import chusennote.pipeline, chusennote.web; print('import OK')"
