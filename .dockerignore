@@ -1,0 +1,20 @@
+# Keep the image lean and never bake local state into it.
+.git
+.github
+__pycache__/
+*.pyc
+.pytest_cache/
+# Never ship a local database into the image; it mounts at /data at runtime.
+*.sqlite3
+*.sqlite3.*
+# Native app sources are not part of the backend image.
+android
+ios
+# Docs and dev-only bits.
+docs
+*.md
+.gitattributes
+.gitignore
+.venv
+venv
+env

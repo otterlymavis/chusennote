@@ -1,0 +1,30 @@
+name: Docker
+
+on:
+  push:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - chusennote/**
+      - lottery_monitor.py
+      - requirements.txt
+      - .github/workflows/docker.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - chusennote/**
+      - lottery_monitor.py
+      - requirements.txt
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t chusennote:ci .
+      - name: Smoke test (imports load under the image's Python)
+        run: docker run --rm chusennote:ci python -c "import chusennote.pipeline, chusennote.web; print('import OK')"
