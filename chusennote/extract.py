@@ -239,7 +239,24 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
     )
 
 
-def infer_year(month: int, day: int, today: dt.date | None = None) -> int:
+def dominant_year(text: str) -> int | None:
+    """The four-digit year a page states, when it states exactly one.
+
+    Many sites print run/sale dates as a bare ``M月D日`` once the year is
+    established higher up the page (e.g. tohostage's ``【一般前売開始】
+    2025年4月5日`` heading above bare ``3月18日`` round dates). Such dates should
+    inherit the year the page actually prints rather than a today-relative
+    guess. Only a single distinct explicit year is treated as authoritative; a
+    page that mixes years stays ambiguous and falls back to :func:`infer_year`.
+    This is content-shape based, so it applies to every site, not one event.
+    """
+    years = set(re.findall(r"20\d{2}", text))
+    return int(next(iter(years))) if len(years) == 1 else None
+
+
+def infer_year(month: int, day: int, today: dt.date | None = None, year_hint: int | None = None) -> int:
+    if year_hint is not None:
+        return year_hint
     today = today or dt.date.today()
     candidate = dt.date(today.year, month, day)
     if candidate < today - dt.timedelta(days=180):
@@ -251,7 +268,7 @@ def is_valid_month_day(month: int, day: int) -> bool:
     return 1 <= month <= 12 and 1 <= day <= 31
 
 
-def normalize_date(value: str) -> str:
+def normalize_date(value: str, year_hint: int | None = None) -> str:
     value = clean_text(value)
     jp = re.search(r"(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日", value)
     if jp:
@@ -264,16 +281,16 @@ def normalize_date(value: str) -> str:
     jp_short = re.search(r"(\d{1,2})月\s*(\d{1,2})日", value)
     if jp_short:
         month, day = int(jp_short.group(1)), int(jp_short.group(2))
-        return f"{infer_year(month, day):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
+        return f"{infer_year(month, day, year_hint=year_hint):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
     short = re.search(r"(\d{1,2})[./-](\d{1,2})", value)
     if short:
         month, day = int(short.group(1)), int(short.group(2))
-        return f"{infer_year(month, day):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
+        return f"{infer_year(month, day, year_hint=year_hint):04d}-{month:02d}-{day:02d}" if is_valid_month_day(month, day) else value
     return value
 
 
-def normalized_iso_date(value: str) -> str | None:
-    normalized = normalize_date(value)
+def normalized_iso_date(value: str, year_hint: int | None = None) -> str | None:
+    normalized = normalize_date(value, year_hint)
     return normalized if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", normalized) else None
 
 
@@ -321,48 +338,54 @@ def label_forward_contexts(text: str, labels: Sequence[str], lead: int = 12, wid
     return windows
 
 
-def extract_first_date(text: str, labels: Sequence[str]) -> str | None:
+def extract_first_date(text: str, labels: Sequence[str], year_hint: int | None = None) -> str | None:
     for label in labels:
         for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[match.start() : min(len(text), match.end() + 100)]
             date_match = DATE_RE.search(window)
             if date_match:
-                normalized = normalized_iso_date(date_match.group(0))
+                normalized = normalized_iso_date(date_match.group(0), dominant_year(window) or year_hint)
                 if normalized:
                     return normalized
     return None
 
 
-def extract_last_date_before_label(text: str, labels: Sequence[str], width: int = 60) -> str | None:
+def extract_last_date_before_label(
+    text: str, labels: Sequence[str], year_hint: int | None = None, width: int = 60
+) -> str | None:
     for label in labels:
         for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[max(0, match.start() - width) : match.start()]
-            dates = [date for date in (normalized_iso_date(m.group(0)) for m in DATE_RE.finditer(window)) if date]
+            hint = dominant_year(window) or year_hint
+            dates = [date for date in (normalized_iso_date(m.group(0), hint) for m in DATE_RE.finditer(window)) if date]
             if dates:
                 return dates[-1]
     return None
 
 
-def extract_range(text: str) -> tuple[str | None, str | None]:
+def extract_range(text: str, year_hint: int | None = None) -> tuple[str | None, str | None]:
+    hint = dominant_year(text) or year_hint
     unicode_date_token = r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
     unicode_range_re = re.compile(rf"(?P<start>{unicode_date_token})(?:(?!{unicode_date_token}).){{0,60}}(?:[〜～~–—]|から)(?:(?!{unicode_date_token}).){{0,60}}(?P<end>{unicode_date_token})")
     match = RANGE_RE.search(text) or unicode_range_re.search(text)
     if not match:
-        dates = [date for date in (normalized_iso_date(m.group(0)) for m in DATE_RE.finditer(text)) if date]
-        dates.extend(date for date in (normalized_iso_date(m.group(0)) for m in re.finditer(unicode_date_token, text)) if date and date not in dates)
+        dates = [date for date in (normalized_iso_date(m.group(0), hint) for m in DATE_RE.finditer(text)) if date]
+        dates.extend(date for date in (normalized_iso_date(m.group(0), hint) for m in re.finditer(unicode_date_token, text)) if date and date not in dates)
         if len(dates) >= 2:
             return dates[0], dates[1]
         if len(dates) == 1:
             return dates[0], None
         return None, None
-    return normalized_iso_date(match.group("start")), normalized_iso_date(match.group("end"))
+    return normalized_iso_date(match.group("start"), hint), normalized_iso_date(match.group("end"), hint)
 
 
-def extract_range_after_label(text: str, labels: Sequence[str]) -> tuple[str | None, str | None]:
+def extract_range_after_label(
+    text: str, labels: Sequence[str], year_hint: int | None = None
+) -> tuple[str | None, str | None]:
     for label in labels:
         for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[match.start() : min(len(text), match.end() + 140)]
-            start, end = extract_range(window)
+            start, end = extract_range(window, year_hint)
             if start or end:
                 return start, end
     return None, None
@@ -386,6 +409,9 @@ ADVANCE_RANGE_LABELS = (
     "ã‚´ãƒ¼ãƒ«ãƒ‰ä¼šå“¡",
     "ãƒ¬ã‚®ãƒ¥ãƒ©ãƒ¼ä¼šå“¡",
 )
+
+PAYMENT_RANGE_LABELS = ("入金期間", "支払期間", "支払い期間", "払込期間", "決済期間")
+TRADE_RANGE_LABELS = ("リセール期間", "トレード期間", "公式トレード期間", "チケットトレード期間")
 
 
 MEMBERSHIP_RANGE_LABELS = (
@@ -411,17 +437,23 @@ def membership_rounds_from_context(
     results_date: str | None = None,
     general_sale_date: str | None = None,
     payment_deadline: str | None = None,
+    payment_start_at: str | None = None,
+    payment_end_at: str | None = None,
+    trade_start_at: str | None = None,
+    trade_end_at: str | None = None,
+    year_hint: int | None = None,
 ) -> tuple[TicketRound, ...]:
     unicode_date_token = r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
     label_pattern = "|".join(re.escape(label) for label in MEMBERSHIP_RANGE_LABELS)
     range_pattern = re.compile(
         rf"(?P<label>{label_pattern})[：:]\s*(?P<range>{unicode_date_token}(?:(?!{unicode_date_token}).){{0,60}}[〜～~–—](?:(?!{unicode_date_token}).){{0,60}}{unicode_date_token})"
     )
+    context_year = dominant_year(context) or year_hint
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
     for match in range_pattern.finditer(context):
         label = clean_text(match.group("label"))
-        start, end = extract_range(match.group("range"))
+        start, end = extract_range(match.group("range"), context_year)
         name = f"{base_name} / {label}" if base_name and label not in base_name else label
         key = (name, start, end)
         if key in seen:
@@ -437,19 +469,23 @@ def membership_rounds_from_context(
                 results_date=results_date,
                 general_sale_date=general_sale_date,
                 payment_deadline=payment_deadline,
+                payment_start_at=payment_start_at,
+                payment_end_at=payment_end_at,
+                trade_start_at=trade_start_at,
+                trade_end_at=trade_end_at,
                 evidence=context[:260],
             )
         )
     return tuple(rounds)
 
 
-def extract_first_date_after_label(text: str, labels: Sequence[str]) -> str | None:
+def extract_first_date_after_label(text: str, labels: Sequence[str], year_hint: int | None = None) -> str | None:
     for label in labels:
         for match in re.finditer(re.escape(label), text, flags=re.IGNORECASE):
             window = text[match.start() : min(len(text), match.end() + 40)]
             date_match = DATE_RE.search(window)
             if date_match:
-                normalized = normalized_iso_date(date_match.group(0))
+                normalized = normalized_iso_date(date_match.group(0), dominant_year(window) or year_hint)
                 if normalized:
                     return normalized
     return None
@@ -558,6 +594,10 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     contexts = context_windows(page.text, ROUND_LABEL_PATTERNS + ("受付期間", "申込期間", "抽選結果", "当落", "一般発売"))
     contexts = contexts + label_forward_contexts(page.text, ("先行先着販売", "先着先行"))
     contexts = contexts + context_windows(page.text, ROUND_CONTEXT_HINTS)
+    # A page often establishes its year once (e.g. in a heading) and then prints
+    # round/sale dates as bare ``M月D日``. Resolve those bare dates against the
+    # year the page actually states rather than a today-relative guess.
+    page_year = dominant_year(page.text)
     rounds: list[TicketRound] = []
     seen: set[tuple[str, str | None, str | None]] = set()
     for context in contexts:
@@ -568,21 +608,28 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
         start, end = extract_range_after_label(
             round_context,
             (name,),
+            page_year,
         )
         if not (start or end):
-            start, end = extract_range_after_label(round_context, ADVANCE_RANGE_LABELS)
-        results_date = extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
-        general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"))
-        payment_deadline = extract_first_date(context, ("入金", "支払", "払込", "決済"))
+            start, end = extract_range_after_label(round_context, ADVANCE_RANGE_LABELS, page_year)
+        results_date = extract_first_date(round_context, ("抽選結果", "結果発表", "当落", "当選発表"), page_year)
+        general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"), page_year)
+        payment_start, payment_end = extract_range_after_label(round_context, PAYMENT_RANGE_LABELS, page_year)
+        payment_deadline = payment_end or payment_start or extract_first_date(
+            round_context, ("入金", "支払", "払込", "決済"), page_year
+        )
+        trade_start, trade_end = extract_range_after_label(round_context, TRADE_RANGE_LABELS, page_year)
         if any(label in name for label in ("会員先行予約", "先行予約")):
-            start = extract_last_date_before_label(context, ("会員先行予約", "先行予約")) or start
-        start = start or extract_last_date_before_label(context, ("会員先行予約", "先行予約", "先着先行"))
-        start = start or extract_first_date_after_label(context, ("先行先着販売", "先着先行"))
-        results_date = results_date or extract_first_date(context, ("抽選結果", "結果発表", "当落", "当選発表"))
-        general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"))
-        general_sale_date = general_sale_date or extract_last_date_before_label(context, ("一般発売", "一般前売", "発売開始"))
-        payment_deadline = payment_deadline or extract_first_date(context, ("入金", "支払", "支払い", "支払期限", "入金締切"))
-        if not any((start, end, results_date, general_sale_date, payment_deadline)):
+            start = extract_last_date_before_label(context, ("会員先行予約", "先行予約"), page_year) or start
+        start = start or extract_last_date_before_label(context, ("会員先行予約", "先行予約", "先着先行"), page_year)
+        start = start or extract_first_date_after_label(context, ("先行先着販売", "先着先行"), page_year)
+        results_date = results_date or extract_first_date(round_context, ("抽選結果", "結果発表", "当落", "当選発表"), page_year)
+        general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"), page_year)
+        general_sale_date = general_sale_date or extract_last_date_before_label(context, ("一般発売", "一般前売", "発売開始"), page_year)
+        payment_deadline = payment_deadline or extract_first_date(
+            round_context, ("入金", "支払", "支払い", "支払期限", "入金締切"), page_year
+        )
+        if not any((start, end, results_date, general_sale_date, payment_deadline, trade_start, trade_end)):
             continue
         # Require a round label or a real application/sale signal. A date that
         # carries neither is incidental noise (legal/terms prose), not a round.
@@ -598,6 +645,11 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
                 results_date=results_date,
                 general_sale_date=general_sale_date,
                 payment_deadline=payment_deadline,
+                payment_start_at=payment_start,
+                payment_end_at=payment_end,
+                trade_start_at=trade_start,
+                trade_end_at=trade_end,
+                year_hint=page_year,
             )
         if membership_rounds:
             for ticket in membership_rounds:
@@ -621,6 +673,10 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
                 results_date=results_date,
                 general_sale_date=general_sale_date,
                 payment_deadline=payment_deadline,
+                payment_start_at=payment_start,
+                payment_end_at=payment_end,
+                trade_start_at=trade_start,
+                trade_end_at=trade_end,
                 evidence=round_context[:260],
             )
         )
@@ -643,6 +699,11 @@ def membership_rounds_from_ticket(ticket: TicketRound) -> tuple[TicketRound, ...
         results_date=ticket.results_date,
         general_sale_date=ticket.general_sale_date,
         payment_deadline=ticket.payment_deadline,
+        payment_start_at=ticket.payment_start_at,
+        payment_end_at=ticket.payment_end_at,
+        trade_start_at=ticket.trade_start_at,
+        trade_end_at=ticket.trade_end_at,
+        year_hint=dominant_year(ticket.evidence),
     )
     return tuple(
         normalize_ticket_round(
@@ -676,10 +737,31 @@ def extract_ticket_rounds_for_page(page: Page) -> tuple[TicketRound, ...]:
 
 
 PERFORMANCE_PERIOD_CUT_LABELS = ("受付", "申込", "抽選", "先行", "発売", "販売", "入金", "支払", "エントリー")
+_EVIDENCE_DATE_TOKEN = (
+    r"(?:20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
+    r"(?:\s*[(（][^()（）]{1,5}[)）])?"
+)
 _EVIDENCE_RANGE_RE = re.compile(
-    r"(?:20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
-    r"(?:[^0-9]{0,14})?[〜～~–—](?:[^0-9]{0,14})?"
-    r"(?:20\d{2}年\s*\d{1,2}月\s*\d{1,2}日|20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}月\s*\d{1,2}日)"
+    _EVIDENCE_DATE_TOKEN + r"(?:[^0-9]{0,14})?[〜～~–—](?:[^0-9]{0,14})?"
+    + _EVIDENCE_DATE_TOKEN
+)
+_PREFECTURE_LOCATION_RE = re.compile(
+    r"[（(]\s*(?:北海道|東京都|大阪府|京都府|.{2,3}県)\s*[）)]"
+)
+_VENUE_LOCATION_RE = re.compile(
+    r"(?:劇場|ホール|アリーナ|ドーム|会館|スタジアム|シアター|THEATER|ARENA|HALL|ＴＨＥＡＴＥＲ|ＡＲＥＮＡ|ＨＡＬＬ)",
+    flags=re.IGNORECASE,
+)
+_APPLICATION_WINDOW_SIGNALS = (
+    "受付期間",
+    "申込期間",
+    "申込み期間",
+    "申込受付期間",
+    "抽選申込期間",
+    "抽選受付期間",
+    "エントリー期間",
+    "受付開始",
+    "申込開始",
 )
 
 
@@ -700,6 +782,36 @@ def performance_periods(event_dates: Sequence[str]) -> set[tuple[str, str]]:
     return periods
 
 
+def evidence_range_periods(evidence: str) -> set[tuple[str, str]]:
+    """Return every complete date range found in a round's evidence."""
+    return {
+        period
+        for match in _EVIDENCE_RANGE_RE.finditer(evidence)
+        if None not in (period := extract_range(match.group(0)))
+    }
+
+
+def looks_like_performance_listing(evidence: str) -> bool:
+    """Whether a portal card describes performance dates rather than sales.
+
+    Across ticket portals, a bare date range followed by a venue/location is
+    the performance run. Real application windows carry an explicit semantic
+    label such as ``受付期間`` or ``申込期間``. This is deliberately based on
+    content shape, not a platform or event name.
+    """
+    has_location = bool(_PREFECTURE_LOCATION_RE.search(evidence) or _VENUE_LOCATION_RE.search(evidence))
+    return has_location and not any(signal in evidence for signal in _APPLICATION_WINDOW_SIGNALS)
+
+
+def date_occurs_outside_ranges(date: str, evidence: str, ranges: set[tuple[str, str]]) -> bool:
+    """Whether ``date`` is stated separately from the supplied date ranges."""
+    without_ranges = _EVIDENCE_RANGE_RE.sub(
+        lambda match: " " if extract_range(match.group(0)) in ranges else match.group(0),
+        evidence,
+    )
+    return any(normalized_iso_date(match.group(0)) == date for match in DATE_RE.finditer(without_ranges))
+
+
 def clear_performance_window_rounds(
     rounds: Sequence[TicketRound], event_dates: Sequence[str]
 ) -> tuple[TicketRound, ...]:
@@ -710,20 +822,23 @@ def clear_performance_window_rounds(
     boundary, and isolated boundary dates shown beside venue details.
     """
     periods = performance_periods(event_dates)
-    if not periods:
-        return tuple(rounds)
-    performance_dates = {date for period in periods for date in period}
-    application_signals = ("受付期間", "申込期間", "エントリー期間", "受付開始", "申込開始")
-    venue_signals = ("劇場", "ホール", "THEATER", "会場", "（東京都）", "(東京都)")
     cleared: list[TicketRound] = []
     for ticket in rounds:
-        lottery_matches_run = (ticket.lottery_start, ticket.lottery_end) in periods
-        application_matches_run = (ticket.application_start_at, ticket.application_end_at) in periods
-        evidence_periods = {
-            period
-            for match in _EVIDENCE_RANGE_RE.finditer(ticket.evidence)
-            if (period := extract_range(match.group(0))) in periods
+        all_evidence_periods = evidence_range_periods(ticket.evidence)
+        evidence_periods = all_evidence_periods & periods
+        if looks_like_performance_listing(ticket.evidence):
+            evidence_periods |= all_evidence_periods
+        performance_dates = {
+            date for period in periods | evidence_periods for date in period
         }
+        lottery_matches_run = (ticket.lottery_start, ticket.lottery_end) in evidence_periods or (
+            ticket.lottery_start,
+            ticket.lottery_end,
+        ) in periods
+        application_matches_run = (ticket.application_start_at, ticket.application_end_at) in evidence_periods or (
+            ticket.application_start_at,
+            ticket.application_end_at,
+        ) in periods
         evidence_matches_run = bool(evidence_periods)
         application_dates = tuple(
             date
@@ -733,22 +848,46 @@ def clear_performance_window_rounds(
         isolated_boundary = (
             len(application_dates) == 1
             and application_dates[0] in performance_dates
-            and any(signal in ticket.evidence for signal in venue_signals)
-            and not any(signal in ticket.evidence for signal in application_signals)
+            and looks_like_performance_listing(ticket.evidence)
         )
-        sale_matches_run = evidence_matches_run and ticket.general_sale_date in performance_dates
+        sale_matches_run = (
+            evidence_matches_run
+            and ticket.general_sale_date in performance_dates
+            and not date_occurs_outside_ranges(ticket.general_sale_date, ticket.evidence, evidence_periods)
+        )
         if lottery_matches_run or application_matches_run or evidence_matches_run or isolated_boundary:
             # Also scrub the range from the evidence: normalize_ticket_round
             # re-derives application dates from evidence, which would otherwise
             # restore the performance run on the next normalization pass.
             evidence = clean_text(
                 _EVIDENCE_RANGE_RE.sub(
-                    lambda match: " " if extract_range(match.group(0)) in periods else match.group(0),
+                    lambda match: " " if extract_range(match.group(0)) in evidence_periods else match.group(0),
                     ticket.evidence,
                 )
             )
-            if isolated_boundary:
-                evidence = clean_text(DATE_RE.sub(" ", evidence))
+            rejected_application_dates = {
+                date
+                for date in (
+                    ticket.lottery_start,
+                    ticket.lottery_end,
+                    ticket.application_start_at,
+                    ticket.application_end_at,
+                )
+                if date
+                and date in performance_dates
+                and (lottery_matches_run or application_matches_run or isolated_boundary)
+            }
+            if rejected_application_dates:
+                evidence = clean_text(
+                    DATE_RE.sub(
+                        lambda match: (
+                            " "
+                            if normalized_iso_date(match.group(0)) in rejected_application_dates
+                            else match.group(0)
+                        ),
+                        evidence,
+                    )
+                )
             ticket = dataclasses.replace(
                 ticket,
                 lottery_start=None if lottery_matches_run or isolated_boundary else ticket.lottery_start,
@@ -811,11 +950,12 @@ def extract_tour_dates(page: Page) -> tuple[dict[str, str], ...]:
     past-event ``[終了]`` flag stripped off.
     """
     text = page.text
-    matches = [match for match in DATE_RE.finditer(text) if normalized_iso_date(match.group(0))]
+    page_year = dominant_year(text)
+    matches = [match for match in DATE_RE.finditer(text) if normalized_iso_date(match.group(0), page_year)]
     entries: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for index, match in enumerate(matches):
-        iso_date = normalized_iso_date(match.group(0))
+        iso_date = normalized_iso_date(match.group(0), page_year)
         boundary = matches[index + 1].start() if index + 1 < len(matches) else min(len(text), match.end() + 80)
         chunk = clean_text(text[match.end() : boundary])
         chunk = _DAY_MARKER_RE.sub("", chunk)
@@ -967,7 +1107,9 @@ def normalize_ticket_round(ticket: TicketRound, today: dt.date | None = None) ->
     application_start = ticket.application_start_at or ticket.lottery_start
     application_end = ticket.application_end_at or ticket.lottery_end
     if ticket.evidence and (not application_start or not application_end):
-        evidence_start, evidence_end = extract_range_after_label(ticket.evidence, ADVANCE_RANGE_LABELS)
+        evidence_start, evidence_end = extract_range_after_label(
+            ticket.evidence, ADVANCE_RANGE_LABELS, dominant_year(ticket.evidence)
+        )
         application_start = application_start or evidence_start
         application_end = application_end or evidence_end
     if "一般発売" in ticket.name or "一般前売" in ticket.name:

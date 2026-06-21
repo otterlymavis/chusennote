@@ -304,8 +304,40 @@ def test_extract_ticket_rounds_with_japanese_lottery_dates():
     assert rounds[0].lottery_start == "2026-06-10"
     assert rounds[0].lottery_end == "2026-06-18"
     assert rounds[0].results_date == "2026-06-22"
-    assert rounds[0].payment_deadline == "2026-06-22"
+    assert rounds[0].payment_deadline == "2026-06-25"
+    assert rounds[0].payment_start_at == "2026-06-22"
+    assert rounds[0].payment_end_at == "2026-06-25"
     assert any(round_.general_sale_date == "2026-07-04" for round_ in rounds)
+
+
+def test_bare_dates_inherit_year_stated_on_page():
+    # A page that states its year once up top, then prints round/sale dates as
+    # bare M月D日 (tohostage's shape). Those bare dates must resolve to 2025 (the
+    # year the page prints), not a today-relative guess. The presale block sits
+    # below a rules block — far from the year heading — so it relies on the
+    # page-level year fallback, exactly as on the real site. Applies everywhere.
+    filler = "※未就学児のご入場はご遠慮いただいております。※公演情報などに変更が生じる場合がございます。" * 4
+    html = f"""
+    <html><body>
+      <p>【一般前売開始】 2025年4月5日(土)</p>
+      <p>{filler}</p>
+      <p>先行抽選エントリー 3月18日(火)～3月21日(金)まで</p>
+      <p>一般前売 4月5日(土) 11:00販売開始</p>
+    </body></html>
+    """
+    page = lm.parse_page("https://www.tohostage.com/example/ticket.html", html)
+    rounds = lm.extract_ticket_rounds(page)
+    presale = next(round_ for round_ in rounds if "抽選" in round_.name)
+    assert presale.lottery_start == "2025-03-18"
+    assert presale.lottery_end == "2025-03-21"
+    assert presale.general_sale_date == "2025-04-05"
+
+
+def test_dominant_year_only_resolves_unambiguous_pages():
+    assert lm.dominant_year("公演 2026年7月10日 受付 7月1日") == 2026
+    # A page mixing years stays ambiguous and keeps today-relative inference.
+    assert lm.dominant_year("Copyright 2024 公演 2026年7月10日") is None
+    assert lm.dominant_year("先行 3月18日(火)") is None
 
 
 def test_extract_ticket_rounds_reads_member_presale_ranges_from_evidence():
@@ -754,6 +786,8 @@ def test_clear_performance_window_rounds_nulls_show_run_dates():
     )
 
     assert cleared[0].lottery_start is None and cleared[0].lottery_end is None
+    renormalized = lm.normalize_ticket_round(cleared[0])
+    assert renormalized.application_start_at is None and renormalized.application_end_at is None
     assert cleared[1].general_sale_date is None
     assert cleared[2].lottery_start is None
     assert "7月25日" not in cleared[2].evidence
@@ -762,6 +796,74 @@ def test_clear_performance_window_rounds_nulls_show_run_dates():
     assert "2026年6月1日〜6月5日" in cleared[4].evidence
     assert "2026年7月25日〜8月23日" not in cleared[4].evidence
     assert cleared[5].lottery_start == "2026-02-28" and cleared[5].lottery_end == "2026-03-15"
+
+
+def test_performance_listing_cleanup_is_platform_and_event_agnostic():
+    platforms = (
+        ("pia", "https://w.pia.jp/t/other/"),
+        ("eplus", "https://eplus.jp/other/"),
+        ("lawson", "https://l-tike.com/other/"),
+        ("rakuten", "https://ticket.rakuten.co.jp/other/"),
+        ("ticketboard", "https://ticket.tickebo.jp/other/"),
+        ("cnplayguide", "https://www.cnplayguide.com/other/"),
+        ("tv-asahi-ticket", "https://ticket.tv-asahi.co.jp/ex/project/other"),
+    )
+    rounds = tuple(
+        lm.TicketRound(
+            source=platform,
+            platform=platform,
+            url=url,
+            name="プレリザーブ",
+            lottery_start="2026-10-02",
+            lottery_end="2026-10-18",
+            evidence="プレリザーブ 2026/10/2(金) ～ 2026/10/18(日) Example Hall ( 神奈川県 ) 受付終了",
+        )
+        for platform, url in platforms
+    )
+
+    cleared = lm.clear_performance_window_rounds(rounds, ())
+
+    assert len(cleared) == len(platforms)
+    assert all(round_.lottery_start is None and round_.lottery_end is None for round_ in cleared)
+    assert all(round_.application_start_at is None and round_.application_end_at is None for round_ in cleared)
+
+
+def test_performance_listing_cleanup_preserves_explicit_application_windows_on_all_platforms():
+    evidence = (
+        "抽選先行 受付期間 2026/9/1(火) ～ 2026/9/5(土) "
+        "公演 2026/10/2(金) ～ 2026/10/18(日) Example Hall ( 神奈川県 )"
+    )
+    ticket = lm.TicketRound(
+        source="lawson",
+        platform="lawson",
+        url="https://l-tike.com/other/",
+        name="抽選先行",
+        lottery_start="2026-09-01",
+        lottery_end="2026-09-05",
+        evidence=evidence,
+    )
+
+    cleared = lm.clear_performance_window_rounds((ticket,), ("2026年10月2日～10月18日",))[0]
+
+    assert (cleared.lottery_start, cleared.lottery_end) == ("2026-09-01", "2026-09-05")
+    assert "2026/9/1(火) ～ 2026/9/5(土)" in cleared.evidence
+    assert "2026/10/2(金) ～ 2026/10/18(日)" not in cleared.evidence
+
+
+def test_performance_listing_cleanup_keeps_sale_date_stated_outside_show_range():
+    ticket = lm.TicketRound(
+        source="pia",
+        platform="pia",
+        url="https://w.pia.jp/t/other/",
+        name="一般発売",
+        general_sale_date="2026-09-10",
+        evidence="一般発売 2026/9/10(木)10:00 公演 2026/10/2(金) ～ 2026/10/18(日) Example Hall",
+    )
+
+    cleared = lm.clear_performance_window_rounds((ticket,), ())[0]
+
+    assert cleared.general_sale_date == "2026-09-10"
+    assert "2026/10/2(金) ～ 2026/10/18(日)" not in cleared.evidence
 
 
 def test_extract_ticket_rounds_names_seat_selection_presale():
@@ -916,6 +1018,27 @@ def test_fetch_page_falls_back_to_browser_for_thin_page(monkeypatch):
     monkeypatch.setattr(lm.netio, "fetch_page_browser", lambda url: rendered)
 
     assert lm.fetch_page("https://example.test/") is rendered
+
+
+def test_fetch_page_falls_back_to_browser_for_empty_state_shell(monkeypatch):
+    # A JS shell can clear the length threshold yet still hold no real content,
+    # e.g. shiki.jp's static HTML printing "公演スケジュール情報はありません".
+    monkeypatch.setenv(lm.BROWSER_FETCH_ENV, "fallback")
+    shell = "<html><body>" + ("案内 " * 220) + "現在、公演スケジュール情報はありません。" + "</body></html>"
+    monkeypatch.setattr(lm.netio, "request_html", lambda url: shell)
+    rendered = lm.Page("https://www.shiki.jp/applause/lionking/ticket_schedule/", "Rendered", "z" * 900, ())
+    monkeypatch.setattr(lm.netio, "fetch_page_browser", lambda url: rendered)
+
+    assert len(lm.parse_page("https://www.shiki.jp/", shell).text) >= lm.BROWSER_MIN_TEXT_LENGTH
+    assert lm.fetch_page("https://www.shiki.jp/applause/lionking/ticket_schedule/") is rendered
+
+
+def test_page_needs_browser_flags_empty_state_and_thin_pages():
+    assert lm.page_needs_browser(lm.Page("u", "t", "short", ()))
+    placeholder = lm.Page("u", "t", "案内 " * 80 + "現在、公演スケジュール情報はありません。", ())
+    assert lm.page_needs_browser(placeholder)
+    full = lm.Page("u", "t", "受付期間 2026年8月1日〜8月10日 " * 20, ())
+    assert not lm.page_needs_browser(full)
 
 
 def test_fetch_page_browser_degrades_to_oserror_without_playwright():
@@ -1466,6 +1589,7 @@ def test_adapter_dispatch_covers_additional_ticket_platforms():
       <p>抽選申込期間 2026年6月10日 ～ 2026年6月18日</p>
       <p>結果発表 2026年6月22日</p>
       <p>支払期限 2026年6月25日</p>
+      <p>リセール期間 2026年7月1日 ～ 2026年7月3日</p>
     </body></html>
     """
     cases = (
@@ -1483,6 +1607,8 @@ def test_adapter_dispatch_covers_additional_ticket_platforms():
         assert rounds[0].application_end_at == "2026-06-18"
         assert rounds[0].results_date == "2026-06-22"
         assert rounds[0].payment_end_at == "2026-06-25"
+        assert rounds[0].trade_start_at == "2026-07-01"
+        assert rounds[0].trade_end_at == "2026-07-03"
 
 
 def example_blocks(keyword="Example"):

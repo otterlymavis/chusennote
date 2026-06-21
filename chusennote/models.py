@@ -18,8 +18,10 @@ BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 # Enable the headless-browser fetch path. "fallback"/"auto"/"1" render with a
-# browser only when the plain fetch fails or returns a thin (JS-shell) page;
-# "always" renders every page; unset/"off" disables it (default).
+# browser only when the plain fetch fails or returns a thin/empty-shell page;
+# "always" renders every page; unset/"off" disables it (default). It stays
+# opt-in because each render spawns Chromium, which would otherwise add a slow
+# render to every dead or SPA link on every watch run.
 BROWSER_FETCH_ENV = "CHUSENNOTE_BROWSER_FETCH"
 BROWSER_TIMEOUT_MS = 30000
 # Settle delay after DOMContentLoaded to let client-side JS render content.
@@ -27,6 +29,18 @@ BROWSER_SETTLE_MS = 2500
 # Below this rendered-text length a page is treated as a JS shell worth a
 # browser re-render in fallback mode.
 BROWSER_MIN_TEXT_LENGTH = 400
+# Empty-state placeholders that a JS shell serves before client-side rendering
+# fills in real content (e.g. shiki.jp prints "公演スケジュール情報はありません" in
+# its static HTML). A page carrying one of these is re-rendered in fallback mode
+# even when it clears the length threshold. Generic "no data / coming soon"
+# phrasing, so this catches the shape across sites rather than one event.
+EMPTY_STATE_MARKERS = (
+    "情報はありません",
+    "情報がありません",
+    "ただいま準備中",
+    "準備中です",
+    "coming soon",
+)
 SEARCH_URL = "https://duckduckgo.com/html/"
 BING_SEARCH_URL = "https://www.bing.com/search"
 # Optional managed search backend. HTML scraping of DuckDuckGo/Bing gets

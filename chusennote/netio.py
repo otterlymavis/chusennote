@@ -17,6 +17,7 @@ from .models import (
     BROWSER_SETTLE_MS,
     BROWSER_TIMEOUT_MS,
     BROWSER_USER_AGENT,
+    EMPTY_STATE_MARKERS,
     Link,
     Page,
     TIMEOUT_SECONDS,
@@ -121,7 +122,14 @@ def parse_page(url: str, html: str) -> Page:
 
 
 def browser_fetch_mode() -> str:
-    """Read the headless-browser fetch mode from the environment."""
+    """Read the headless-browser fetch mode from the environment.
+
+    Browser rendering stays opt-in: it spawns Chromium per page, so enabling it
+    by default would add a slow render to every dead or SPA link on every watch
+    run. Set ``CHUSENNOTE_BROWSER_FETCH=fallback`` to render JS-built ticket
+    sites (e.g. shiki.jp) that the plain fetch reads as an empty shell, or
+    ``always`` to render every page.
+    """
     value = os.environ.get(BROWSER_FETCH_ENV, "").strip().lower()
     if value in {"always", "force"}:
         return "always"
@@ -131,8 +139,17 @@ def browser_fetch_mode() -> str:
 
 
 def page_needs_browser(page: Page) -> bool:
-    """A thin rendered page is likely a JS shell worth re-rendering."""
-    return len(page.text) < BROWSER_MIN_TEXT_LENGTH
+    """Whether a plainly-fetched page is likely a JS shell worth re-rendering.
+
+    Two shapes both mean "real content was not in the static HTML": the page is
+    too thin to hold a schedule, or it carries an empty-state placeholder that a
+    client-side app replaces once it renders.
+    """
+    text = page.text
+    if len(text) < BROWSER_MIN_TEXT_LENGTH:
+        return True
+    compact = text.replace(" ", "").replace("　", "").lower()
+    return any(marker.replace(" ", "") in compact for marker in EMPTY_STATE_MARKERS)
 
 
 def fetch_page_browser(url: str) -> Page:
