@@ -703,30 +703,60 @@ def performance_periods(event_dates: Sequence[str]) -> set[tuple[str, str]]:
 def clear_performance_window_rounds(
     rounds: Sequence[TicketRound], event_dates: Sequence[str]
 ) -> tuple[TicketRound, ...]:
-    """Null application windows that merely echo the event's performance run.
+    """Null ticket dates that merely echo the event's performance run.
 
     Some platforms (e.g. tv-asahi) print the show's run "2026年7月25日〜8月23日"
-    beside a lottery label, which would otherwise be stored as the application
-    window. When a round's window exactly matches a known performance period,
-    drop those dates so the round is not shown with the wrong schedule.
+    beside ticket labels. Drop matching windows, sale dates copied from a run
+    boundary, and isolated boundary dates shown beside venue details.
     """
     periods = performance_periods(event_dates)
     if not periods:
         return tuple(rounds)
+    performance_dates = {date for period in periods for date in period}
+    application_signals = ("受付期間", "申込期間", "エントリー期間", "受付開始", "申込開始")
+    venue_signals = ("劇場", "ホール", "THEATER", "会場", "（東京都）", "(東京都)")
     cleared: list[TicketRound] = []
     for ticket in rounds:
-        windows = ((ticket.lottery_start, ticket.lottery_end), (ticket.application_start_at, ticket.application_end_at))
-        if any(window in periods for window in windows):
+        lottery_matches_run = (ticket.lottery_start, ticket.lottery_end) in periods
+        application_matches_run = (ticket.application_start_at, ticket.application_end_at) in periods
+        evidence_periods = {
+            period
+            for match in _EVIDENCE_RANGE_RE.finditer(ticket.evidence)
+            if (period := extract_range(match.group(0))) in periods
+        }
+        evidence_matches_run = bool(evidence_periods)
+        application_dates = tuple(
+            date
+            for date in (ticket.lottery_start, ticket.lottery_end, ticket.application_start_at, ticket.application_end_at)
+            if date
+        )
+        isolated_boundary = (
+            len(application_dates) == 1
+            and application_dates[0] in performance_dates
+            and any(signal in ticket.evidence for signal in venue_signals)
+            and not any(signal in ticket.evidence for signal in application_signals)
+        )
+        sale_matches_run = evidence_matches_run and ticket.general_sale_date in performance_dates
+        if lottery_matches_run or application_matches_run or evidence_matches_run or isolated_boundary:
             # Also scrub the range from the evidence: normalize_ticket_round
             # re-derives application dates from evidence, which would otherwise
             # restore the performance run on the next normalization pass.
+            evidence = clean_text(
+                _EVIDENCE_RANGE_RE.sub(
+                    lambda match: " " if extract_range(match.group(0)) in periods else match.group(0),
+                    ticket.evidence,
+                )
+            )
+            if isolated_boundary:
+                evidence = clean_text(DATE_RE.sub(" ", evidence))
             ticket = dataclasses.replace(
                 ticket,
-                lottery_start=None,
-                lottery_end=None,
-                application_start_at=None,
-                application_end_at=None,
-                evidence=clean_text(_EVIDENCE_RANGE_RE.sub(" ", ticket.evidence)),
+                lottery_start=None if lottery_matches_run or isolated_boundary else ticket.lottery_start,
+                lottery_end=None if lottery_matches_run or isolated_boundary else ticket.lottery_end,
+                application_start_at=None if application_matches_run or isolated_boundary else ticket.application_start_at,
+                application_end_at=None if application_matches_run or isolated_boundary else ticket.application_end_at,
+                general_sale_date=None if sale_matches_run else ticket.general_sale_date,
+                evidence=evidence,
             )
         cleared.append(ticket)
     return tuple(cleared)

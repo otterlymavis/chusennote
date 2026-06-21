@@ -720,6 +720,27 @@ def test_clear_performance_window_rounds_nulls_show_run_dates():
     performance = lm.TicketRound(
         source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
         name="抽選先行", lottery_start="2026-07-25", lottery_end="2026-08-23",
+        evidence="抽選先行 2026年7月25日〜8月23日 EX THEATER",
+    )
+    sale_from_performance = lm.TicketRound(
+        source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+        name="一般発売", general_sale_date="2026-07-25",
+        evidence="一般発売 2026年7月25日〜8月23日 EX THEATER",
+    )
+    isolated_performance = lm.TicketRound(
+        source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+        name="抽選先行", lottery_start="2026-07-25",
+        evidence="抽選先行 7月25日(土)12:00 EX THEATER （東京都） 受付終了",
+    )
+    genuine_sale = lm.TicketRound(
+        source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+        name="追加公演・一般発売", general_sale_date="2026-07-28",
+        evidence="追加公演・一般発売 7月28日 2026年7月25日〜8月23日 EX THEATER",
+    )
+    genuine_application = lm.TicketRound(
+        source="tv-asahi", platform="tv-asahi-ticket", url="https://ticket.tv-asahi.co.jp/x",
+        name="抽選先行", lottery_start="2026-06-01", lottery_end="2026-06-05",
+        evidence="受付期間 2026年6月1日〜6月5日 公演 2026年7月25日〜8月23日 EX THEATER",
     )
     genuine = lm.TicketRound(
         source="horipro", platform="horipro-stage.jp", url="https://horipro-stage.jp/x",
@@ -727,10 +748,20 @@ def test_clear_performance_window_rounds_nulls_show_run_dates():
     )
     event_dates = ("2026年7月25日(土)～8月23日(日)",)
 
-    cleared = lm.clear_performance_window_rounds((performance, genuine), event_dates)
+    cleared = lm.clear_performance_window_rounds(
+        (performance, sale_from_performance, isolated_performance, genuine_sale, genuine_application, genuine),
+        event_dates,
+    )
 
     assert cleared[0].lottery_start is None and cleared[0].lottery_end is None
-    assert cleared[1].lottery_start == "2026-02-28" and cleared[1].lottery_end == "2026-03-15"
+    assert cleared[1].general_sale_date is None
+    assert cleared[2].lottery_start is None
+    assert "7月25日" not in cleared[2].evidence
+    assert cleared[3].general_sale_date == "2026-07-28"
+    assert cleared[4].lottery_start == "2026-06-01" and cleared[4].lottery_end == "2026-06-05"
+    assert "2026年6月1日〜6月5日" in cleared[4].evidence
+    assert "2026年7月25日〜8月23日" not in cleared[4].evidence
+    assert cleared[5].lottery_start == "2026-02-28" and cleared[5].lottery_end == "2026-03-15"
 
 
 def test_extract_ticket_rounds_names_seat_selection_presale():
