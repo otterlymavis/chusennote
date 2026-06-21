@@ -476,6 +476,22 @@ def test_extract_tour_dates_reads_date_and_venue():
     }
 
 
+def test_tour_venue_reads_place_named_in_title():
+    # International tours name the place inside the title; capture it. Multi-city
+    # tours and festivals name no single venue, so return nothing rather than a
+    # false match on tour-descriptor words like DOME/STADIUM.
+    assert lm.tour_venue_from_window("YOASOBI LIVE AT WEMBLEY ARENA") == "WEMBLEY ARENA"
+    assert lm.tour_venue_from_window("YOASOBI ASIA TOUR 2025 IN JAKARTA") == "JAKARTA"
+    assert lm.tour_venue_from_window("YOASOBI ASIA 10-CITY DOME & STADIUM TOUR 2026") == ""
+    assert lm.tour_venue_from_window("NORTH AMERICA TOUR 2026 NEVER ENDING STORIES") == ""
+
+
+def test_artist_venue_label_is_honest_when_no_venue():
+    assert lm.web.artist_venue_label({"venues": ["東京 有明アリーナ"], "title": "Show"}) == "東京 有明アリーナ"
+    assert lm.web.artist_venue_label({"venues": [], "title": "YOASOBI ASIA 10-CITY DOME & STADIUM TOUR"}) == "Multiple cities"
+    assert lm.web.artist_venue_label({"venues": [], "title": "PENTATONIC"}) == "—"
+
+
 def test_build_artist_event_blocks_lists_shows_from_schedule(monkeypatch):
     keyword = "YOASOBI"
     results = [lm.SearchResult("YOASOBI Official", "https://www.yoasobi-music.jp/", keyword)]

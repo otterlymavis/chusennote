@@ -919,6 +919,14 @@ SCHEDULE_LINK_HINTS = (
 )
 _VENUE_SUFFIX_RE = "|".join(re.escape(hint) for hint in VENUE_SUFFIX_HINTS)
 _PREFECTURE_RE = "|".join(re.escape(name) for name in JP_PREFECTURES)
+# International tour rows name the place inside the title with "AT <venue>" or
+# "IN <city>" (e.g. "YOASOBI LIVE AT WEMBLEY ARENA", "... IN JAKARTA") rather
+# than as a separate Japanese venue token. Capture the capitalised place that
+# follows. Bounded to a few words so it grabs the venue, not the rest of the
+# title; "AT/IN" must stand as whole words so "ENDING" never trips "IN".
+_TITLE_LOCATION_RE = re.compile(
+    r"\b(?:AT|IN)\s+(?P<loc>[A-Z][A-Za-z'’.]+(?:\s+(?:&\s+)?[A-Z][A-Za-z'’.]+){0,3})"
+)
 
 
 def tour_venue_from_window(window: str) -> str:
@@ -933,6 +941,9 @@ def tour_venue_from_window(window: str) -> str:
     venue = re.search(rf"[^\s、,，。]{{1,24}}?(?:{_VENUE_SUFFIX_RE})", window)
     if venue:
         return clean_text(venue.group(0))
+    title_location = _TITLE_LOCATION_RE.search(window)
+    if title_location:
+        return clean_text(title_location.group("loc"))
     prefecture = re.search(rf"(?:{_PREFECTURE_RE})", window)
     return prefecture.group(0) if prefecture else ""
 

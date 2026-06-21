@@ -37,6 +37,25 @@ def web_source_link(url: object, label: str = "Open") -> str:
     )
 
 
+def artist_venue_label(event: dict[str, object]) -> str:
+    """Honest venue text for an artist show.
+
+    Many tour listings carry no per-show venue (a multi-city tour has none),
+    so "unknown" read as broken. Show the real venue when present, name the
+    multi-city case for a tour, and otherwise a neutral dash.
+    """
+    venues = event.get("venues", [])
+    if isinstance(venues, list):
+        for venue in venues:
+            label = clean_text(str(venue))
+            if label:
+                return label
+    title = clean_text(str(event.get("title") or ""))
+    if re.search(r"\bTOUR\b|ツアー|\d+\s*-?\s*CITY", title, flags=re.IGNORECASE):
+        return "Multiple cities"
+    return "—"
+
+
 def render_artist_detail_page(db_path: str, artist_id: int) -> str:
     artist = next((watch for watch in list_watches(db_path, include_muted=True) if watch.id == artist_id and watch.kind == WATCH_KIND_ARTIST), None)
     if not artist:
@@ -49,8 +68,7 @@ def render_artist_detail_page(db_path: str, artist_id: int) -> str:
     artist_events.sort(key=lambda event: (first_event_sort_date(event) is None, first_event_sort_date(event) or dt.date.max, str(event.get("title") or "")))
     def render_artist_event_item(event: dict[str, object]) -> str:
         event_date = first_event_sort_date(event)
-        venue_items = event.get("venues", [])
-        venue_label = str(venue_items[0]) if isinstance(venue_items, list) and venue_items else "unknown"
+        venue_label = artist_venue_label(event)
         ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
         round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
         return f"""
