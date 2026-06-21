@@ -432,9 +432,14 @@ struct EventDetailView: View {
                         if let schedule = round.scheduleLabel, !schedule.isEmpty {
                             Text(schedule).font(.caption).foregroundStyle(.secondary)
                         }
-                        Text("Type: \(round.roundType ?? "unknown") - membership: \(round.membershipRequired ?? "unknown")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        let meta = [round.roundTypeLabel, round.membershipLabel]
+                            .compactMap { $0 }
+                            .filter { !$0.isEmpty }
+                        if !meta.isEmpty {
+                            Text(meta.joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if let evidence = round.evidence, !evidence.isEmpty {
                             Text("Evidence: \(evidence)")
                                 .font(.caption2)

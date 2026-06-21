@@ -97,7 +97,9 @@ struct TicketRound: Codable, Identifiable {
     let scheduleLabel: String?
     let confidence: Int?
     let roundType: String?
+    let roundTypeLabel: String?
     let membershipRequired: String?
+    let membershipLabel: String?
     let evidence: String?
 
     enum CodingKeys: String, CodingKey {
@@ -109,7 +111,9 @@ struct TicketRound: Codable, Identifiable {
         case scheduleLabel = "schedule_label"
         case confidence
         case roundType = "round_type"
+        case roundTypeLabel = "round_type_label"
         case membershipRequired = "membership_required"
+        case membershipLabel = "membership_label"
         case evidence
     }
 }

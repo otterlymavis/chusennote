@@ -93,6 +93,29 @@ def human_status(status: object) -> str:
     return STATUS_LABELS.get(str(status or ""), "")
 
 
+ROUND_TYPE_LABELS = {
+    "fc": "Fan club",
+    "general": "General sale",
+    "trade": "Resale",
+    "official": "Official",
+    "platform": "Platform presale",
+}
+MEMBERSHIP_LABELS = {
+    "yes": "Membership required",
+    "no": "No membership needed",
+}
+
+
+def round_type_label(round_type: object) -> str:
+    """Readable round-type text; empty for unknown/unrecognised so the UI hides it."""
+    return ROUND_TYPE_LABELS.get(str(round_type or ""), "")
+
+
+def membership_label(membership: object) -> str:
+    """Readable membership text; empty for unknown so the UI hides it."""
+    return MEMBERSHIP_LABELS.get(str(membership or ""), "")
+
+
 def round_schedule_label(round_info: dict[str, object]) -> str:
     """A compact "when do I act" line for a ticket round.
 
@@ -261,7 +284,9 @@ def recent_events(
                     "status_label": human_status(ticket[8]),
                     "confidence": ticket[9],
                     "round_type": ticket[10],
+                    "round_type_label": round_type_label(ticket[10]),
                     "membership_required": ticket[11],
+                    "membership_label": membership_label(ticket[11]),
                     "evidence": ticket[12],
                     "round_key": ticket[13],
                 }

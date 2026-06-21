@@ -625,6 +625,15 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
 
 
+def test_round_type_and_membership_labels():
+    assert lm.round_type_label("fc") == "Fan club"
+    assert lm.round_type_label("platform") == "Platform presale"
+    assert lm.round_type_label("unknown") == ""
+    assert lm.membership_label("yes") == "Membership required"
+    assert lm.membership_label("no") == "No membership needed"
+    assert lm.membership_label("unknown") == ""
+
+
 def test_round_schedule_label_builds_when_to_act_line():
     label = lm.round_schedule_label(
         {

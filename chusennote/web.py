@@ -201,12 +201,12 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
             for label, value in facts
         )
         meta_parts: list[str] = []
-        round_type = clean_text(str(ticket.get("round_type") or ""))
-        if round_type and round_type != "unknown":
+        round_type = clean_text(str(ticket.get("round_type_label") or ""))
+        if round_type:
             meta_parts.append(f"Type: {html.escape(round_type)}")
-        membership = clean_text(str(ticket.get("membership_required") or ""))
-        if membership and membership != "unknown":
-            meta_parts.append(f"membership: {html.escape(membership)}")
+        membership = clean_text(str(ticket.get("membership_label") or ""))
+        if membership:
+            meta_parts.append(html.escape(membership))
         if ticket.get("confidence"):
             meta_parts.append(f"confidence {html.escape(str(ticket.get('confidence')))}")
         meta_line = f"<p><small>{' · '.join(meta_parts)}</small></p>" if meta_parts else ""
