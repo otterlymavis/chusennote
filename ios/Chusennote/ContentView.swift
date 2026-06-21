@@ -213,7 +213,7 @@ struct ContentView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(event.title ?? "Untitled event").font(.headline)
-                                Text([event.status, event.eventDates?.prefix(2).joined(separator: "; "), event.venues?.prefix(2).joined(separator: "; ")].compactMap { $0 }.joined(separator: " - "))
+                                Text([event.status, event.eventDates?.prefix(2).joined(separator: "; "), event.venueLabel].compactMap { $0 }.joined(separator: " - "))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -389,8 +389,8 @@ struct EventDetailView: View {
                 if let dates = event.eventDates, !dates.isEmpty {
                     Text("Dates: \(dates.prefix(2).joined(separator: "; "))")
                 }
-                if let venues = event.venues, !venues.isEmpty {
-                    Text("Venues: \(venues.prefix(2).joined(separator: "; "))")
+                if let venue = event.venueLabel, !venue.isEmpty {
+                    Text("Venue: \(venue)")
                 }
                 if let reasons = event.matchReasons, !reasons.isEmpty {
                     Text("Why: \(reasons.prefix(3).joined(separator: "; "))")

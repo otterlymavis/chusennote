@@ -33,6 +33,9 @@ struct EventSummary: Codable, Identifiable {
     let officialUrl: String?
     let eventDates: [String]?
     let venues: [String]?
+    // Honest venue text from the backend: real venues, "Multiple cities" for a
+    // tour, or a dash. Prefer this over `venues`, which is empty for tours.
+    let venueLabel: String?
     let matchReasons: [String]?
     let manualSources: [WatchSource]?
     let rounds: [TicketRound]
@@ -46,6 +49,7 @@ struct EventSummary: Codable, Identifiable {
         case officialUrl = "official_url"
         case eventDates = "event_dates"
         case venues
+        case venueLabel = "venue_label"
         case matchReasons = "match_reasons"
         case manualSources = "manual_sources"
         case rounds

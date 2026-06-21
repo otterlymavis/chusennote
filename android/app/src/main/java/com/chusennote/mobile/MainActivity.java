@@ -689,15 +689,21 @@ public class MainActivity extends Activity {
     private String eventClues(JSONObject event) {
         StringBuilder detail = new StringBuilder();
         String dates = joinFirst(event.optJSONArray("event_dates"));
-        String venues = joinFirst(event.optJSONArray("venues"));
+        // Prefer the backend's honest venue_label (real venues, "Multiple cities"
+        // for a tour, or a dash) over the raw venues array, which is empty for
+        // tour listings and read as missing data.
+        String venue = event.optString("venue_label", "");
+        if (venue.isEmpty()) {
+            venue = joinFirst(event.optJSONArray("venues"));
+        }
         if (!dates.isEmpty()) {
             detail.append("Dates: ").append(dates);
         }
-        if (!venues.isEmpty()) {
+        if (!venue.isEmpty()) {
             if (detail.length() > 0) {
                 detail.append("\n");
             }
-            detail.append("Venues: ").append(venues);
+            detail.append("Venue: ").append(venue);
         }
         return detail.toString();
     }

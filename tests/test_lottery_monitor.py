@@ -590,6 +590,41 @@ def test_round_name_keeps_additional_performance_prefix():
     assert rounds[0].name == "追加公演・抽選先行"
 
 
+def test_events_api_exposes_honest_venue_label(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "YOASOBI", kind=lm.WATCH_KIND_ARTIST, now="2026-06-01T00:00:00+00:00")
+    tour = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="YOASOBI",
+            official_page="https://www.yoasobi-music.jp/live#20261024-aaa111",
+            title="YOASOBI ASIA 10-CITY DOME & STADIUM TOUR 2026",
+            summary="",
+            event_dates=("2026年10月24日",),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    with_venue = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="YOASOBI",
+            official_page="https://www.yoasobi-music.jp/live#20260731-bbb222",
+            title="YOASOBI at Tokyo",
+            summary="",
+            event_dates=("2026年7月31日",),
+            venues=("東京 有明アリーナ",),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    lm.save_blocks(str(db_path), tour, now="2026-06-02T00:00:00+00:00", watch_id=watch.id)
+    lm.save_blocks(str(db_path), with_venue, now="2026-06-02T00:00:00+00:00", watch_id=watch.id)
+
+    labels = {event["title"]: event["venue_label"] for event in lm.recent_events(str(db_path))}
+    assert labels["YOASOBI ASIA 10-CITY DOME & STADIUM TOUR 2026"] == "Multiple cities"
+    assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
+
+
 def test_save_blocks_prunes_search_fallback_once_real_show_exists(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     watch = lm.add_watch(str(db_path), "YOASOBI", kind=lm.WATCH_KIND_ARTIST, now="2026-06-01T00:00:00+00:00")

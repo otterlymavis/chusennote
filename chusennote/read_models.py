@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 
@@ -69,6 +70,23 @@ def tour_stops(venues: Sequence[str], event_dates: Sequence[str]) -> list[tuple[
         date = event_dates[index] if index < len(event_dates) else ""
         stops.append((city_for_text(venue), venue, date))
     return stops
+
+
+def venue_label(event: dict[str, object]) -> str:
+    """A short, honest venue string for an event or artist show.
+
+    The raw ``venues`` list is empty for many tour listings (a multi-city tour
+    names no single venue), which read as broken in the apps. Serve the real
+    venues when known, name the multi-city case for a tour, otherwise a neutral
+    dash. Shared by the web UI and the JSON API so both stay consistent.
+    """
+    venues = [clean_text(str(value)) for value in event.get("venues", []) if clean_text(str(value))]
+    if venues:
+        return "; ".join(venues[:3])
+    title = clean_text(str(event.get("title") or ""))
+    if re.search(r"\bTOUR\b|ツアー|\d+\s*-?\s*CITY", title, flags=re.IGNORECASE):
+        return "Multiple cities"
+    return "—"
 
 
 def event_match_reasons(event: dict[str, object]) -> list[str]:
@@ -236,6 +254,7 @@ def recent_events(
                     "manual_sources": [dataclasses.asdict(watch_source_from_row(source)) for source in manual_sources],
                     "rounds": round_items,
                 }
+            event["venue_label"] = venue_label(event)
             event["match_reasons"] = event_match_reasons(event)
             events.append(event)
         return events

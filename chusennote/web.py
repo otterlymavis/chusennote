@@ -37,23 +37,9 @@ def web_source_link(url: object, label: str = "Open") -> str:
     )
 
 
-def artist_venue_label(event: dict[str, object]) -> str:
-    """Honest venue text for an artist show.
-
-    Many tour listings carry no per-show venue (a multi-city tour has none),
-    so "unknown" read as broken. Show the real venue when present, name the
-    multi-city case for a tour, and otherwise a neutral dash.
-    """
-    venues = event.get("venues", [])
-    if isinstance(venues, list):
-        for venue in venues:
-            label = clean_text(str(venue))
-            if label:
-                return label
-    title = clean_text(str(event.get("title") or ""))
-    if re.search(r"\bTOUR\b|ツアー|\d+\s*-?\s*CITY", title, flags=re.IGNORECASE):
-        return "Multiple cities"
-    return "—"
+# Honest venue text (real venues, "Multiple cities" for a tour, else a dash) is
+# shared with the JSON API so the web UI and the apps render venues identically.
+artist_venue_label = venue_label
 
 
 def render_artist_detail_page(db_path: str, artist_id: int) -> str:
