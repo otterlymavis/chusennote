@@ -1,0 +1,5 @@
+# Keep the Gradle wrapper runnable on every OS regardless of core.autocrlf:
+# the POSIX launcher must stay LF, the Windows launcher CRLF, the jar binary.
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+*.jar binary

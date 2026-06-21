@@ -3,7 +3,9 @@ __pycache__/
 *.py[cod]
 *.sqlite3
 *.sqlite3.backup-*
+*.sqlite3.bak
 history_logs/
+*.tmp.*
 .venv/
 venv/
 env/
