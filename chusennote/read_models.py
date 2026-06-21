@@ -72,6 +72,27 @@ def tour_stops(venues: Sequence[str], event_dates: Sequence[str]) -> list[tuple[
     return stops
 
 
+STATUS_LABELS = {
+    "closing_soon": "Closing soon",
+    "results_today": "Results today",
+    "payment_due": "Payment due",
+    "general_sale_soon": "General sale soon",
+    "open": "Open now",
+    "upcoming": "Upcoming",
+    "closed": "Closed",
+}
+
+
+def human_status(status: object) -> str:
+    """A readable label for a ticket-round status code.
+
+    The raw codes (``closing_soon``, ``results_today`` …) leaked straight into
+    the apps. Map them to plain wording shared by every client; ``unknown`` and
+    anything unrecognised render as empty so the UI can simply hide it.
+    """
+    return STATUS_LABELS.get(str(status or ""), "")
+
+
 def venue_label(event: dict[str, object]) -> str:
     """A short, honest venue string for an event or artist show.
 
@@ -210,6 +231,7 @@ def recent_events(
                     "general_sale_date": ticket[6],
                     "payment_end_at": ticket[7],
                     "status": ticket[8],
+                    "status_label": human_status(ticket[8]),
                     "confidence": ticket[9],
                     "round_type": ticket[10],
                     "membership_required": ticket[11],
@@ -302,6 +324,7 @@ def upcoming_priority_rows(db_path: str, limit: int = 50, include_muted_watches:
                     "platform": round_info.get("platform"),
                     "round_name": round_info.get("name"),
                     "status": status,
+                    "status_label": human_status(status),
                     "relevant_date": relevant_date,
                     "url": round_info.get("url"),
                     "match_reasons": event.get("match_reasons", []),

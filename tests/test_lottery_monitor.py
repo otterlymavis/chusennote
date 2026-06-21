@@ -625,6 +625,47 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
 
 
+def test_human_status_maps_codes_to_plain_wording():
+    assert lm.human_status("closing_soon") == "Closing soon"
+    assert lm.human_status("results_today") == "Results today"
+    assert lm.human_status("open") == "Open now"
+    # Unknown / unrecognised render empty so the UI can hide them.
+    assert lm.human_status("unknown") == ""
+    assert lm.human_status(None) == ""
+
+
+def test_upcoming_api_exposes_status_label(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Status Demo", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    soon = (dt.date(2026, 6, 1) + dt.timedelta(days=1)).isoformat()
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Status Demo",
+            official_page="https://official.example/status",
+            title="Status Demo Event",
+            summary="",
+            event_dates=("2026年6月20日",),
+            venues=("Example Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official",
+                url="https://official.example/status",
+                name="第1次抽選先行",
+                application_start_at="2026-06-01",
+                application_end_at=soon,
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+
+    rows = lm.upcoming_priority_rows(str(db_path))
+    assert rows, "expected at least one upcoming round"
+    assert rows[0]["status_label"] == lm.human_status(rows[0]["status"])
+    assert rows[0]["status_label"] != ""
+
+
 def test_save_blocks_prunes_search_fallback_once_real_show_exists(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     watch = lm.add_watch(str(db_path), "YOASOBI", kind=lm.WATCH_KIND_ARTIST, now="2026-06-01T00:00:00+00:00")

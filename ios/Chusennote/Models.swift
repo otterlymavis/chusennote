@@ -65,6 +65,7 @@ struct UpcomingItem: Codable, Identifiable {
     let platform: String?
     let roundName: String?
     let status: String?
+    let statusLabel: String?
     let relevantDate: String?
     let url: String?
     let matchReasons: [String]?
@@ -77,6 +78,7 @@ struct UpcomingItem: Codable, Identifiable {
         case platform
         case roundName = "round_name"
         case status
+        case statusLabel = "status_label"
         case relevantDate = "relevant_date"
         case url
         case matchReasons = "match_reasons"
@@ -89,6 +91,7 @@ struct TicketRound: Codable, Identifiable {
     let platform: String?
     let url: String?
     let status: String?
+    let statusLabel: String?
     let confidence: Int?
     let roundType: String?
     let membershipRequired: String?
@@ -99,6 +102,7 @@ struct TicketRound: Codable, Identifiable {
         case platform
         case url
         case status
+        case statusLabel = "status_label"
         case confidence
         case roundType = "round_type"
         case membershipRequired = "membership_required"

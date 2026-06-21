@@ -561,7 +561,11 @@ public class MainActivity extends Activity {
             if (item == null) {
                 continue;
             }
-            String detail = item.optString("status", "unknown")
+            String statusText = item.optString("status_label", "");
+            if (statusText.isEmpty()) {
+                statusText = item.optString("status", "unknown");
+            }
+            String detail = statusText
                 + " - " + item.optString("platform", "unknown")
                 + " - " + item.optString("round_name", "Ticket round")
                 + " - " + item.optString("relevant_date", "date unknown");

@@ -190,7 +190,7 @@ struct ContentView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(item.eventTitle ?? "Untitled event").font(.headline)
-                                Text([item.status, item.platform, item.roundName, item.relevantDate].compactMap { $0 }.joined(separator: " - "))
+                                Text([item.statusLabel?.isEmpty == false ? item.statusLabel : item.status, item.platform, item.roundName, item.relevantDate].compactMap { $0 }.joined(separator: " - "))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -428,7 +428,7 @@ struct EventDetailView: View {
                 ForEach(event.rounds) { round in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(round.name ?? "Ticket round").font(.headline)
-                        Text("\(round.platform ?? "unknown") - \(round.status ?? "unknown")")
+                        Text("\(round.platform ?? "unknown") - \((round.statusLabel?.isEmpty == false ? round.statusLabel : round.status) ?? "unknown")")
                         Text("Type: \(round.roundType ?? "unknown") - membership: \(round.membershipRequired ?? "unknown")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
