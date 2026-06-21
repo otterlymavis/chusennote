@@ -13,9 +13,13 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Playwright + Chromium and its OS libraries. Pinned so the browser install
-# matches the library; bump deliberately.
-RUN pip install "playwright==1.48.0" \
-    && playwright install --with-deps chromium
+# matches the library; bump deliberately. `apt-get update` first because the
+# slim image ships empty package lists, which `--with-deps` (apt) needs.
+RUN apt-get update \
+    && pip install "playwright==1.48.0" \
+    && playwright install --with-deps chromium \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # App is pure stdlib, so just copy the source (see .dockerignore for exclusions).
 COPY . /app
