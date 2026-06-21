@@ -126,10 +126,50 @@ def artist_show_block(keyword: str, schedule_url: str, entry: dict[str, str]) ->
     return AppBlocks(general_info=info, ticket_info=())
 
 
+# A tour listing often names no venue per show; the venue lives on a per-show
+# detail page linked from the schedule. Following those costs a fetch each, so
+# cap how many we chase per artist run.
+ARTIST_VENUE_LOOKUP_LIMIT = 6
+
+
+def tour_detail_url(page: Page, title: str) -> str | None:
+    """A per-show detail link on a schedule page whose label names the show.
+
+    Returns ``None`` when no link clearly belongs to the show (e.g. multi-city
+    tours that only carry nav/social links), so enrichment is a safe no-op
+    rather than guessing a wrong page.
+    """
+    title_key = clean_text(title)
+    if len(title_key) < 4:
+        return None
+    for link in page.links:
+        if is_noisy_url(link.url) or link.url == page.url:
+            continue
+        label = clean_text(link.label)
+        if len(label) < 4 or any(hint in link.url.lower() for hint in ("/news", "/profile", "/biography")):
+            continue
+        if keyword_matches_text(title_key, label) or keyword_matches_text(label, title_key):
+            return link.url
+    return None
+
+
+def venue_from_detail_page(url: str) -> str:
+    """Fetch a show's detail page and read a venue/city from it."""
+    try:
+        page = fetch_page(url)
+    except (OSError, ValueError):
+        return ""
+    venues = extract_venues(page.text)
+    if venues:
+        return clean_text(str(venues[0]))
+    return tour_venue_from_window(page.text[:400])
+
+
 def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
     blocks: list[AppBlocks] = []
     seen_shows: set[tuple[str, str]] = set()
     seen_urls: set[str] = set()
+    venue_lookups = 0
     for result in choose_official_results(search_web(keyword, limit=limit), keyword, limit=limit):
         if result.url in seen_urls or is_noisy_url(result.url):
             continue
@@ -152,6 +192,13 @@ def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
                 if key in seen_shows:
                     continue
                 seen_shows.add(key)
+                if not entry.get("venue") and venue_lookups < ARTIST_VENUE_LOOKUP_LIMIT:
+                    detail_url = tour_detail_url(schedule_page, entry.get("title", ""))
+                    if detail_url:
+                        venue_lookups += 1
+                        venue = venue_from_detail_page(detail_url)
+                        if venue:
+                            entry = {**entry, "venue": venue}
                 blocks.append(artist_show_block(keyword, schedule_page.url, entry))
     if not blocks:
         ticket_links = portal_search_links(keyword)

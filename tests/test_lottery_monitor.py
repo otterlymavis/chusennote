@@ -492,6 +492,59 @@ def test_artist_venue_label_is_honest_when_no_venue():
     assert lm.web.artist_venue_label({"venues": [], "title": "PENTATONIC"}) == "—"
 
 
+def test_tour_detail_url_matches_show_link():
+    page = lm.parse_page(
+        "https://artist.example/live",
+        "<html><body>"
+        "<a href='https://artist.example/show/summer'>SUMMER FESTIVAL 2026</a>"
+        "<a href='https://artist.example/news'>NEWS</a>"
+        "<a href='https://twitter.com/artist'>twitter</a>"
+        "</body></html>",
+    )
+    # The link whose label names the show wins; nav/social links never match.
+    assert lm.tour_detail_url(page, "SUMMER FESTIVAL 2026") == "https://artist.example/show/summer"
+    # A multi-city tour with no matching link enriches nothing (safe no-op).
+    assert lm.tour_detail_url(page, "ASIA 10-CITY DOME & STADIUM TOUR") is None
+
+
+def test_venue_from_detail_page_reads_venue(monkeypatch):
+    detail = lm.parse_page(
+        "https://artist.example/show/summer",
+        "<html><body>会場 東京 有明アリーナ 公演日 2026年7月25日</body></html>",
+    )
+    monkeypatch.setattr(lm.pipeline, "fetch_page", lambda url: detail)
+    assert "有明アリーナ" in lm.venue_from_detail_page("https://artist.example/show/summer")
+
+
+def test_build_artist_event_blocks_fills_venue_from_detail_page(monkeypatch):
+    keyword = "Artist"
+    results = [lm.SearchResult("Artist Official", "https://artist.example/", keyword)]
+    # The landing page lists a show with no inline venue but links to its detail
+    # page. "FESTIVAL"/"show" carry no schedule hint, so the link is not chased
+    # as a schedule page and stays for venue enrichment.
+    landing_html = (
+        "<html><head><title>Artist Official</title></head><body>"
+        "Artist 2026 ライブ情報 2026年7月25日(土) SUMMER FESTIVAL 2026 "
+        "<a href='https://artist.example/show/summer'>SUMMER FESTIVAL 2026</a>"
+        "</body></html>"
+    )
+    detail_html = "<html><body>会場 東京 有明アリーナ 公演日 2026年7月25日</body></html>"
+
+    def fake_fetch(url):
+        if "/show/summer" in url:
+            return lm.parse_page(url, detail_html)
+        return lm.parse_page("https://artist.example/", landing_html)
+
+    monkeypatch.setattr(lm.pipeline, "search_web", lambda kw, limit=8: results)
+    monkeypatch.setattr(lm.pipeline, "choose_official_results", lambda res, kw, limit=8: res)
+    monkeypatch.setattr(lm.pipeline, "page_matches_keyword", lambda kw, page: True)
+    monkeypatch.setattr(lm.pipeline, "fetch_page", fake_fetch)
+
+    blocks = lm.build_artist_event_blocks(keyword)
+    venues = [venue for block in blocks for venue in block.general_info.venues]
+    assert any("有明アリーナ" in venue for venue in venues)
+
+
 def test_build_artist_event_blocks_lists_shows_from_schedule(monkeypatch):
     keyword = "YOASOBI"
     results = [lm.SearchResult("YOASOBI Official", "https://www.yoasobi-music.jp/", keyword)]
