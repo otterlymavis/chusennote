@@ -93,6 +93,33 @@ def human_status(status: object) -> str:
     return STATUS_LABELS.get(str(status or ""), "")
 
 
+def round_schedule_label(round_info: dict[str, object]) -> str:
+    """A compact "when do I act" line for a ticket round.
+
+    The apps showed a round's name and status but not its dates — the whole
+    point of the tool. Build one readable line from the date fields the API
+    already carries, shared by every client so it renders identically.
+    """
+    def text(value: object) -> str:
+        return clean_text(str(value or ""))
+
+    parts: list[str] = []
+    start, end = text(round_info.get("application_start_at")), text(round_info.get("application_end_at"))
+    if start and end:
+        parts.append(f"Apply {start} – {end}")
+    elif start:
+        parts.append(f"Apply from {start}")
+    elif end:
+        parts.append(f"Apply by {end}")
+    if text(round_info.get("results_date")):
+        parts.append(f"Results {text(round_info.get('results_date'))}")
+    if text(round_info.get("payment_end_at")):
+        parts.append(f"Pay by {text(round_info.get('payment_end_at'))}")
+    if text(round_info.get("general_sale_date")):
+        parts.append(f"Sale {text(round_info.get('general_sale_date'))}")
+    return " · ".join(parts)
+
+
 def venue_label(event: dict[str, object]) -> str:
     """A short, honest venue string for an event or artist show.
 
@@ -241,6 +268,8 @@ def recent_events(
                 for ticket in rounds
                 if not is_noisy_url(ticket[2])
             ]
+            for round_item in round_items:
+                round_item["schedule_label"] = round_schedule_label(round_item)
             round_items.sort(
                 key=lambda ticket: (
                     -round_latest_date_ordinal(ticket),

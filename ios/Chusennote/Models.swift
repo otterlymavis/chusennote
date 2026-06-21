@@ -92,6 +92,9 @@ struct TicketRound: Codable, Identifiable {
     let url: String?
     let status: String?
     let statusLabel: String?
+    // Compact "when do I act" line from the backend (apply window, results,
+    // payment, sale), so the app shows the dates that matter for a lottery.
+    let scheduleLabel: String?
     let confidence: Int?
     let roundType: String?
     let membershipRequired: String?
@@ -103,6 +106,7 @@ struct TicketRound: Codable, Identifiable {
         case url
         case status
         case statusLabel = "status_label"
+        case scheduleLabel = "schedule_label"
         case confidence
         case roundType = "round_type"
         case membershipRequired = "membership_required"

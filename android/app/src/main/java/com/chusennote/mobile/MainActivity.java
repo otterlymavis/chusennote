@@ -536,6 +536,10 @@ public class MainActivity extends Activity {
             if (!clues.isEmpty()) {
                 detail = detail + "\n" + clues;
             }
+            String roundsText = roundsSummary(rounds);
+            if (!roundsText.isEmpty()) {
+                detail = detail + "\n" + roundsText;
+            }
             String evidence = firstRoundEvidence(rounds);
             if (!evidence.isEmpty()) {
                 detail = detail + "\nEvidence: " + evidence;
@@ -723,6 +727,28 @@ public class MainActivity extends Activity {
             }
         }
         return "";
+    }
+
+    private String roundsSummary(JSONArray rounds) {
+        if (rounds == null || rounds.length() == 0) {
+            return "";
+        }
+        StringBuilder summary = new StringBuilder();
+        for (int i = 0; i < Math.min(rounds.length(), 4); i++) {
+            JSONObject round = rounds.optJSONObject(i);
+            if (round == null) {
+                continue;
+            }
+            if (summary.length() > 0) {
+                summary.append("\n");
+            }
+            summary.append("• ").append(round.optString("name", "Round"));
+            String schedule = round.optString("schedule_label", "");
+            if (!schedule.isEmpty()) {
+                summary.append(": ").append(schedule);
+            }
+        }
+        return summary.toString();
     }
 
     private void addEventCard(LinearLayout list, JSONObject event, String detail) {

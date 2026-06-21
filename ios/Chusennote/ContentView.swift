@@ -429,6 +429,9 @@ struct EventDetailView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(round.name ?? "Ticket round").font(.headline)
                         Text("\(round.platform ?? "unknown") - \((round.statusLabel?.isEmpty == false ? round.statusLabel : round.status) ?? "unknown")")
+                        if let schedule = round.scheduleLabel, !schedule.isEmpty {
+                            Text(schedule).font(.caption).foregroundStyle(.secondary)
+                        }
                         Text("Type: \(round.roundType ?? "unknown") - membership: \(round.membershipRequired ?? "unknown")")
                             .font(.caption)
                             .foregroundStyle(.secondary)

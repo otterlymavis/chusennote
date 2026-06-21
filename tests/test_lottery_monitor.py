@@ -625,6 +625,52 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
 
 
+def test_round_schedule_label_builds_when_to_act_line():
+    label = lm.round_schedule_label(
+        {
+            "application_start_at": "2026-06-10",
+            "application_end_at": "2026-06-18",
+            "results_date": "2026-06-22",
+            "payment_end_at": "2026-06-25",
+            "general_sale_date": "2026-07-04",
+        }
+    )
+    assert label == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22 · Pay by 2026-06-25 · Sale 2026-07-04"
+    # Partial windows and empty rounds degrade gracefully.
+    assert lm.round_schedule_label({"application_end_at": "2026-06-18"}) == "Apply by 2026-06-18"
+    assert lm.round_schedule_label({}) == ""
+
+
+def test_events_api_exposes_round_schedule_label(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Schedule Demo", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Schedule Demo",
+            official_page="https://official.example/schedule",
+            title="Schedule Demo Event",
+            summary="",
+            event_dates=("2026年6月20日",),
+            venues=("Example Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official",
+                url="https://official.example/schedule",
+                name="第1次抽選先行",
+                application_start_at="2026-06-10",
+                application_end_at="2026-06-18",
+                results_date="2026-06-22",
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+
+    event = lm.recent_events(str(db_path))[0]
+    assert event["rounds"][0]["schedule_label"] == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22"
+
+
 def test_human_status_maps_codes_to_plain_wording():
     assert lm.human_status("closing_soon") == "Closing soon"
     assert lm.human_status("results_today") == "Results today"
