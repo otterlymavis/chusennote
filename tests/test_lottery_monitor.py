@@ -1041,6 +1041,43 @@ def test_page_needs_browser_flags_empty_state_and_thin_pages():
     assert not lm.page_needs_browser(full)
 
 
+def test_fetch_page_browser_retries_after_transient_failure(monkeypatch):
+    rendered = lm.Page("https://example.test/", "Rendered", "ok", ())
+    calls = {"n": 0}
+
+    def flaky(url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("cold Chromium launch failed")
+        return rendered
+
+    monkeypatch.setattr(lm.netio, "_browser_render", flaky)
+    assert lm.fetch_page_browser("https://example.test/") is rendered
+    assert calls["n"] == 2
+
+
+def test_fetch_page_browser_gives_up_as_oserror_after_retries(monkeypatch):
+    def always_fail(url):
+        raise RuntimeError("browser down")
+
+    monkeypatch.setattr(lm.netio, "_browser_render", always_fail)
+    with pytest.raises(OSError):
+        lm.fetch_page_browser("https://example.test/")
+
+
+def test_fetch_page_browser_does_not_retry_missing_playwright(monkeypatch):
+    calls = {"n": 0}
+
+    def no_playwright(url):
+        calls["n"] += 1
+        raise ImportError("no playwright")
+
+    monkeypatch.setattr(lm.netio, "_browser_render", no_playwright)
+    with pytest.raises(OSError):
+        lm.fetch_page_browser("https://example.test/")
+    assert calls["n"] == 1
+
+
 def test_fetch_page_browser_degrades_to_oserror_without_playwright():
     try:
         import playwright  # noqa: F401

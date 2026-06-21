@@ -152,38 +152,48 @@ def page_needs_browser(page: Page) -> bool:
     return any(marker.replace(" ", "") in compact for marker in EMPTY_STATE_MARKERS)
 
 
-def fetch_page_browser(url: str) -> Page:
+def _browser_render(url: str) -> Page:
+    """One headless-Chromium render pass. Raises ImportError if playwright is
+    absent and playwright's own errors on any browser failure."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as runner:
+        browser = runner.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="ja-JP")
+            page = context.new_page()
+            # "networkidle" never settles on ad/analytics-heavy JP sites;
+            # wait for the DOM then give client-side JS a moment to render.
+            page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
+            page.wait_for_timeout(BROWSER_SETTLE_MS)
+            html = page.content()
+        finally:
+            browser.close()
+    return parse_page(url, html)
+
+
+def fetch_page_browser(url: str, attempts: int = 2) -> Page:
     """Render a page with headless Chromium so JS-built ticket platforms parse.
 
     Playwright is an optional dependency; a missing install or any browser
     failure is surfaced as OSError so callers' existing fetch-error handling
-    treats it like any other unreachable page.
+    treats it like any other unreachable page. A cold Chromium launch can fail
+    transiently, which would otherwise leave ``fetch_page`` silently serving the
+    JS shell, so a render is retried once before giving up.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as error:
-        raise OSError(
-            "headless-browser fetch requires playwright "
-            "(pip install playwright && playwright install chromium)"
-        ) from error
-    try:
-        with sync_playwright() as runner:
-            browser = runner.chromium.launch(headless=True)
-            try:
-                context = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="ja-JP")
-                page = context.new_page()
-                # "networkidle" never settles on ad/analytics-heavy JP sites;
-                # wait for the DOM then give client-side JS a moment to render.
-                page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
-                page.wait_for_timeout(BROWSER_SETTLE_MS)
-                html = page.content()
-            finally:
-                browser.close()
-    except OSError:
-        raise
-    except Exception as error:  # playwright raises its own error hierarchy
-        raise OSError(f"headless-browser fetch failed for {url}: {error}") from error
-    return parse_page(url, html)
+    last_error: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            return _browser_render(url)
+        except ImportError as error:
+            # A missing install never fixes itself on retry.
+            raise OSError(
+                "headless-browser fetch requires playwright "
+                "(pip install playwright && playwright install chromium)"
+            ) from error
+        except Exception as error:  # playwright raises its own error hierarchy
+            last_error = error
+    raise OSError(f"headless-browser fetch failed for {url}: {last_error}") from last_error
 
 
 def fetch_page(url: str) -> Page:
