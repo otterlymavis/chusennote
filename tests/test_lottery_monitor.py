@@ -789,6 +789,10 @@ def test_adapt_sql_rewrites_sqlite_isms_for_postgres():
         "CREATE TABLE a (x INT)",
         "CREATE TABLE b (y INT)",
     ]
+    # A ; inside a -- comment must not split the statement.
+    assert lm.split_statements("-- one row; each user subscribes\nCREATE TABLE c (z INT);") == [
+        "CREATE TABLE c (z INT)",
+    ]
 
 
 def test_round_type_and_membership_labels():

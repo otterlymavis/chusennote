@@ -39,10 +39,12 @@ def dialect_of(target: str) -> str:
 def split_statements(script: str) -> list[str]:
     """Split a DDL script into individual statements.
 
-    The schema is plain ``CREATE TABLE`` statements separated by ``;`` with no
-    semicolons inside literals or bodies, so a simple split is sufficient.
+    ``--`` line comments are stripped first so a ``;`` inside a comment never
+    splits a statement; the remaining schema is plain ``CREATE TABLE`` blocks
+    separated by ``;`` with no semicolons in literals.
     """
-    return [statement.strip() for statement in script.split(";") if statement.strip()]
+    without_comments = re.sub(r"--[^\n]*", "", script)
+    return [statement.strip() for statement in without_comments.split(";") if statement.strip()]
 
 
 def adapt_sql(sql: str, dialect: str) -> str:
