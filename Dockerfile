@@ -12,7 +12,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# App is pure stdlib, so just copy the source (see .dockerignore for exclusions).
+# The app is stdlib-only on SQLite; the hosted backend talks to Postgres, so the
+# image ships the psycopg driver. (SQLite still needs no driver.)
+RUN pip install "psycopg[binary]==3.2.3"
+
+# Just copy the source (see .dockerignore for exclusions).
 COPY . /app
 
 # Run as the image's non-root user; the SQLite database lives on a mounted

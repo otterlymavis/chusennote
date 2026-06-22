@@ -6,3 +6,7 @@
 #   pip install playwright
 #   playwright install chromium
 # playwright>=1.40
+
+# Optional: Postgres backend (hosted deployments). SQLite needs no driver.
+# Enable by setting CHUSENNOTE_DATABASE_URL=postgresql://...
+# psycopg[binary]>=3.2

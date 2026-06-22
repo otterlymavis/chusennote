@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import os
 import pathlib
 import sqlite3
 import threading
@@ -636,6 +637,66 @@ def test_storage_connect_seam(tmp_path):
     assert not lm.is_postgres_url("chusennote.sqlite3")
     assert lm.dialect_of("postgres://u@h/db") == "postgres"
     assert lm.dialect_of("chusennote.sqlite3") == "sqlite"
+
+
+POSTGRES_TEST_URL_ENV = "CHUSENNOTE_TEST_DATABASE_URL"
+_POSTGRES_TABLES = (
+    "notification_log",
+    "notification_subscriptions",
+    "device_tokens",
+    "alert_log",
+    "snapshots",
+    "ticket_rounds",
+    "sources",
+    "watch_sources",
+    "events",
+    "watched_keywords",
+)
+
+
+@pytest.mark.skipif(
+    not os.environ.get(POSTGRES_TEST_URL_ENV),
+    reason="set CHUSENNOTE_TEST_DATABASE_URL to run the Postgres backend test",
+)
+def test_postgres_backend_round_trips_core_flows():
+    """End-to-end CRUD on a real Postgres database, proving the dialect adapter:
+    schema creation, an upsert with ON CONFLICT, a round insert, and the read
+    models all work unchanged against Postgres."""
+    url = os.environ[POSTGRES_TEST_URL_ENV]
+    with lm.connect(url) as connection:
+        for table in _POSTGRES_TABLES:
+            connection.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+
+    watch = lm.add_watch(url, "PG Demo", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="PG Demo",
+            official_page="https://official.example/pg",
+            title="PG Demo Event",
+            summary="",
+            event_dates=("2026年6月20日",),
+            venues=("Example Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official",
+                url="https://official.example/pg",
+                name="第1次抽選先行",
+                application_start_at="2026-06-10",
+                application_end_at="2026-06-18",
+                results_date="2026-06-22",
+            ),
+        ),
+    )
+    lm.save_blocks(url, blocks, now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+
+    events = lm.recent_events(url)
+    event = next(event for event in events if event["title"] == "PG Demo Event")
+    assert event["venue_label"] == "Example Hall"
+    assert event["rounds"][0]["schedule_label"] == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22"
+    assert any(watch.keyword == "PG Demo" for watch in lm.list_watches(url))
+    assert lm.api_health(url)["schema_version"] == lm.DB_SCHEMA_VERSION
 
 
 def test_adapt_sql_rewrites_sqlite_isms_for_postgres():
