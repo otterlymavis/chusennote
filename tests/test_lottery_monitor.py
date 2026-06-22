@@ -4,6 +4,7 @@ import os
 import pathlib
 import sqlite3
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -3165,6 +3166,56 @@ def post_text(url, values):
     data = urllib.parse.urlencode(values).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
     return urllib.request.urlopen(request, timeout=5).read().decode("utf-8")
+
+
+def _get_with_token(url, token):
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))
+
+
+def test_web_auth_register_login_me_logout(tmp_path):
+    db_path = tmp_path / "auth-web.sqlite3"
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        registered = post_form(
+            f"{base}/api/auth/register",
+            {"email": "Web@Example.com", "password": "correct horse battery"},
+        )
+        assert registered["user"]["email"] == "web@example.com"
+        token = registered["token"]
+        assert token and _get_with_token(f"{base}/api/auth/me", token)["email"] == "web@example.com"
+
+        # No token is unauthorized.
+        with pytest.raises(urllib.error.HTTPError) as no_token:
+            urllib.request.urlopen(f"{base}/api/auth/me", timeout=5)
+        assert no_token.value.code == 401
+
+        # Login mints a working token; wrong password is rejected.
+        login = post_form(
+            f"{base}/api/auth/login",
+            {"email": "web@example.com", "password": "correct horse battery"},
+        )
+        assert _get_with_token(f"{base}/api/auth/me", login["token"])["email"] == "web@example.com"
+        with pytest.raises(urllib.error.HTTPError) as bad_login:
+            post_form(f"{base}/api/auth/login", {"email": "web@example.com", "password": "wrong"})
+        assert bad_login.value.code == 401
+
+        # Logout revokes the original token.
+        logout = urllib.request.Request(
+            f"{base}/api/auth/logout",
+            data=b"",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert json.loads(urllib.request.urlopen(logout, timeout=5).read().decode("utf-8"))["revoked"] is True
+        with pytest.raises(urllib.error.HTTPError) as revoked:
+            _get_with_token(f"{base}/api/auth/me", token)
+        assert revoked.value.code == 401
+    finally:
+        server.shutdown()
 
 
 def test_official_score_ranks_cjk_official_above_noise():

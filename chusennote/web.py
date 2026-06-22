@@ -1060,6 +1060,14 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             return
 
+        def bearer_token(self) -> str:
+            header = self.headers.get("Authorization", "")
+            prefix = "Bearer "
+            return header[len(prefix):].strip() if header.startswith(prefix) else ""
+
+        def authenticated_user(self):
+            return user_for_token(db_path, self.bearer_token())
+
         def do_GET(self) -> None:
             parsed_url = urllib.parse.urlparse(self.path)
             path = parsed_url.path
@@ -1074,6 +1082,12 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 html_response(self, render_notifications_page(db_path))
             elif path == "/api/health":
                 json_response(self, api_health(db_path))
+            elif path == "/api/auth/me":
+                user = self.authenticated_user()
+                if user is None:
+                    json_response(self, {"error": "unauthorized"}, status=401)
+                else:
+                    json_response(self, dataclasses.asdict(user))
             elif path == "/api/watchlist":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=include_muted)])
@@ -1115,7 +1129,25 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             path = urllib.parse.urlparse(self.path).path
             form = read_form(self)
-            if path == "/watch/add":
+            if path == "/api/auth/register":
+                try:
+                    user = create_user(db_path, form.get("email", ""), form.get("password", ""))
+                except ValueError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                token = issue_token(db_path, user.id)
+                json_response(self, {"token": token, "user": dataclasses.asdict(user)})
+            elif path == "/api/auth/login":
+                user = verify_user(db_path, form.get("email", ""), form.get("password", ""))
+                if user is None:
+                    json_response(self, {"error": "invalid credentials"}, status=401)
+                    return
+                token = issue_token(db_path, user.id)
+                json_response(self, {"token": token, "user": dataclasses.asdict(user)})
+            elif path == "/api/auth/logout":
+                revoke_token(db_path, self.bearer_token())
+                json_response(self, {"revoked": True})
+            elif path == "/watch/add":
                 keyword = clean_text(form.get("keyword", ""))
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
