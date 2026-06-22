@@ -222,7 +222,7 @@ def recent_events(
     include_muted_sources: bool = False,
     include_muted_watches: bool = False,
 ) -> list[dict[str, object]]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         watch_muted_clause = "" if include_muted_watches else "WHERE w.muted = 0"
         rows = connection.execute(
@@ -395,7 +395,7 @@ def upcoming_priority_rows(db_path: str, limit: int = 50, include_muted_watches:
 
 
 def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         rows = connection.execute(
             """
@@ -527,7 +527,7 @@ def render_calendar_ics(
 
 
 def api_health(db_path: str) -> dict[str, object]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
         artists = connection.execute(

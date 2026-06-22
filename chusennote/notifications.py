@@ -130,7 +130,7 @@ def pending_notifications(db_path: str, now: str | None = None, lead_days: tuple
         events_by_watch.setdefault(int(event.get("watch_id") or 0), []).append(event)
 
     pending: list[dict[str, object]] = []
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         for subscription in subscriptions:
             leads = parse_lead_days(subscription.lead_days) or list(lead_days)
@@ -250,7 +250,7 @@ def run_notifications(
         return []
     devices = list_devices(db_path)
     delivered: list[dict[str, object]] = []
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         for notification in pending:
             channels = {channel.strip() for channel in str(notification["channels"]).split(",") if channel.strip()}
@@ -289,7 +289,7 @@ def run_notifications(
 
 def notification_feed(db_path: str, limit: int = 100) -> list[dict[str, object]]:
     """Recent reminders for the in-app/mobile notifications feed."""
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         rows = connection.execute(
             """

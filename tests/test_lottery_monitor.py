@@ -625,6 +625,19 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
 
 
+def test_storage_connect_seam(tmp_path):
+    # The seam opens SQLite exactly as before and recognises a Postgres target.
+    db = tmp_path / "seam.sqlite3"
+    with lm.connect(str(db)) as connection:
+        lm.init_db(connection)
+    assert db.exists()
+    assert lm.resolve_target("explicit.sqlite3") == "explicit.sqlite3"
+    assert lm.is_postgres_url("postgresql://user@host/db")
+    assert not lm.is_postgres_url("chusennote.sqlite3")
+    with pytest.raises(NotImplementedError):
+        lm.connect("postgres://user@host/db")
+
+
 def test_round_type_and_membership_labels():
     assert lm.round_type_label("fc") == "Fan club"
     assert lm.round_type_label("platform") == "Platform presale"

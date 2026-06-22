@@ -50,7 +50,7 @@ def add_watch(
     now: str | None = None,
 ) -> Watch:
     timestamp = now or utc_now_iso()
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         connection.execute(
             """
@@ -108,7 +108,7 @@ def watch_source_from_row(row: sqlite3.Row | tuple[object, ...]) -> WatchSource:
 
 
 def list_watches(db_path: str, include_muted: bool = False, kind: str | None = None) -> list[Watch]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         clauses: list[str] = []
         params: list[object] = []
@@ -166,7 +166,7 @@ def set_watch_muted(
     timestamp = now or utc_now_iso()
     muted_value = 1 if muted else 0
     changed_clause = " AND muted != ?" if only_if_changed else ""
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         if identifier.isdigit():
             params: tuple[object, ...] = (muted_value, timestamp, int(identifier))
@@ -199,7 +199,7 @@ def add_watch_source(
     url = clean_text(url)
     if not url:
         raise ValueError("Source URL is required")
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         watch = resolve_watch(connection, watch_identifier)
         if not watch:
@@ -234,7 +234,7 @@ def add_watch_source(
 
 
 def list_watch_sources(db_path: str, watch_identifier: str | None = None, include_muted: bool = False) -> list[WatchSource]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         params: list[object] = []
         clauses: list[str] = []
@@ -263,7 +263,7 @@ def list_watch_sources(db_path: str, watch_identifier: str | None = None, includ
 
 def remove_watch_source(db_path: str, identifier: str, now: str | None = None) -> bool:
     timestamp = now or utc_now_iso()
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         if identifier.isdigit():
             cursor = connection.execute(
@@ -281,7 +281,7 @@ def remove_watch_source(db_path: str, identifier: str, now: str | None = None) -
 def set_watch_source_muted(db_path: str, identifier: str, muted: bool, now: str | None = None) -> bool:
     timestamp = now or utc_now_iso()
     muted_value = 1 if muted else 0
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         if identifier.isdigit():
             cursor = connection.execute(
@@ -297,7 +297,7 @@ def set_watch_source_muted(db_path: str, identifier: str, muted: bool, now: str 
 
 
 def mark_watch_checked(db_path: str, watch_id: int, now: str) -> None:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         connection.execute(
             "UPDATE watched_keywords SET last_checked_at = ?, updated_at = ? WHERE id = ?",
@@ -397,7 +397,7 @@ def delete_stale_search_fallback_events(connection: sqlite3.Connection, watch_id
 
 
 def cleanup_database(db_path: str) -> dict[str, int]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         counts = {
             "sources": 0,
@@ -970,7 +970,7 @@ def save_snapshot(connection: sqlite3.Connection, event_id: int, blocks: AppBloc
 
 def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_id: int | None = None) -> list[dict[str, str]]:
     timestamp = now or utc_now_iso()
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         info = blocks.general_info
         watch_id = watch_id or upsert_keyword(connection, info.keyword, timestamp)
@@ -1020,7 +1020,7 @@ def add_subscription(
     if scope not in NOTIFY_SCOPES:
         raise ValueError(f"Unknown notification scope: {scope}")
     timestamp = now or utc_now_iso()
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         watch = resolve_watch(connection, watch_identifier)
         if not watch:
@@ -1051,7 +1051,7 @@ def add_subscription(
 
 
 def list_subscriptions(db_path: str, watch_id: int | None = None, enabled_only: bool = False) -> list[NotificationSubscription]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         clauses: list[str] = []
         params: list[object] = []
@@ -1074,7 +1074,7 @@ def list_subscriptions(db_path: str, watch_id: int | None = None, enabled_only: 
 
 
 def remove_subscription(db_path: str, subscription_id: int) -> bool:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         cursor = connection.execute("DELETE FROM notification_subscriptions WHERE id = ?", (subscription_id,))
         return cursor.rowcount > 0
@@ -1082,7 +1082,7 @@ def remove_subscription(db_path: str, subscription_id: int) -> bool:
 
 def set_subscription_enabled(db_path: str, subscription_id: int, enabled: bool, now: str | None = None) -> bool:
     timestamp = now or utc_now_iso()
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         cursor = connection.execute(
             "UPDATE notification_subscriptions SET enabled = ?, updated_at = ? WHERE id = ?",
@@ -1100,7 +1100,7 @@ def register_device(db_path: str, token: str, platform: str = "android", label: 
     if not token:
         raise ValueError("Device token is required")
     timestamp = now or utc_now_iso()
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         connection.execute(
             """
@@ -1117,14 +1117,14 @@ def register_device(db_path: str, token: str, platform: str = "android", label: 
 
 
 def list_devices(db_path: str) -> list[DeviceToken]:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         rows = connection.execute("SELECT id, token, platform, label FROM device_tokens ORDER BY id").fetchall()
         return [device_token_from_row(row) for row in rows]
 
 
 def remove_device(db_path: str, identifier: str) -> bool:
-    with sqlite3.connect(db_path) as connection:
+    with connect(db_path) as connection:
         init_db(connection)
         cursor = connection.execute(
             "DELETE FROM device_tokens WHERE token = ? OR id = ?",

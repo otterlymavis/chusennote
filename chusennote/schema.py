@@ -16,6 +16,7 @@ from .util import *  # noqa: F401,F403
 from .netio import *  # noqa: F401,F403
 from .search import *  # noqa: F401,F403
 from .extract import *  # noqa: F401,F403
+from .storage import *  # noqa: F401,F403
 
 
 def utc_now_iso() -> str:
