@@ -529,7 +529,10 @@ def render_calendar_ics(
 def api_health(db_path: str) -> dict[str, object]:
     with connect(db_path) as connection:
         init_db(connection)
-        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if connection_dialect(connection) == "postgres":
+            schema_version = DB_SCHEMA_VERSION
+        else:
+            schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
         artists = connection.execute(
             "SELECT COUNT(*) FROM watched_keywords WHERE muted = 0 AND kind = ?",
             (WATCH_KIND_ARTIST,),

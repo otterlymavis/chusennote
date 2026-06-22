@@ -148,6 +148,12 @@ def init_db(connection: sqlite3.Connection) -> None:
 
 
 def table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    if connection_dialect(connection) == "postgres":
+        rows = connection.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+            (table,),
+        )
+        return {row[0] for row in rows}
     return {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
 
 
@@ -236,4 +242,6 @@ def migrate_db(connection: sqlite3.Connection) -> None:
         );
         """
     )
-    connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
+    # PRAGMA user_version is SQLite-only; Postgres reports the constant directly.
+    if connection_dialect(connection) == "sqlite":
+        connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
