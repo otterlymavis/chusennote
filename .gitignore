@@ -18,3 +18,9 @@ android/**/build/
 ios/DerivedData/
 ios/**/*.xcuserdata/
 ios/**/xcshareddata/WorkspaceSettings.xcsettings
+
+# AI Agent files
+AGENT.md
+AGENTS.md
+CLAUDE.md
+.agents/
