@@ -410,20 +410,32 @@ def upcoming_priority_rows(
     return rows[:limit]
 
 
-def recent_alerts(db_path: str, limit: int = 50) -> list[dict[str, object]]:
+def recent_alerts(db_path: str, limit: int = 50, user_id: int | None = None) -> list[dict[str, object]]:
     with connect(db_path) as connection:
         init_db(connection)
+        # Scoping to a user keeps only alerts whose event belongs to one of their
+        # subscribed watches; unscoped returns the whole shared workspace.
+        join = ""
+        where = ""
+        params: list[object] = []
+        if user_id is not None:
+            join = "JOIN user_watches uw ON uw.watch_id = w.id"
+            where = "WHERE uw.user_id = ?"
+            params.append(user_id)
+        params.append(limit)
         rows = connection.execute(
-            """
+            f"""
             SELECT a.id, a.event_id, a.alert_type, a.payload_json, a.created_at,
                    e.canonical_title, w.id, w.keyword, w.kind, w.muted
             FROM alert_log a
             LEFT JOIN events e ON e.id = a.event_id
             LEFT JOIN watched_keywords w ON w.id = e.watch_id
+            {join}
+            {where}
             ORDER BY a.created_at DESC, a.id DESC
             LIMIT ?
             """,
-            (limit,),
+            params,
         ).fetchall()
         alerts: list[dict[str, object]] = []
         for alert_id, event_id, alert_type, payload_json, created_at, event_title, watch_id, keyword, kind, muted in rows:

@@ -1125,7 +1125,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     ),
                 )
             elif path == "/api/alerts":
-                json_response(self, recent_alerts(db_path))
+                user = self.authenticated_user()
+                json_response(self, recent_alerts(db_path, user_id=user.id if user else None))
             elif path == "/api/notifications":
                 limit = int(query.get("limit", ["100"])[0] or "100")
                 json_response(self, notification_feed(db_path, limit=limit))
@@ -1135,7 +1136,16 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, [dataclasses.asdict(device) for device in list_devices(db_path)])
             elif path == "/api/sources":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                json_response(self, [dataclasses.asdict(source) for source in list_watch_sources(db_path, include_muted=include_muted)])
+                user = self.authenticated_user()
+                json_response(
+                    self,
+                    [
+                        dataclasses.asdict(source)
+                        for source in list_watch_sources(
+                            db_path, include_muted=include_muted, user_id=user.id if user else None
+                        )
+                    ],
+                )
             elif path == "/calendar.ics":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 text_response(

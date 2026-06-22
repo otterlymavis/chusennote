@@ -699,6 +699,40 @@ def test_recent_events_scope_to_subscribed_user(tmp_path):
     assert {"Alice Event", "Bob Event"} <= {e["title"] for e in lm.recent_events(db_path)}
 
 
+def test_sources_and_alerts_scope_to_subscribed_user(tmp_path):
+    db_path = str(tmp_path / "sa-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_watch = lm.add_watch(db_path, "Alice Show", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    bob_watch = lm.add_watch(db_path, "Bob Show", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+
+    lm.add_watch_source(db_path, str(alice_watch.id), "https://a.example/src", "Alice Src", False)
+    lm.add_watch_source(db_path, str(bob_watch.id), "https://b.example/src", "Bob Src", False)
+    assert {s.label for s in lm.list_watch_sources(db_path, user_id=alice.id)} == {"Alice Src"}
+    assert {s.label for s in lm.list_watch_sources(db_path, user_id=bob.id)} == {"Bob Src"}
+
+    # A round closing the day after `now` persists a lifecycle alert under
+    # Alice's event, which must be scoped to Alice only.
+    now = "2026-07-10T00:00:00+00:00"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Alice Show", official_page="https://a.example/ev", title="Alice Event",
+            summary="", event_dates=(), venues=(), ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official", url="https://a.example/ev", name="第1次抽選先行",
+                application_start_at="2026-07-01", application_end_at="2026-07-11",
+            ),
+        ),
+    )
+    lm.save_blocks(db_path, blocks, now=now, watch_id=alice_watch.id)
+    assert lm.recent_alerts(db_path, user_id=alice.id)
+    assert not lm.recent_alerts(db_path, user_id=bob.id)
+    # Unscoped still sees both users' sources.
+    assert {"Alice Src", "Bob Src"} <= {s.label for s in lm.list_watch_sources(db_path)}
+
+
 def test_password_hash_is_salted_and_verifiable():
     first_hash, first_salt = lm.hash_password("hunter2hunter2")
     second_hash, second_salt = lm.hash_password("hunter2hunter2")

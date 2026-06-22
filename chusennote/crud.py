@@ -251,11 +251,18 @@ def add_watch_source(
         return watch_source_from_row(row)
 
 
-def list_watch_sources(db_path: str, watch_identifier: str | None = None, include_muted: bool = False) -> list[WatchSource]:
+def list_watch_sources(
+    db_path: str, watch_identifier: str | None = None, include_muted: bool = False, user_id: int | None = None
+) -> list[WatchSource]:
     with connect(db_path) as connection:
         init_db(connection)
         params: list[object] = []
         clauses: list[str] = []
+        join = ""
+        if user_id is not None:
+            join = "JOIN user_watches uw ON uw.watch_id = s.watch_id"
+            clauses.append("uw.user_id = ?")
+            params.append(user_id)
         if watch_identifier:
             watch = resolve_watch(connection, watch_identifier)
             if not watch:
@@ -271,6 +278,7 @@ def list_watch_sources(db_path: str, watch_identifier: str | None = None, includ
             SELECT s.id, s.watch_id, s.url, s.label, s.platform, s.confidence, s.private_note, s.muted
             FROM watch_sources s
             JOIN watched_keywords w ON w.id = s.watch_id
+            {join}
             {where}
             ORDER BY s.watch_id, s.id
             """,
