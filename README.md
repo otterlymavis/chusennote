@@ -110,10 +110,10 @@ python3 lottery_monitor.py watch source list "your event keyword" --include-mute
 Run the local web UI:
 
 ```bash
-python3 lottery_monitor.py web --db chusennote.sqlite3 --port 8765
+python3 lottery_monitor.py web --db chusennote.sqlite3 --port 8877
 ```
 
-Then open <http://127.0.0.1:8765>.
+Then open <http://127.0.0.1:8877>.
 
 The web UI can set and show watch tags, preferred regions, preferred venues, and event alert filters. It also shows muted watches and muted sources in separate restore sections, so removing a tracked artist, event, or manual source is reversible without using the CLI.
 
@@ -153,7 +153,7 @@ python3 lottery_monitor.py export calendar --db chusennote.sqlite3 > chusennote.
 
 Use `--include-muted` with `export events`, `export artists`, `export tracked-events`, `export sources`, `export upcoming`, or `export calendar` when you want muted watches, muted watch event history, muted embedded sources, muted manual sources, or muted watch ticket dates included.
 
-The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8765/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
+The local web server also exposes the ticket timeline as an iCalendar feed at <http://127.0.0.1:8877/calendar.ics>. The feed contains tracked-event ticket dates such as lottery application windows, results dates, payment deadlines, and general sale dates.
 
 Saved events include `match_reasons` explaining why chusennote kept them, ticket-round `evidence` snippets for public-page verification, and `export upcoming` / `/api/upcoming` show the highest-priority ticket dates first. Alert export/API rows include `alert_id`, `event_id`, event title, watch id, watch keyword, watch kind, and watch muted state for local linking. Watch and manual source `remove` commands are soft mutes; use `event unmute ID_OR_KEYWORD`, `artist unmute ID_OR_KEYWORD`, or `watch source unmute ID_OR_URL` to restore them. API watch/source lists return active rows by default; pass `include_muted=1` to `/api/watchlist` or `/api/sources` to include muted rows and sources attached to muted watches. `/api/events?include_muted=1`, `/api/upcoming?include_muted=1`, and `/calendar.ics?include_muted=1` also include muted watch event history; `/api/events?include_muted=1` includes muted embedded manual sources too. Direct web event detail links still resolve saved muted-watch events for alert and history review.
 

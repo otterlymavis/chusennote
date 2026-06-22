@@ -25,11 +25,11 @@ Install it on a connected device/emulator with `./gradlew :app:installDebug`
 
 ## Connecting to the backend
 
-Run the backend on your machine (`python lottery_monitor.py web --port 8765`)
+Run the backend on your machine (`python lottery_monitor.py web --port 8877`)
 and set the app's **API base URL**:
 
-- Emulator → host machine: `http://10.0.2.2:8765` (the default)
-- Physical device on the same network: `http://<your-PC-LAN-IP>:8765`
+- Emulator → host machine: `http://10.0.2.2:8877` (the default)
+- Physical device on the same network: `http://<your-PC-LAN-IP>:8877`
 
 ## Push notifications (optional)
 

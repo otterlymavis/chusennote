@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class ChusennoteStore: ObservableObject {
-    @Published var baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? "http://127.0.0.1:8765" {
+    @Published var baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? "http://127.0.0.1:8877" {
         didSet {
             UserDefaults.standard.set(baseURL, forKey: "baseURL")
         }

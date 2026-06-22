@@ -7,7 +7,7 @@ chusennote now includes lightweight native mobile clients for the local web/API 
 Run this from the repository root before opening either app:
 
 ```bash
-python lottery_monitor.py web --db chusennote.sqlite3 --port 8765
+python lottery_monitor.py web --db chusennote.sqlite3 --port 8877
 ```
 
 On Windows, you can use the helper script instead:
@@ -57,13 +57,13 @@ Open `android/` in Android Studio.
 Default emulator URL:
 
 ```text
-http://10.0.2.2:8765
+http://10.0.2.2:8877
 ```
 
 For a physical Android device, change the base URL in the app to your computer's LAN IP, for example:
 
 ```text
-http://192.168.1.20:8765
+http://192.168.1.20:8877
 ```
 
 Start the server with LAN binding first:
@@ -79,7 +79,7 @@ Open `ios/Chusennote.xcodeproj` in Xcode.
 Default simulator URL:
 
 ```text
-http://127.0.0.1:8765
+http://127.0.0.1:8877
 ```
 
 For a physical iPhone, change the base URL in the app to your computer's LAN IP.

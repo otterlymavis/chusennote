@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Db = "chusennote.sqlite3",
-    [int]$Port = 8765,
+    [int]$Port = 8877,
     [string]$HostName = "127.0.0.1",
     [switch]$Lan,
     [switch]$Open

@@ -203,7 +203,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     web_parser = subparsers.add_parser("web", help="Run the local web UI")
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
-    web_parser.add_argument("--port", type=int, default=8765, help="Local port to serve on")
+    web_parser.add_argument("--port", type=int, default=8877, help="Local port to serve on")
     web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
 
     notify_parser = subparsers.add_parser("notify", help="Manage notification subscriptions and delivery")

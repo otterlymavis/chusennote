@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$BaseUrl = "http://127.0.0.1:8765",
+    [string]$BaseUrl = "http://127.0.0.1:8877",
     [int]$TimeoutSec = 5
 )
 

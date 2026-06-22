@@ -24,10 +24,10 @@ COPY . /app
 RUN mkdir -p /data && chown -R pwuser:pwuser /app /data
 USER pwuser
 VOLUME ["/data"]
-EXPOSE 8765
+EXPOSE 8877
 
 # Serve the API/UI on all interfaces. Override the command to run the scheduler:
 #   docker run … python3 lottery_monitor.py watch loop --interval-minutes 60 \
 #     --kind event --db /data/chusennote.sqlite3
 CMD ["python3", "lottery_monitor.py", "web", \
-     "--host", "0.0.0.0", "--port", "8765", "--db", "/data/chusennote.sqlite3"]
+     "--host", "0.0.0.0", "--port", "8877", "--db", "/data/chusennote.sqlite3"]

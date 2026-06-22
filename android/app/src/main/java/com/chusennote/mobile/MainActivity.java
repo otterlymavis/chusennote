@@ -123,7 +123,7 @@ public class MainActivity extends Activity {
 
         baseUrlInput = new EditText(this);
         baseUrlInput.setSingleLine(true);
-        baseUrlInput.setText(preferences().getString(PREF_BASE_URL, "http://10.0.2.2:8765"));
+        baseUrlInput.setText(preferences().getString(PREF_BASE_URL, "http://10.0.2.2:8877"));
         baseUrlInput.setHint("API base URL");
         root.addView(baseUrlInput);
 
