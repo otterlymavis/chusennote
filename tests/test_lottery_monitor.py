@@ -626,6 +626,44 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
 
 
+def test_auth_account_and_token_lifecycle(tmp_path):
+    db_path = str(tmp_path / "auth.sqlite3")
+    user = lm.create_user(db_path, "User@Example.com", "correct horse battery")
+    # Email is normalised; password is never stored in the clear.
+    assert user.email == "user@example.com"
+    assert user.id > 0
+
+    # Duplicate registration and weak inputs are rejected.
+    with pytest.raises(ValueError):
+        lm.create_user(db_path, "user@example.com", "another password")
+    with pytest.raises(ValueError):
+        lm.create_user(db_path, "no-at-sign", "longenough123")
+    with pytest.raises(ValueError):
+        lm.create_user(db_path, "short@example.com", "tiny")
+
+    # Login verifies the password (case-insensitive email, wrong password fails).
+    assert lm.verify_user(db_path, "USER@example.com", "correct horse battery").id == user.id
+    assert lm.verify_user(db_path, "user@example.com", "wrong") is None
+    assert lm.verify_user(db_path, "nobody@example.com", "whatever") is None
+
+    # A token resolves back to its user, and revocation invalidates it.
+    token = lm.issue_token(db_path, user.id)
+    assert lm.user_for_token(db_path, token).email == "user@example.com"
+    assert lm.user_for_token(db_path, "not-a-real-token") is None
+    lm.revoke_token(db_path, token)
+    assert lm.user_for_token(db_path, token) is None
+
+
+def test_password_hash_is_salted_and_verifiable():
+    first_hash, first_salt = lm.hash_password("hunter2hunter2")
+    second_hash, second_salt = lm.hash_password("hunter2hunter2")
+    # Different salts -> different stored hashes for the same password.
+    assert first_salt != second_salt
+    assert first_hash != second_hash
+    assert lm.password_matches("hunter2hunter2", first_hash, first_salt)
+    assert not lm.password_matches("hunter2hunter2 wrong", first_hash, first_salt)
+
+
 def test_storage_connect_seam(tmp_path):
     # The seam opens SQLite exactly as before and recognises a Postgres target.
     db = tmp_path / "seam.sqlite3"
@@ -641,6 +679,8 @@ def test_storage_connect_seam(tmp_path):
 
 POSTGRES_TEST_URL_ENV = "CHUSENNOTE_TEST_DATABASE_URL"
 _POSTGRES_TABLES = (
+    "api_tokens",
+    "users",
     "notification_log",
     "notification_subscriptions",
     "device_tokens",
@@ -697,6 +737,12 @@ def test_postgres_backend_round_trips_core_flows():
     assert event["rounds"][0]["schedule_label"] == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22"
     assert any(watch.keyword == "PG Demo" for watch in lm.list_watches(url))
     assert lm.api_health(url)["schema_version"] == lm.DB_SCHEMA_VERSION
+
+    # Accounts and bearer tokens round-trip through Postgres too.
+    user = lm.create_user(url, "pg@example.com", "correct horse battery")
+    token = lm.issue_token(url, user.id)
+    assert lm.user_for_token(url, token).email == "pg@example.com"
+    assert lm.verify_user(url, "pg@example.com", "correct horse battery").id == user.id
 
 
 def test_adapt_sql_rewrites_sqlite_isms_for_postgres():

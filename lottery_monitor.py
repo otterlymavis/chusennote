@@ -18,6 +18,7 @@ import sys
 from collections.abc import Sequence
 
 from chusennote import (  # noqa: F401  (re-exported for monkeypatch targets)
+    auth,
     crud,
     extract,
     models,
@@ -41,6 +42,7 @@ from chusennote.read_models import *  # noqa: F401,F403
 from chusennote.pipeline import *  # noqa: F401,F403
 from chusennote.web import *  # noqa: F401,F403
 from chusennote.notifications import *  # noqa: F401,F403
+from chusennote.auth import *  # noqa: F401,F403
 
 
 def render_blocks(blocks: AppBlocks) -> str:

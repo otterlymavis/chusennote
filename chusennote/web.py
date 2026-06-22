@@ -27,6 +27,7 @@ from .crud import *  # noqa: F401,F403
 from .read_models import *  # noqa: F401,F403
 from .pipeline import *  # noqa: F401,F403
 from .notifications import *  # noqa: F401,F403
+from .auth import *  # noqa: F401,F403
 
 
 def web_source_link(url: object, label: str = "Open") -> str:

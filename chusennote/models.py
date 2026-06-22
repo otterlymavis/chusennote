@@ -51,7 +51,7 @@ SEARCH_API_KEY_ENV = "CHUSENNOTE_SEARCH_API_KEY"
 TIMEOUT_SECONDS = 20
 DEFAULT_DB_PATH = "chusennote.sqlite3"
 DEFAULT_SESSION_LOG_DIR = "history_logs"
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 7
 MIN_KEYWORD_OVERLAP = 0.45
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
@@ -322,3 +322,10 @@ class DeviceToken:
     token: str
     platform: str = "android"
     label: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class User:
+    id: int
+    email: str
+    created_at: str
