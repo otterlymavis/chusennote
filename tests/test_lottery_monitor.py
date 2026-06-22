@@ -674,6 +674,31 @@ def test_per_user_watch_subscription_scoping(tmp_path):
     assert {"YOASOBI", "Lion King"} <= {w.keyword for w in all_watches}
 
 
+def test_recent_events_scope_to_subscribed_user(tmp_path):
+    db_path = str(tmp_path / "events-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_watch = lm.add_watch(db_path, "Alice Show", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    bob_watch = lm.add_watch(db_path, "Bob Show", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+
+    def event_blocks(keyword, title, url):
+        return lm.AppBlocks(
+            general_info=lm.EventInfo(
+                keyword=keyword, official_page=url, title=title, summary="",
+                event_dates=("2026年7月10日",), venues=("Hall",), ticket_links=(),
+            ),
+            ticket_info=(),
+        )
+
+    lm.save_blocks(db_path, event_blocks("Alice Show", "Alice Event", "https://a.example/"), watch_id=alice_watch.id)
+    lm.save_blocks(db_path, event_blocks("Bob Show", "Bob Event", "https://b.example/"), watch_id=bob_watch.id)
+
+    assert {e["title"] for e in lm.recent_events(db_path, user_id=alice.id)} == {"Alice Event"}
+    assert {e["title"] for e in lm.recent_events(db_path, user_id=bob.id)} == {"Bob Event"}
+    # Unscoped (CLI/anonymous) still sees the whole shared workspace.
+    assert {"Alice Event", "Bob Event"} <= {e["title"] for e in lm.recent_events(db_path)}
+
+
 def test_password_hash_is_salted_and_verifiable():
     first_hash, first_salt = lm.hash_password("hunter2hunter2")
     second_hash, second_salt = lm.hash_password("hunter2hunter2")

@@ -221,10 +221,23 @@ def recent_events(
     limit: int = 50,
     include_muted_sources: bool = False,
     include_muted_watches: bool = False,
+    user_id: int | None = None,
 ) -> list[dict[str, object]]:
     with connect(db_path) as connection:
         init_db(connection)
-        watch_muted_clause = "" if include_muted_watches else "WHERE w.muted = 0"
+        clauses: list[str] = []
+        params: list[object] = []
+        # user_id None = unscoped (shared workspace); an id limits to events of
+        # the watches that user subscribes to.
+        join = ""
+        if user_id is not None:
+            join = "JOIN user_watches uw ON uw.watch_id = w.id"
+            clauses.append("uw.user_id = ?")
+            params.append(user_id)
+        if not include_muted_watches:
+            clauses.append("w.muted = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
         rows = connection.execute(
             f"""
             SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary,
@@ -232,11 +245,12 @@ def recent_events(
                    e.status, e.updated_at
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
-            {watch_muted_clause}
+            {join}
+            {where}
             ORDER BY e.updated_at DESC
             LIMIT ?
             """,
-            (limit,),
+            params,
         ).fetchall()
         events: list[dict[str, object]] = []
         for row in rows:
@@ -356,9 +370,11 @@ def upcoming_relevant_date(round_info: dict[str, object]) -> str:
     )
 
 
-def upcoming_priority_rows(db_path: str, limit: int = 50, include_muted_watches: bool = False) -> list[dict[str, object]]:
+def upcoming_priority_rows(
+    db_path: str, limit: int = 50, include_muted_watches: bool = False, user_id: int | None = None
+) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for event in recent_events(db_path, limit=500, include_muted_watches=include_muted_watches):
+    for event in recent_events(db_path, limit=500, include_muted_watches=include_muted_watches, user_id=user_id):
         if event.get("watch_kind") != WATCH_KIND_EVENT:
             continue
         for round_info in event.get("rounds", []):

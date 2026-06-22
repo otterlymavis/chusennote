@@ -1105,17 +1105,25 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 )
             elif path == "/api/events":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
+                user = self.authenticated_user()
                 json_response(
                     self,
                     recent_events(
                         db_path,
                         include_muted_sources=include_muted,
                         include_muted_watches=include_muted,
+                        user_id=user.id if user else None,
                     ),
                 )
             elif path == "/api/upcoming":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                json_response(self, upcoming_priority_rows(db_path, include_muted_watches=include_muted))
+                user = self.authenticated_user()
+                json_response(
+                    self,
+                    upcoming_priority_rows(
+                        db_path, include_muted_watches=include_muted, user_id=user.id if user else None
+                    ),
+                )
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path))
             elif path == "/api/notifications":
