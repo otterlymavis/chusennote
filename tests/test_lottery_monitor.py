@@ -655,6 +655,25 @@ def test_auth_account_and_token_lifecycle(tmp_path):
     assert lm.user_for_token(db_path, token) is None
 
 
+def test_per_user_watch_subscription_scoping(tmp_path):
+    db_path = str(tmp_path / "scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    # Alice subscribes to two watches; Bob to one — and one keyword is shared.
+    lm.add_watch(db_path, "YOASOBI", kind=lm.WATCH_KIND_ARTIST, user_id=alice.id)
+    lm.add_watch(db_path, "Lion King", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    lm.add_watch(db_path, "YOASOBI", kind=lm.WATCH_KIND_ARTIST, user_id=bob.id)
+
+    assert {w.keyword for w in lm.list_watches(db_path, user_id=alice.id)} == {"YOASOBI", "Lion King"}
+    assert {w.keyword for w in lm.list_watches(db_path, user_id=bob.id)} == {"YOASOBI"}
+
+    # The shared keyword is one canonical row (scraped once), not per-user copies.
+    all_watches = lm.list_watches(db_path)
+    assert sum(1 for w in all_watches if w.keyword == "YOASOBI") == 1
+    # Unscoped (CLI/anonymous) still sees the whole shared workspace.
+    assert {"YOASOBI", "Lion King"} <= {w.keyword for w in all_watches}
+
+
 def test_password_hash_is_salted_and_verifiable():
     first_hash, first_salt = lm.hash_password("hunter2hunter2")
     second_hash, second_salt = lm.hash_password("hunter2hunter2")
@@ -680,6 +699,7 @@ def test_storage_connect_seam(tmp_path):
 
 POSTGRES_TEST_URL_ENV = "CHUSENNOTE_TEST_DATABASE_URL"
 _POSTGRES_TABLES = (
+    "user_watches",
     "api_tokens",
     "users",
     "notification_log",
@@ -744,6 +764,10 @@ def test_postgres_backend_round_trips_core_flows():
     token = lm.issue_token(url, user.id)
     assert lm.user_for_token(url, token).email == "pg@example.com"
     assert lm.verify_user(url, "pg@example.com", "correct horse battery").id == user.id
+
+    # Per-user watch subscriptions scope on Postgres too.
+    lm.add_watch(url, "PG Subscribed", kind=lm.WATCH_KIND_EVENT, user_id=user.id)
+    assert {watch.keyword for watch in lm.list_watches(url, user_id=user.id)} == {"PG Subscribed"}
 
 
 def test_adapt_sql_rewrites_sqlite_isms_for_postgres():

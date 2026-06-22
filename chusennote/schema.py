@@ -258,6 +258,18 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             last_used_at TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
+
+        -- Per-user subscriptions to the shared canonical watched_keywords rows:
+        -- a popular keyword is one row (scraped once); each user subscribes to it.
+        CREATE TABLE IF NOT EXISTS user_watches (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            watch_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, watch_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
         """
     )
     # PRAGMA user_version is SQLite-only; Postgres reports the constant directly.

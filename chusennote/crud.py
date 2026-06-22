@@ -48,6 +48,7 @@ def add_watch(
     preferred_venues: str = "",
     alert_preferences: str = DEFAULT_ALERT_PREFERENCES,
     now: str | None = None,
+    user_id: int | None = None,
 ) -> Watch:
     timestamp = now or utc_now_iso()
     with connect(db_path) as connection:
@@ -77,7 +78,14 @@ def add_watch(
             """,
             (keyword,),
         ).fetchone()
-        return watch_from_row(row)
+        watch = watch_from_row(row)
+        # Subscribe the caller to this shared canonical watch (no-op anonymously).
+        if user_id is not None:
+            connection.execute(
+                "INSERT OR IGNORE INTO user_watches(user_id, watch_id, created_at) VALUES (?, ?, ?)",
+                (user_id, watch.id, timestamp),
+            )
+        return watch
 
 
 def watch_from_row(row: sqlite3.Row | tuple[object, ...]) -> Watch:
@@ -107,23 +115,33 @@ def watch_source_from_row(row: sqlite3.Row | tuple[object, ...]) -> WatchSource:
     )
 
 
-def list_watches(db_path: str, include_muted: bool = False, kind: str | None = None) -> list[Watch]:
+def list_watches(
+    db_path: str, include_muted: bool = False, kind: str | None = None, user_id: int | None = None
+) -> list[Watch]:
     with connect(db_path) as connection:
         init_db(connection)
         clauses: list[str] = []
         params: list[object] = []
+        # user_id None = unscoped (CLI/anonymous see the shared workspace, i.e.
+        # every canonical watch); an id scopes to that user's subscriptions.
+        join = ""
+        if user_id is not None:
+            join = "JOIN user_watches uw ON uw.watch_id = k.id"
+            clauses.append("uw.user_id = ?")
+            params.append(user_id)
         if not include_muted:
-            clauses.append("muted = 0")
+            clauses.append("k.muted = 0")
         if kind:
-            clauses.append("kind = ?")
+            clauses.append("k.kind = ?")
             params.append(kind)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT id, keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, last_checked_at
-            FROM watched_keywords
+            SELECT k.id, k.keyword, k.kind, k.tags, k.preferred_regions, k.preferred_venues, k.alert_preferences, k.muted, k.last_checked_at
+            FROM watched_keywords k
+            {join}
             {where}
-            ORDER BY id
+            ORDER BY k.id
             """,
             params,
         ).fetchall()

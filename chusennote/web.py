@@ -514,7 +514,7 @@ def redirect_response(handler: http.server.BaseHTTPRequestHandler, location: str
     handler.end_headers()
 
 
-def add_watch_from_form(db_path: str, form: dict[str, str]) -> Watch:
+def add_watch_from_form(db_path: str, form: dict[str, str], user_id: int | None = None) -> Watch:
     return add_watch(
         db_path,
         clean_text(form.get("keyword", "")),
@@ -523,6 +523,7 @@ def add_watch_from_form(db_path: str, form: dict[str, str]) -> Watch:
         preferred_regions=form.get("regions", ""),
         preferred_venues=form.get("venues", ""),
         alert_preferences=form.get("alerts", DEFAULT_ALERT_PREFERENCES),
+        user_id=user_id,
     )
 
 
@@ -1090,7 +1091,18 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     json_response(self, dataclasses.asdict(user))
             elif path == "/api/watchlist":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                json_response(self, [dataclasses.asdict(watch) for watch in list_watches(db_path, include_muted=include_muted)])
+                user = self.authenticated_user()
+                json_response(
+                    self,
+                    [
+                        dataclasses.asdict(watch)
+                        for watch in list_watches(
+                            db_path,
+                            include_muted=include_muted,
+                            user_id=user.id if user else None,
+                        )
+                    ],
+                )
             elif path == "/api/events":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 json_response(
@@ -1214,7 +1226,13 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                json_response(self, dataclasses.asdict(add_watch_from_form(db_path, form)))
+                user = self.authenticated_user()
+                json_response(
+                    self,
+                    dataclasses.asdict(
+                        add_watch_from_form(db_path, form, user_id=user.id if user else None)
+                    ),
+                )
             elif path == "/api/watchlist/remove":
                 json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
             elif path == "/api/watchlist/mute":
