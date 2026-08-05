@@ -379,7 +379,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
 </html>"""
 
 
-NOTIFY_CHANNEL_PRESET = "feed,push,email"
+NOTIFY_CHANNEL_PRESET = "feed,push"
 NOTIFY_SCOPE_LABELS = {
     NOTIFY_SCOPE_ARTIST_ALL: "Artist — all shows",
     NOTIFY_SCOPE_EVENT_ALL: "Event — all locations",
@@ -1069,6 +1069,14 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
         def authenticated_user(self):
             return user_for_token(db_path, self.bearer_token())
 
+        def notification_user_id(self) -> int:
+            user = self.authenticated_user()
+            return user.id if user else 0
+
+        def api_user_id(self) -> int:
+            user = self.authenticated_user()
+            return user.id if user else 0
+
         def do_GET(self) -> None:
             parsed_url = urllib.parse.urlparse(self.path)
             path = parsed_url.path
@@ -1091,7 +1099,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     json_response(self, dataclasses.asdict(user))
             elif path == "/api/watchlist":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                user = self.authenticated_user()
+                user_id = self.api_user_id()
                 json_response(
                     self,
                     [
@@ -1099,58 +1107,82 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         for watch in list_watches(
                             db_path,
                             include_muted=include_muted,
-                            user_id=user.id if user else None,
+                            user_id=user_id,
                         )
                     ],
                 )
             elif path == "/api/events":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                user = self.authenticated_user()
+                user_id = self.api_user_id()
                 json_response(
                     self,
                     recent_events(
                         db_path,
                         include_muted_sources=include_muted,
                         include_muted_watches=include_muted,
-                        user_id=user.id if user else None,
+                        user_id=user_id,
+                        source_user_id=user_id,
                     ),
                 )
             elif path == "/api/upcoming":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                user = self.authenticated_user()
                 json_response(
                     self,
                     upcoming_priority_rows(
-                        db_path, include_muted_watches=include_muted, user_id=user.id if user else None
+                        db_path, include_muted_watches=include_muted, user_id=self.api_user_id()
                     ),
                 )
             elif path == "/api/alerts":
-                user = self.authenticated_user()
-                json_response(self, recent_alerts(db_path, user_id=user.id if user else None))
+                json_response(self, recent_alerts(db_path, user_id=self.api_user_id()))
             elif path == "/api/notifications":
                 limit = int(query.get("limit", ["100"])[0] or "100")
-                json_response(self, notification_feed(db_path, limit=limit))
+                json_response(self, notification_feed(db_path, limit=limit, user_id=self.notification_user_id()))
+            elif path == "/api/event/search":
+                keyword = clean_text(query.get("keyword", [""])[0])
+                if not keyword:
+                    json_response(self, {"error": "keyword is required"}, status=400)
+                    return
+                try:
+                    limit = int(query.get("limit", ["6"])[0] or "6")
+                    results = search_web(keyword, limit=limit)
+                except (OSError, ValueError) as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, [dataclasses.asdict(result) for result in results])
             elif path == "/api/subscriptions":
-                json_response(self, [dataclasses.asdict(subscription) for subscription in list_subscriptions(db_path)])
+                json_response(
+                    self,
+                    [
+                        dataclasses.asdict(subscription)
+                        for subscription in list_subscriptions(db_path, user_id=self.notification_user_id())
+                    ],
+                )
             elif path == "/api/devices":
-                json_response(self, [dataclasses.asdict(device) for device in list_devices(db_path)])
+                json_response(
+                    self,
+                    [dataclasses.asdict(device) for device in list_devices(db_path, user_id=self.notification_user_id())],
+                )
             elif path == "/api/sources":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 user = self.authenticated_user()
+                source_user_id = user.id if user else 0
                 json_response(
                     self,
                     [
                         dataclasses.asdict(source)
                         for source in list_watch_sources(
-                            db_path, include_muted=include_muted, user_id=user.id if user else None
+                            db_path, include_muted=include_muted, user_id=source_user_id
                         )
                     ],
                 )
             elif path == "/calendar.ics":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
+                token = clean_text(query.get("token", [""])[0])
+                user = user_for_token(db_path, token) if token else self.authenticated_user()
+                user_id = user.id if user else 0
                 text_response(
                     self,
-                    render_calendar_ics(db_path, include_muted_watches=include_muted),
+                    render_calendar_ics(db_path, include_muted_watches=include_muted, user_id=user_id),
                     "text/calendar; charset=utf-8",
                 )
             else:
@@ -1182,13 +1214,13 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                add_watch_from_form(db_path, form)
+                add_watch_from_form(db_path, form, user_id=0)
                 redirect_response(self, f"/?tab={'artists' if form.get('kind') == WATCH_KIND_ARTIST else 'events'}")
             elif path == "/watch/remove":
-                remove_watch(db_path, form.get("identifier", ""))
+                remove_watch(db_path, form.get("identifier", ""), user_id=0)
                 redirect_response(self)
             elif path == "/watch/unmute":
-                set_watch_muted(db_path, form.get("identifier", ""), False)
+                set_watch_muted(db_path, form.get("identifier", ""), False, user_id=0)
                 redirect_response(self)
             elif path == "/watch/run":
                 kind = form.get("kind") or None
@@ -1244,21 +1276,58 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not keyword:
                     json_response(self, {"error": "keyword is required"}, status=400)
                     return
-                user = self.authenticated_user()
+                try:
+                    watch = add_watch_from_form(db_path, form, user_id=self.api_user_id())
+                except ValueError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, dataclasses.asdict(watch))
+            elif path == "/api/watchlist/remove":
                 json_response(
                     self,
-                    dataclasses.asdict(
-                        add_watch_from_form(db_path, form, user_id=user.id if user else None)
-                    ),
+                    {"removed": remove_watch(db_path, form.get("identifier", ""), user_id=self.api_user_id())},
                 )
-            elif path == "/api/watchlist/remove":
-                json_response(self, {"removed": remove_watch(db_path, form.get("identifier", ""))})
             elif path == "/api/watchlist/mute":
-                json_response(self, {"muted": set_watch_muted(db_path, form.get("identifier", ""), True)})
+                json_response(
+                    self,
+                    {"muted": set_watch_muted(db_path, form.get("identifier", ""), True, user_id=self.api_user_id())},
+                )
             elif path == "/api/watchlist/unmute":
-                json_response(self, {"unmuted": set_watch_muted(db_path, form.get("identifier", ""), False)})
+                json_response(
+                    self,
+                    {
+                        "unmuted": set_watch_muted(
+                            db_path, form.get("identifier", ""), False, user_id=self.api_user_id()
+                        )
+                    },
+                )
             elif path == "/api/run":
-                json_response(self, run_watches(db_path, kind=form.get("kind") or None))
+                json_response(self, run_watches(db_path, kind=form.get("kind") or None, user_id=self.api_user_id()))
+            elif path == "/api/event/add":
+                keyword = clean_text(form.get("keyword", ""))
+                title = clean_text(form.get("title", ""))
+                url = clean_text(form.get("url", ""))
+                snippet = clean_text(form.get("snippet", ""))
+                if not is_web_url(url):
+                    json_response(self, {"error": "Pick a valid event page."}, status=400)
+                    return
+                try:
+                    event_keyword = keyword or title
+                    watch = add_watch(
+                        db_path,
+                        event_keyword,
+                        kind=WATCH_KIND_EVENT,
+                        user_id=self.api_user_id(),
+                    )
+                    alerts = save_blocks(
+                        db_path,
+                        build_exact_event_blocks(event_keyword, title, url, snippet),
+                        watch_id=watch.id,
+                    )
+                except (OSError, ValueError) as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, {"added": True, "alerts": alerts})
             elif path == "/subscribe":
                 try:
                     add_subscription(
@@ -1288,6 +1357,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         round_key=form.get("round_key", ""),
                         channels=form.get("channels", DEFAULT_NOTIFY_CHANNELS),
                         lead_days=form.get("lead_days", "7,1,0"),
+                        user_id=self.notification_user_id(),
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
@@ -1295,7 +1365,11 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, dataclasses.asdict(subscription))
             elif path == "/api/subscriptions/remove":
                 identifier = form.get("identifier", "")
-                removed = remove_subscription(db_path, int(identifier)) if str(identifier).isdigit() else False
+                removed = (
+                    remove_subscription(db_path, int(identifier), user_id=self.notification_user_id())
+                    if str(identifier).isdigit()
+                    else False
+                )
                 json_response(self, {"removed": removed})
             elif path == "/api/devices":
                 try:
@@ -1304,13 +1378,14 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         form.get("token", ""),
                         platform=form.get("platform", "android"),
                         label=form.get("label", ""),
+                        user_id=self.notification_user_id(),
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
                     return
                 json_response(self, dataclasses.asdict(device))
             elif path == "/api/notifications/run":
-                json_response(self, run_notifications(db_path))
+                json_response(self, run_notifications(db_path, user_id=self.notification_user_id()))
             elif path == "/api/sources":
                 try:
                     source = add_watch_source(
@@ -1319,17 +1394,39 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         form.get("url", ""),
                         form.get("label", ""),
                         bool(form.get("private_note")),
+                        user_id=self.api_user_id(),
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
                     return
                 json_response(self, dataclasses.asdict(source))
             elif path == "/api/sources/remove":
-                json_response(self, {"removed": remove_watch_source(db_path, form.get("identifier", ""))})
+                json_response(
+                    self,
+                    {
+                        "removed": remove_watch_source(
+                            db_path, form.get("identifier", ""), user_id=self.api_user_id()
+                        )
+                    },
+                )
             elif path == "/api/sources/mute":
-                json_response(self, {"muted": set_watch_source_muted(db_path, form.get("identifier", ""), True)})
+                json_response(
+                    self,
+                    {
+                        "muted": set_watch_source_muted(
+                            db_path, form.get("identifier", ""), True, user_id=self.api_user_id()
+                        )
+                    },
+                )
             elif path == "/api/sources/unmute":
-                json_response(self, {"unmuted": set_watch_source_muted(db_path, form.get("identifier", ""), False)})
+                json_response(
+                    self,
+                    {
+                        "unmuted": set_watch_source_muted(
+                            db_path, form.get("identifier", ""), False, user_id=self.api_user_id()
+                        )
+                    },
+                )
             else:
                 json_response(self, {"error": "not found"}, status=404)
 

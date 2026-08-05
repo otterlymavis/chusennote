@@ -222,20 +222,28 @@ def recent_events(
     include_muted_sources: bool = False,
     include_muted_watches: bool = False,
     user_id: int | None = None,
+    source_user_id: int | None = None,
 ) -> list[dict[str, object]]:
     with connect(db_path) as connection:
         init_db(connection)
         clauses: list[str] = []
         params: list[object] = []
-        # user_id None = unscoped (shared workspace); an id limits to events of
-        # the watches that user subscribes to.
+        # user_id None = unscoped CLI/shared workspace; user_id 0 = anonymous
+        # local API rows; positive ids limit to the user's subscribed watches.
         join = ""
-        if user_id is not None:
+        if user_id is not None and user_id > 0:
             join = "JOIN user_watches uw ON uw.watch_id = w.id"
             clauses.append("uw.user_id = ?")
             params.append(user_id)
+        elif user_id is not None:
+            clauses.append("w.local_visible = 1")
         if not include_muted_watches:
-            clauses.append("w.muted = 0")
+            if user_id is None or user_id > 0:
+                clauses.append("w.muted = 0")
+            if user_id is not None and user_id > 0:
+                clauses.append("uw.muted = 0")
+            elif user_id is not None:
+                clauses.append("w.local_muted = 0")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         rows = connection.execute(
@@ -255,14 +263,21 @@ def recent_events(
         events: list[dict[str, object]] = []
         for row in rows:
             source_muted_clause = "" if include_muted_sources else " AND muted = 0"
+            source_owner_clause = ""
+            source_params: list[object] = [row[1]]
+            if source_user_id is not None and source_user_id > 0:
+                source_owner_clause = " AND (user_id = ? OR (user_id = 0 AND private_note = 0))"
+                source_params.append(source_user_id)
+            elif source_user_id is not None:
+                source_owner_clause = " AND user_id = 0"
             manual_sources = connection.execute(
                 f"""
-                SELECT id, watch_id, url, label, platform, confidence, private_note, muted
+                SELECT id, user_id, watch_id, url, label, platform, confidence, private_note, muted
                 FROM watch_sources
-                WHERE watch_id = ?{source_muted_clause}
+                WHERE watch_id = ?{source_muted_clause}{source_owner_clause}
                 ORDER BY id
                 """,
-                (row[1],),
+                tuple(source_params),
             ).fetchall()
             rounds = connection.execute(
                 """
@@ -413,15 +428,17 @@ def upcoming_priority_rows(
 def recent_alerts(db_path: str, limit: int = 50, user_id: int | None = None) -> list[dict[str, object]]:
     with connect(db_path) as connection:
         init_db(connection)
-        # Scoping to a user keeps only alerts whose event belongs to one of their
-        # subscribed watches; unscoped returns the whole shared workspace.
+        # user_id None returns the shared CLI workspace; user_id 0 returns only
+        # anonymous/local API rows; positive ids scope to active user watches.
         join = ""
         where = ""
         params: list[object] = []
-        if user_id is not None:
+        if user_id is not None and user_id > 0:
             join = "JOIN user_watches uw ON uw.watch_id = w.id"
-            where = "WHERE uw.user_id = ?"
+            where = "WHERE uw.user_id = ? AND uw.muted = 0 AND w.muted = 0"
             params.append(user_id)
+        elif user_id is not None:
+            where = "WHERE w.local_visible = 1 AND w.local_muted = 0"
         params.append(limit)
         rows = connection.execute(
             f"""
@@ -464,15 +481,19 @@ def ics_date(value: str | None) -> str | None:
 
 
 def ics_dtstamp(generated_at: dt.datetime | None = None) -> str:
-    stamp = generated_at or dt.datetime.now(dt.UTC)
+    stamp = generated_at or dt.datetime.now(dt.timezone.utc)
     if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=dt.UTC)
-    return stamp.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return stamp.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def timeline_calendar_entries(db_path: str, include_muted_watches: bool = False) -> list[dict[str, str]]:
+def timeline_calendar_entries(
+    db_path: str,
+    include_muted_watches: bool = False,
+    user_id: int | None = None,
+) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
-    for event in recent_events(db_path, limit=500, include_muted_watches=include_muted_watches):
+    for event in recent_events(db_path, limit=500, include_muted_watches=include_muted_watches, user_id=user_id):
         if event.get("watch_kind") != WATCH_KIND_EVENT:
             continue
         event_id = str(event.get("id") or "")
@@ -525,6 +546,7 @@ def render_calendar_ics(
     db_path: str,
     generated_at: dt.datetime | None = None,
     include_muted_watches: bool = False,
+    user_id: int | None = None,
 ) -> str:
     stamp = ics_dtstamp(generated_at)
     lines = [
@@ -535,7 +557,7 @@ def render_calendar_ics(
         "METHOD:PUBLISH",
         "X-WR-CALNAME:chusennote ticket timeline",
     ]
-    for entry in timeline_calendar_entries(db_path, include_muted_watches=include_muted_watches):
+    for entry in timeline_calendar_entries(db_path, include_muted_watches=include_muted_watches, user_id=user_id):
         lines.extend(
             [
                 "BEGIN:VEVENT",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import re
 import sqlite3
 
 from .models import *  # noqa: F401,F403
@@ -20,7 +21,7 @@ from .storage import *  # noqa: F401,F403
 
 
 def utc_now_iso() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def stable_hash(value: str) -> str:
@@ -130,6 +131,7 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS watch_sources (
             id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
             watch_id INTEGER NOT NULL,
             url TEXT NOT NULL,
             label TEXT NOT NULL,
@@ -139,7 +141,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             muted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(watch_id, url),
+            UNIQUE(user_id, watch_id, url),
             FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
         );
         """
@@ -162,6 +164,142 @@ def add_column_if_missing(connection: sqlite3.Connection, table: str, column: st
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def sqlite_table_sql(connection: sqlite3.Connection, table: str) -> str:
+    row = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return str(row[0] or "") if row else ""
+
+
+def postgres_drop_old_notification_subscription_unique(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT c.conname
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE t.relname = ?
+          AND c.contype = 'u'
+          AND (
+            SELECT array_agg(a.attname ORDER BY k.ordinality)
+            FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality)
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+          ) = ARRAY['watch_id', 'scope', 'location', 'round_key']::name[]
+        """,
+        ("notification_subscriptions",),
+    ).fetchall()
+    for row in rows:
+        constraint_name = str(row[0])
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", constraint_name):
+            continue
+        connection.execute(f"ALTER TABLE notification_subscriptions DROP CONSTRAINT {constraint_name}")
+
+
+def migrate_notification_subscriptions_for_user_scope(connection: sqlite3.Connection) -> None:
+    add_column_if_missing(connection, "notification_subscriptions", "user_id", "INTEGER NOT NULL DEFAULT 0")
+    if connection_dialect(connection) == "postgres":
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS notification_subscriptions_user_scope_idx
+            ON notification_subscriptions(user_id, watch_id, scope, location, round_key)
+            """
+        )
+        postgres_drop_old_notification_subscription_unique(connection)
+        return
+    if connection_dialect(connection) != "sqlite":
+        return
+    table_sql = sqlite_table_sql(connection, "notification_subscriptions")
+    if "UNIQUE(user_id, watch_id, scope, location, round_key)" in table_sql.replace("\n", " "):
+        return
+    connection.executescript(
+        """
+        CREATE TABLE notification_subscriptions_new (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            watch_id INTEGER NOT NULL,
+            scope TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '',
+            round_key TEXT NOT NULL DEFAULT '',
+            channels TEXT NOT NULL DEFAULT 'feed',
+            lead_days TEXT NOT NULL DEFAULT '7,1,0',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, watch_id, scope, location, round_key),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
+        INSERT OR IGNORE INTO notification_subscriptions_new(
+            id, user_id, watch_id, scope, location, round_key, channels, lead_days, enabled, created_at, updated_at
+        )
+        SELECT id, COALESCE(user_id, 0), watch_id, scope, location, round_key, channels, lead_days, enabled, created_at, updated_at
+        FROM notification_subscriptions;
+        DROP TABLE notification_subscriptions;
+        ALTER TABLE notification_subscriptions_new RENAME TO notification_subscriptions;
+        """
+    )
+
+
+def migrate_watch_sources_for_user_scope(connection: sqlite3.Connection) -> None:
+    add_column_if_missing(connection, "watch_sources", "user_id", "INTEGER NOT NULL DEFAULT 0")
+    if connection_dialect(connection) == "postgres":
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS watch_sources_user_scope_idx
+            ON watch_sources(user_id, watch_id, url)
+            """
+        )
+        rows = connection.execute(
+            """
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE t.relname = ?
+              AND c.contype = 'u'
+              AND (
+                SELECT array_agg(a.attname ORDER BY k.ordinality)
+                FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality)
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+              ) = ARRAY['watch_id', 'url']::name[]
+            """,
+            ("watch_sources",),
+        ).fetchall()
+        for row in rows:
+            constraint_name = str(row[0])
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", constraint_name):
+                connection.execute(f"ALTER TABLE watch_sources DROP CONSTRAINT {constraint_name}")
+        return
+    if connection_dialect(connection) != "sqlite":
+        return
+    table_sql = sqlite_table_sql(connection, "watch_sources")
+    if "UNIQUE(user_id, watch_id, url)" in table_sql.replace("\n", " "):
+        return
+    connection.executescript(
+        """
+        CREATE TABLE watch_sources_new (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            watch_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            label TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            confidence INTEGER NOT NULL DEFAULT 70,
+            private_note INTEGER NOT NULL DEFAULT 0,
+            muted INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, watch_id, url),
+            FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
+        );
+        INSERT OR IGNORE INTO watch_sources_new(
+            id, user_id, watch_id, url, label, platform, confidence, private_note, muted, created_at, updated_at
+        )
+        SELECT id, COALESCE(user_id, 0), watch_id, url, label, platform, confidence, private_note, muted, created_at, updated_at
+        FROM watch_sources;
+        DROP TABLE watch_sources;
+        ALTER TABLE watch_sources_new RENAME TO watch_sources;
+        """
+    )
+
+
 def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "watched_keywords", "tags", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "watched_keywords", "kind", "TEXT NOT NULL DEFAULT 'artist'")
@@ -169,6 +307,8 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "watched_keywords", "preferred_venues", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "watched_keywords", "alert_preferences", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "watched_keywords", "muted", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(connection, "watched_keywords", "local_visible", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(connection, "watched_keywords", "local_muted", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(connection, "watched_keywords", "last_checked_at", "TEXT")
     add_column_if_missing(connection, "events", "status", "TEXT NOT NULL DEFAULT 'watching'")
     add_column_if_missing(connection, "events", "event_key", "TEXT NOT NULL DEFAULT ''")
@@ -194,6 +334,7 @@ def migrate_db(connection: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS watch_sources (
             id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
             watch_id INTEGER NOT NULL,
             url TEXT NOT NULL,
             label TEXT NOT NULL,
@@ -203,12 +344,13 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             muted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(watch_id, url),
+            UNIQUE(user_id, watch_id, url),
             FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
         );
 
         CREATE TABLE IF NOT EXISTS notification_subscriptions (
             id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
             watch_id INTEGER NOT NULL,
             scope TEXT NOT NULL,
             location TEXT NOT NULL DEFAULT '',
@@ -218,7 +360,7 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(watch_id, scope, location, round_key),
+            UNIQUE(user_id, watch_id, scope, location, round_key),
             FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
         );
 
@@ -234,6 +376,7 @@ def migrate_db(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS device_tokens (
             id INTEGER PRIMARY KEY,
+            user_id INTEGER,
             token TEXT NOT NULL UNIQUE,
             platform TEXT NOT NULL DEFAULT 'android',
             label TEXT NOT NULL DEFAULT '',
@@ -265,13 +408,31 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             user_id INTEGER NOT NULL,
             watch_id INTEGER NOT NULL,
+            muted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
+            updated_at TEXT,
             UNIQUE(user_id, watch_id),
             FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(watch_id) REFERENCES watched_keywords(id)
         );
         """
     )
+    add_column_if_missing(connection, "user_watches", "muted", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(connection, "user_watches", "updated_at", "TEXT")
+    connection.execute(
+        """
+        UPDATE watched_keywords
+        SET local_visible = 1,
+            local_muted = muted
+        WHERE local_visible = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM user_watches owner WHERE owner.watch_id = watched_keywords.id
+          )
+        """
+    )
+    migrate_notification_subscriptions_for_user_scope(connection)
+    migrate_watch_sources_for_user_scope(connection)
+    add_column_if_missing(connection, "device_tokens", "user_id", "INTEGER")
     # PRAGMA user_version is SQLite-only; Postgres reports the constant directly.
     if connection_dialect(connection) == "sqlite":
         connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")

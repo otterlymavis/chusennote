@@ -118,15 +118,21 @@ def subscription_occasions(subscription: NotificationSubscription, event: dict[s
     return occasions
 
 
-def pending_notifications(db_path: str, now: str | None = None, lead_days: tuple[int, ...] = DEFAULT_LEAD_DAYS) -> list[dict[str, object]]:
+def pending_notifications(
+    db_path: str,
+    now: str | None = None,
+    lead_days: tuple[int, ...] = DEFAULT_LEAD_DAYS,
+    user_id: int | None = None,
+) -> list[dict[str, object]]:
     """Reminders due today that have not yet been recorded."""
     timestamp = now or utc_now_iso()
     today = parse_iso_date(timestamp) or dt.date.today()
-    subscriptions = list_subscriptions(db_path, enabled_only=True)
+    subscriptions = list_subscriptions(db_path, enabled_only=True, user_id=user_id)
     if not subscriptions:
         return []
     events_by_watch: dict[int, list[dict[str, object]]] = {}
-    for event in recent_events(db_path, limit=500):
+    event_user_id = user_id if user_id and user_id > 0 else None
+    for event in recent_events(db_path, limit=500, user_id=event_user_id):
         events_by_watch.setdefault(int(event.get("watch_id") or 0), []).append(event)
 
     pending: list[dict[str, object]] = []
@@ -160,6 +166,7 @@ def pending_notifications(db_path: str, now: str | None = None, lead_days: tuple
                         {
                             **occasion,
                             "subscription_id": subscription.id,
+                            "user_id": subscription.user_id,
                             "watch_id": subscription.watch_id,
                             "channels": subscription.channels,
                             "lead_days": days_until,
@@ -242,13 +249,15 @@ def run_notifications(
     now: str | None = None,
     lead_days: tuple[int, ...] = DEFAULT_LEAD_DAYS,
     deliver: bool = True,
+    user_id: int | None = None,
 ) -> list[dict[str, object]]:
     """Generate due reminders, dispatch them to each channel, and record them."""
     timestamp = now or utc_now_iso()
-    pending = pending_notifications(db_path, timestamp, lead_days)
+    pending = pending_notifications(db_path, timestamp, lead_days, user_id=user_id)
     if not pending:
         return []
-    devices = list_devices(db_path)
+    owner_ids = {int(notification.get("user_id") or 0) for notification in pending}
+    devices_by_user = {owner_id: list_devices(db_path, user_id=owner_id) for owner_id in owner_ids}
     delivered: list[dict[str, object]] = []
     with connect(db_path) as connection:
         init_db(connection)
@@ -256,9 +265,11 @@ def run_notifications(
             channels = {channel.strip() for channel in str(notification["channels"]).split(",") if channel.strip()}
             results = {"feed": True}
             if deliver and "email" in channels:
-                results["email"] = send_email_notification(notification)
+                owner_id = int(notification.get("user_id") or 0)
+                results["email"] = send_email_notification(notification) if owner_id == 0 else False
             if deliver and "push" in channels:
-                results["push"] = send_push_notification(notification, devices)
+                owner_id = int(notification.get("user_id") or 0)
+                results["push"] = send_push_notification(notification, devices_by_user[owner_id])
             title, body = notification_headline(notification)
             payload = {
                 "title": title,
@@ -287,19 +298,32 @@ def run_notifications(
     return delivered
 
 
-def notification_feed(db_path: str, limit: int = 100) -> list[dict[str, object]]:
+def notification_feed(db_path: str, limit: int = 100, user_id: int | None = None) -> list[dict[str, object]]:
     """Recent reminders for the in-app/mobile notifications feed."""
     with connect(db_path) as connection:
         init_db(connection)
-        rows = connection.execute(
-            """
-            SELECT payload_json, channel, created_at
-            FROM notification_log
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        if user_id is None:
+            rows = connection.execute(
+                """
+                SELECT payload_json, channel, created_at
+                FROM notification_log
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT n.payload_json, n.channel, n.created_at
+                FROM notification_log n
+                JOIN notification_subscriptions s ON s.id = n.subscription_id
+                WHERE s.user_id = ?
+                ORDER BY n.id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
     feed: list[dict[str, object]] = []
     for payload_json, channel, created_at in rows:
         payload = json.loads(payload_json)

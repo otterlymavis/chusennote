@@ -53,6 +53,17 @@ def add_watch(
     timestamp = now or utc_now_iso()
     with connect(db_path) as connection:
         init_db(connection)
+        existing = connection.execute(
+            "SELECT id, local_visible FROM watched_keywords WHERE keyword = ?",
+            (keyword,),
+        ).fetchone()
+        if existing and user_id is not None and user_id <= 0:
+            owner = connection.execute(
+                "SELECT 1 FROM user_watches WHERE watch_id = ?",
+                (int(existing[0]),),
+            ).fetchone()
+            if owner and not bool(existing[1]):
+                raise ValueError(f"Watch not found: {keyword}")
         connection.execute(
             """
             INSERT INTO watched_keywords(
@@ -79,11 +90,26 @@ def add_watch(
             (keyword,),
         ).fetchone()
         watch = watch_from_row(row)
-        # Subscribe the caller to this shared canonical watch (no-op anonymously).
-        if user_id is not None:
+        if user_id is not None and user_id <= 0:
             connection.execute(
-                "INSERT OR IGNORE INTO user_watches(user_id, watch_id, created_at) VALUES (?, ?, ?)",
-                (user_id, watch.id, timestamp),
+                """
+                UPDATE watched_keywords
+                SET local_visible = 1, local_muted = 0, updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, watch.id),
+            )
+            watch = dataclasses.replace(watch, muted=False)
+        # Subscribe authenticated callers to this shared canonical watch; the
+        # anonymous local workspace is represented by no user_watches owner.
+        if user_id is not None and user_id > 0:
+            connection.execute(
+                """
+                INSERT INTO user_watches(user_id, watch_id, muted, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?)
+                ON CONFLICT(user_id, watch_id) DO UPDATE SET muted = 0, updated_at = excluded.updated_at
+                """,
+                (user_id, watch.id, timestamp, timestamp),
             )
         return watch
 
@@ -105,13 +131,14 @@ def watch_from_row(row: sqlite3.Row | tuple[object, ...]) -> Watch:
 def watch_source_from_row(row: sqlite3.Row | tuple[object, ...]) -> WatchSource:
     return WatchSource(
         id=int(row[0]),
-        watch_id=int(row[1]),
-        url=str(row[2]),
-        label=str(row[3] or row[2]),
-        platform=str(row[4] or source_name_for_url(str(row[2]))),
-        confidence=int(row[5] or 70),
-        private_note=bool(row[6]),
-        muted=bool(row[7]),
+        user_id=int(row[1] or 0),
+        watch_id=int(row[2]),
+        url=str(row[3]),
+        label=str(row[4] or row[3]),
+        platform=str(row[5] or source_name_for_url(str(row[3]))),
+        confidence=int(row[6] or 70),
+        private_note=bool(row[7]),
+        muted=bool(row[8]),
     )
 
 
@@ -122,22 +149,30 @@ def list_watches(
         init_db(connection)
         clauses: list[str] = []
         params: list[object] = []
-        # user_id None = unscoped (CLI/anonymous see the shared workspace, i.e.
-        # every canonical watch); an id scopes to that user's subscriptions.
+        # user_id None = unscoped CLI/shared workspace; user_id 0 = anonymous
+        # local API rows; positive ids scope to that user's subscriptions.
         join = ""
-        if user_id is not None:
+        if user_id is not None and user_id > 0:
             join = "JOIN user_watches uw ON uw.watch_id = k.id"
             clauses.append("uw.user_id = ?")
             params.append(user_id)
+        elif user_id is not None:
+            clauses.append("k.local_visible = 1")
         if not include_muted:
-            clauses.append("k.muted = 0")
+            if user_id is None or user_id > 0:
+                clauses.append("k.muted = 0")
+            if user_id is not None and user_id > 0:
+                clauses.append("uw.muted = 0")
+            elif user_id is not None:
+                clauses.append("k.local_muted = 0")
         if kind:
             clauses.append("k.kind = ?")
             params.append(kind)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT k.id, k.keyword, k.kind, k.tags, k.preferred_regions, k.preferred_venues, k.alert_preferences, k.muted, k.last_checked_at
+            SELECT k.id, k.keyword, k.kind, k.tags, k.preferred_regions, k.preferred_venues, k.alert_preferences,
+                   {"(k.muted != 0 OR uw.muted != 0)" if user_id is not None and user_id > 0 else "k.local_muted" if user_id is not None else "k.muted"}, k.last_checked_at
             FROM watched_keywords k
             {join}
             {where}
@@ -170,8 +205,8 @@ def resolve_watch(connection: sqlite3.Connection, identifier: str) -> Watch | No
     return watch_from_row(row) if row else None
 
 
-def remove_watch(db_path: str, identifier: str, now: str | None = None) -> bool:
-    return set_watch_muted(db_path, identifier, True, now=now, only_if_changed=True)
+def remove_watch(db_path: str, identifier: str, now: str | None = None, user_id: int | None = None) -> bool:
+    return set_watch_muted(db_path, identifier, True, now=now, only_if_changed=True, user_id=user_id)
 
 
 def set_watch_muted(
@@ -180,12 +215,57 @@ def set_watch_muted(
     muted: bool,
     now: str | None = None,
     only_if_changed: bool = False,
+    user_id: int | None = None,
 ) -> bool:
     timestamp = now or utc_now_iso()
     muted_value = 1 if muted else 0
     changed_clause = " AND muted != ?" if only_if_changed else ""
     with connect(db_path) as connection:
         init_db(connection)
+        if user_id is not None and user_id > 0:
+            watch = resolve_watch(connection, identifier)
+            if not watch:
+                return False
+            changed_clause = " AND muted != ?" if only_if_changed else ""
+            params: tuple[object, ...] = (muted_value, timestamp, user_id, watch.id)
+            if only_if_changed:
+                params += (muted_value,)
+            cursor = connection.execute(
+                f"""
+                UPDATE user_watches
+                SET muted = ?, updated_at = ?
+                WHERE user_id = ? AND watch_id = ?{changed_clause}
+                """,
+                params,
+            )
+            return bool(cursor.rowcount)
+        if user_id is not None:
+            local_changed_clause = " AND local_muted != ?" if only_if_changed else ""
+            if identifier.isdigit():
+                params = (muted_value, timestamp, int(identifier))
+                if only_if_changed:
+                    params += (muted_value,)
+                cursor = connection.execute(
+                    f"""
+                    UPDATE watched_keywords
+                    SET local_muted = ?, updated_at = ?
+                    WHERE id = ?{local_changed_clause} AND local_visible = 1
+                    """,
+                    params,
+                )
+            else:
+                params = (muted_value, timestamp, identifier)
+                if only_if_changed:
+                    params += (muted_value,)
+                cursor = connection.execute(
+                    f"""
+                    UPDATE watched_keywords
+                    SET local_muted = ?, updated_at = ?
+                    WHERE keyword = ?{local_changed_clause} AND local_visible = 1
+                    """,
+                    params,
+                )
+            return bool(cursor.rowcount)
         if identifier.isdigit():
             params: tuple[object, ...] = (muted_value, timestamp, int(identifier))
             if only_if_changed:
@@ -212,6 +292,7 @@ def add_watch_source(
     label: str = "",
     private_note: bool = False,
     now: str | None = None,
+    user_id: int | None = None,
 ) -> WatchSource:
     timestamp = now or utc_now_iso()
     url = clean_text(url)
@@ -222,15 +303,30 @@ def add_watch_source(
         watch = resolve_watch(connection, watch_identifier)
         if not watch:
             raise ValueError(f"Watch not found: {watch_identifier}")
+        if user_id is not None and user_id > 0:
+            linked = connection.execute(
+                "SELECT 1 FROM user_watches WHERE user_id = ? AND watch_id = ?",
+                (user_id, watch.id),
+            ).fetchone()
+            if not linked:
+                raise ValueError(f"Watch not found: {watch_identifier}")
+        elif user_id is not None:
+            owner = connection.execute(
+                "SELECT 1 FROM user_watches WHERE watch_id = ?",
+                (watch.id,),
+            ).fetchone()
+            if owner:
+                raise ValueError(f"Watch not found: {watch_identifier}")
+        owner_id = user_id or 0
         platform = "manual" if private_note else source_name_for_url(url)
         confidence = 40 if private_note else platform_confidence(platform)
         connection.execute(
             """
             INSERT INTO watch_sources(
-                watch_id, url, label, platform, confidence, private_note, muted, created_at, updated_at
+                user_id, watch_id, url, label, platform, confidence, private_note, muted, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(watch_id, url) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(user_id, watch_id, url) DO UPDATE SET
                 label = excluded.label,
                 platform = excluded.platform,
                 confidence = excluded.confidence,
@@ -238,15 +334,15 @@ def add_watch_source(
                 muted = 0,
                 updated_at = excluded.updated_at
             """,
-            (watch.id, url, label or url, platform, confidence, int(private_note), timestamp, timestamp),
+            (owner_id, watch.id, url, label or url, platform, confidence, int(private_note), timestamp, timestamp),
         )
         row = connection.execute(
             """
-            SELECT id, watch_id, url, label, platform, confidence, private_note, muted
+            SELECT id, user_id, watch_id, url, label, platform, confidence, private_note, muted
             FROM watch_sources
-            WHERE watch_id = ? AND url = ?
+            WHERE user_id = ? AND watch_id = ? AND url = ?
             """,
-            (watch.id, url),
+            (owner_id, watch.id, url),
         ).fetchone()
         return watch_source_from_row(row)
 
@@ -259,10 +355,15 @@ def list_watch_sources(
         params: list[object] = []
         clauses: list[str] = []
         join = ""
-        if user_id is not None:
+        if user_id is not None and user_id > 0:
             join = "JOIN user_watches uw ON uw.watch_id = s.watch_id"
             clauses.append("uw.user_id = ?")
             params.append(user_id)
+            clauses.append("(s.user_id = ? OR (s.user_id = 0 AND s.private_note = 0))")
+            params.append(user_id)
+        elif user_id is not None:
+            clauses.append("s.user_id = 0")
+            clauses.append("w.local_visible = 1")
         if watch_identifier:
             watch = resolve_watch(connection, watch_identifier)
             if not watch:
@@ -271,11 +372,16 @@ def list_watch_sources(
             params.append(watch.id)
         if not include_muted:
             clauses.append("s.muted = 0")
-            clauses.append("w.muted = 0")
+            if user_id is None or user_id > 0:
+                clauses.append("w.muted = 0")
+            if user_id is not None and user_id > 0:
+                clauses.append("uw.muted = 0")
+            elif user_id is not None:
+                clauses.append("w.local_muted = 0")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT s.id, s.watch_id, s.url, s.label, s.platform, s.confidence, s.private_note, s.muted
+            SELECT s.id, s.user_id, s.watch_id, s.url, s.label, s.platform, s.confidence, s.private_note, s.muted
             FROM watch_sources s
             JOIN watched_keywords w ON w.id = s.watch_id
             {join}
@@ -287,37 +393,57 @@ def list_watch_sources(
         return [watch_source_from_row(row) for row in rows]
 
 
-def remove_watch_source(db_path: str, identifier: str, now: str | None = None) -> bool:
+def remove_watch_source(db_path: str, identifier: str, now: str | None = None, user_id: int | None = None) -> bool:
     timestamp = now or utc_now_iso()
     with connect(db_path) as connection:
         init_db(connection)
+        owner_clause = " AND user_id = ?" if user_id is not None else ""
         if identifier.isdigit():
+            params: tuple[object, ...] = (timestamp, int(identifier))
+            if user_id is not None:
+                params += (user_id,)
             cursor = connection.execute(
-                "UPDATE watch_sources SET muted = 1, updated_at = ? WHERE id = ? AND muted = 0",
-                (timestamp, int(identifier)),
+                f"UPDATE watch_sources SET muted = 1, updated_at = ? WHERE id = ? AND muted = 0{owner_clause}",
+                params,
             )
         else:
+            params = (timestamp, identifier)
+            if user_id is not None:
+                params += (user_id,)
             cursor = connection.execute(
-                "UPDATE watch_sources SET muted = 1, updated_at = ? WHERE url = ? AND muted = 0",
-                (timestamp, identifier),
+                f"UPDATE watch_sources SET muted = 1, updated_at = ? WHERE url = ? AND muted = 0{owner_clause}",
+                params,
             )
         return bool(cursor.rowcount)
 
 
-def set_watch_source_muted(db_path: str, identifier: str, muted: bool, now: str | None = None) -> bool:
+def set_watch_source_muted(
+    db_path: str,
+    identifier: str,
+    muted: bool,
+    now: str | None = None,
+    user_id: int | None = None,
+) -> bool:
     timestamp = now or utc_now_iso()
     muted_value = 1 if muted else 0
     with connect(db_path) as connection:
         init_db(connection)
+        owner_clause = " AND user_id = ?" if user_id is not None else ""
         if identifier.isdigit():
+            params: tuple[object, ...] = (muted_value, timestamp, int(identifier))
+            if user_id is not None:
+                params += (user_id,)
             cursor = connection.execute(
-                "UPDATE watch_sources SET muted = ?, updated_at = ? WHERE id = ?",
-                (muted_value, timestamp, int(identifier)),
+                f"UPDATE watch_sources SET muted = ?, updated_at = ? WHERE id = ?{owner_clause}",
+                params,
             )
         else:
+            params = (muted_value, timestamp, identifier)
+            if user_id is not None:
+                params += (user_id,)
             cursor = connection.execute(
-                "UPDATE watch_sources SET muted = ?, updated_at = ? WHERE url = ?",
-                (muted_value, timestamp, identifier),
+                f"UPDATE watch_sources SET muted = ?, updated_at = ? WHERE url = ?{owner_clause}",
+                params,
             )
         return bool(cursor.rowcount)
 
@@ -936,7 +1062,7 @@ def upsert_ticket_rounds(
         if previous is None:
             alerts.append({"type": "new_lottery_round", "event": event_title, "round": ticket.name, "url": ticket.url})
             continue
-        previous_fields = dict(zip(fields.keys(), previous, strict=True))
+        previous_fields = dict(zip(fields.keys(), previous))
         for field, value in fields.items():
             old_value = previous_fields[field]
             if old_value != value:
@@ -1023,13 +1149,14 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_i
 def subscription_from_row(row: sqlite3.Row | tuple[object, ...]) -> NotificationSubscription:
     return NotificationSubscription(
         id=int(row[0]),
-        watch_id=int(row[1]),
-        scope=str(row[2]),
-        location=str(row[3] or ""),
-        round_key=str(row[4] or ""),
-        channels=str(row[5] or DEFAULT_NOTIFY_CHANNELS),
-        lead_days=str(row[6] or "7,1,0"),
-        enabled=bool(row[7]),
+        user_id=int(row[1] or 0),
+        watch_id=int(row[2]),
+        scope=str(row[3]),
+        location=str(row[4] or ""),
+        round_key=str(row[5] or ""),
+        channels=str(row[6] or DEFAULT_NOTIFY_CHANNELS),
+        lead_days=str(row[7] or "7,1,0"),
+        enabled=bool(row[8]),
     )
 
 
@@ -1042,6 +1169,7 @@ def add_subscription(
     channels: str = DEFAULT_NOTIFY_CHANNELS,
     lead_days: str = "7,1,0",
     now: str | None = None,
+    user_id: int | None = None,
 ) -> NotificationSubscription:
     if scope not in NOTIFY_SCOPES:
         raise ValueError(f"Unknown notification scope: {scope}")
@@ -1051,58 +1179,90 @@ def add_subscription(
         watch = resolve_watch(connection, watch_identifier)
         if not watch:
             raise ValueError(f"Watch not found: {watch_identifier}")
+        if user_id is not None and user_id > 0:
+            linked = connection.execute(
+                "SELECT 1 FROM user_watches WHERE user_id = ? AND watch_id = ?",
+                (user_id, watch.id),
+            ).fetchone()
+            if not linked:
+                raise ValueError(f"Watch not found: {watch_identifier}")
+        elif user_id is not None:
+            owner = connection.execute(
+                "SELECT 1 FROM user_watches WHERE watch_id = ?",
+                (watch.id,),
+            ).fetchone()
+            if owner:
+                raise ValueError(f"Watch not found: {watch_identifier}")
+        owner_id = user_id or 0
         connection.execute(
             """
             INSERT INTO notification_subscriptions(
-                watch_id, scope, location, round_key, channels, lead_days, enabled, created_at, updated_at
+                user_id, watch_id, scope, location, round_key, channels, lead_days, enabled, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT(watch_id, scope, location, round_key) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(user_id, watch_id, scope, location, round_key) DO UPDATE SET
                 channels = excluded.channels,
                 lead_days = excluded.lead_days,
                 enabled = 1,
                 updated_at = excluded.updated_at
             """,
-            (watch.id, scope, location, round_key, channels, lead_days, timestamp, timestamp),
+            (owner_id, watch.id, scope, location, round_key, channels, lead_days, timestamp, timestamp),
         )
         row = connection.execute(
             """
-            SELECT id, watch_id, scope, location, round_key, channels, lead_days, enabled
+            SELECT id, user_id, watch_id, scope, location, round_key, channels, lead_days, enabled
             FROM notification_subscriptions
-            WHERE watch_id = ? AND scope = ? AND location = ? AND round_key = ?
+            WHERE user_id = ? AND watch_id = ? AND scope = ? AND location = ? AND round_key = ?
             """,
-            (watch.id, scope, location, round_key),
+            (owner_id, watch.id, scope, location, round_key),
         ).fetchone()
         return subscription_from_row(row)
 
 
-def list_subscriptions(db_path: str, watch_id: int | None = None, enabled_only: bool = False) -> list[NotificationSubscription]:
+def list_subscriptions(
+    db_path: str,
+    watch_id: int | None = None,
+    enabled_only: bool = False,
+    user_id: int | None = None,
+) -> list[NotificationSubscription]:
     with connect(db_path) as connection:
         init_db(connection)
         clauses: list[str] = []
         params: list[object] = []
+        if user_id is not None:
+            clauses.append("s.user_id = ?")
+            params.append(user_id)
         if watch_id is not None:
-            clauses.append("watch_id = ?")
+            clauses.append("s.watch_id = ?")
             params.append(watch_id)
         if enabled_only:
-            clauses.append("enabled = 1")
+            clauses.append("s.enabled = 1")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT id, watch_id, scope, location, round_key, channels, lead_days, enabled
-            FROM notification_subscriptions
+            SELECT s.id, s.user_id, s.watch_id, s.scope, s.location, s.round_key, s.channels, s.lead_days, s.enabled
+            FROM notification_subscriptions s
             {where}
-            ORDER BY id
+            ORDER BY s.id
             """,
             params,
         ).fetchall()
         return [subscription_from_row(row) for row in rows]
 
 
-def remove_subscription(db_path: str, subscription_id: int) -> bool:
+def remove_subscription(db_path: str, subscription_id: int, user_id: int | None = None) -> bool:
     with connect(db_path) as connection:
         init_db(connection)
-        cursor = connection.execute("DELETE FROM notification_subscriptions WHERE id = ?", (subscription_id,))
+        if user_id is None:
+            cursor = connection.execute("DELETE FROM notification_subscriptions WHERE id = ?", (subscription_id,))
+        else:
+            cursor = connection.execute(
+                """
+                DELETE FROM notification_subscriptions
+                WHERE id = ? AND user_id = ?
+                """,
+                (subscription_id, user_id),
+            )
         return cursor.rowcount > 0
 
 
@@ -1121,7 +1281,14 @@ def device_token_from_row(row: sqlite3.Row | tuple[object, ...]) -> DeviceToken:
     return DeviceToken(id=int(row[0]), token=str(row[1]), platform=str(row[2] or "android"), label=str(row[3] or ""))
 
 
-def register_device(db_path: str, token: str, platform: str = "android", label: str = "", now: str | None = None) -> DeviceToken:
+def register_device(
+    db_path: str,
+    token: str,
+    platform: str = "android",
+    label: str = "",
+    now: str | None = None,
+    user_id: int | None = None,
+) -> DeviceToken:
     token = clean_text(token)
     if not token:
         raise ValueError("Device token is required")
@@ -1130,11 +1297,21 @@ def register_device(db_path: str, token: str, platform: str = "android", label: 
         init_db(connection)
         connection.execute(
             """
-            INSERT INTO device_tokens(token, platform, label, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(token) DO UPDATE SET platform = excluded.platform, label = excluded.label, updated_at = excluded.updated_at
+            INSERT INTO device_tokens(user_id, token, platform, label, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(token) DO UPDATE SET
+                user_id = CASE
+                    WHEN excluded.user_id IS NULL THEN device_tokens.user_id
+                    WHEN excluded.user_id IS NOT NULL AND excluded.user_id > 0 THEN excluded.user_id
+                    WHEN device_tokens.user_id IS NULL THEN excluded.user_id
+                    WHEN device_tokens.user_id <= 0 THEN excluded.user_id
+                    ELSE device_tokens.user_id
+                END,
+                platform = excluded.platform,
+                label = excluded.label,
+                updated_at = excluded.updated_at
             """,
-            (token, platform, label, timestamp, timestamp),
+            (user_id, token, platform, label, timestamp, timestamp),
         )
         row = connection.execute(
             "SELECT id, token, platform, label FROM device_tokens WHERE token = ?", (token,)
@@ -1142,10 +1319,30 @@ def register_device(db_path: str, token: str, platform: str = "android", label: 
         return device_token_from_row(row)
 
 
-def list_devices(db_path: str) -> list[DeviceToken]:
+def list_devices(db_path: str, user_id: int | None = None) -> list[DeviceToken]:
     with connect(db_path) as connection:
         init_db(connection)
-        rows = connection.execute("SELECT id, token, platform, label FROM device_tokens ORDER BY id").fetchall()
+        if user_id is None:
+            rows = connection.execute("SELECT id, token, platform, label FROM device_tokens ORDER BY id").fetchall()
+        elif user_id <= 0:
+            rows = connection.execute(
+                """
+                SELECT id, token, platform, label
+                FROM device_tokens
+                WHERE user_id IS NULL OR user_id = 0
+                ORDER BY id
+                """
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT id, token, platform, label
+                FROM device_tokens
+                WHERE user_id = ?
+                ORDER BY id
+                """,
+                (user_id,),
+            ).fetchall()
         return [device_token_from_row(row) for row in rows]
 
 

@@ -674,6 +674,56 @@ def test_per_user_watch_subscription_scoping(tmp_path):
     assert {"YOASOBI", "Lion King"} <= {w.keyword for w in all_watches}
 
 
+def test_per_user_watch_muting_keeps_shared_canonical_watch_active(tmp_path):
+    db_path = str(tmp_path / "watch-mute-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_watch = lm.add_watch(db_path, "Shared Show", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    bob_watch = lm.add_watch(db_path, "Shared Show", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Shared Show",
+            official_page="https://official.example/shared",
+            title="Shared Show Tour",
+            summary="",
+            event_dates=("2026年6月20日",),
+            venues=("Example Hall",),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official",
+                url="https://official.example/shared",
+                name="第1次抽選先行",
+                application_start_at="2026-06-01",
+                application_end_at="2026-06-02",
+            ),
+        ),
+    )
+    lm.save_blocks(db_path, blocks, now="2026-06-01T00:00:00+00:00", watch_id=alice_watch.id)
+    lm.add_subscription(db_path, str(alice_watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, user_id=alice.id)
+
+    assert alice_watch.id == bob_watch.id
+    assert lm.remove_watch(db_path, "Shared Show", user_id=alice.id) is True
+    assert lm.list_watches(db_path, user_id=alice.id) == []
+    assert [watch.muted for watch in lm.list_watches(db_path, include_muted=True, user_id=alice.id)] == [True]
+    assert [watch.keyword for watch in lm.list_watches(db_path, user_id=bob.id)] == ["Shared Show"]
+    assert lm.list_watches(db_path, user_id=bob.id)[0].muted is False
+    assert lm.recent_events(db_path, user_id=alice.id) == []
+    assert [event["title"] for event in lm.recent_events(db_path, include_muted_watches=True, user_id=alice.id)] == [
+        "Shared Show Tour"
+    ]
+    assert [event["title"] for event in lm.recent_events(db_path, user_id=bob.id)] == ["Shared Show Tour"]
+    assert lm.upcoming_priority_rows(db_path, user_id=alice.id) == []
+    assert [row["event_title"] for row in lm.upcoming_priority_rows(db_path, user_id=bob.id)] == ["Shared Show Tour"]
+    assert lm.recent_alerts(db_path, user_id=alice.id) == []
+    assert lm.pending_notifications(db_path, now="2026-06-01T00:00:00+00:00", user_id=alice.id) == []
+
+    assert lm.set_watch_muted(db_path, "Shared Show", False, user_id=alice.id) is True
+    assert [watch.keyword for watch in lm.list_watches(db_path, user_id=alice.id)] == ["Shared Show"]
+    assert [event["title"] for event in lm.recent_events(db_path, user_id=alice.id)] == ["Shared Show Tour"]
+
+
 def test_recent_events_scope_to_subscribed_user(tmp_path):
     db_path = str(tmp_path / "events-scope.sqlite3")
     alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
@@ -697,6 +747,31 @@ def test_recent_events_scope_to_subscribed_user(tmp_path):
     assert {e["title"] for e in lm.recent_events(db_path, user_id=bob.id)} == {"Bob Event"}
     # Unscoped (CLI/anonymous) still sees the whole shared workspace.
     assert {"Alice Event", "Bob Event"} <= {e["title"] for e in lm.recent_events(db_path)}
+
+
+def test_watch_sources_scope_to_owner_without_hiding_global_public_sources(tmp_path):
+    db_path = str(tmp_path / "source-owner-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_watch = lm.add_watch(db_path, "Shared Show", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    bob_watch = lm.add_watch(db_path, "Shared Show", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+    global_source = lm.add_watch_source(db_path, str(alice_watch.id), "https://official.example/shared", "Official")
+    alice_source = lm.add_watch_source(
+        db_path, str(alice_watch.id), "https://fan.example/alice", "Alice FC", private_note=True, user_id=alice.id
+    )
+    bob_source = lm.add_watch_source(
+        db_path, str(bob_watch.id), "https://fan.example/bob", "Bob FC", private_note=True, user_id=bob.id
+    )
+
+    assert global_source.user_id == 0
+    assert alice_source.user_id == alice.id
+    assert bob_source.user_id == bob.id
+    assert {source.label for source in lm.list_watch_sources(db_path, user_id=alice.id)} == {"Official", "Alice FC"}
+    assert {source.label for source in lm.list_watch_sources(db_path, user_id=bob.id)} == {"Official", "Bob FC"}
+    assert lm.remove_watch_source(db_path, str(bob_source.id), user_id=alice.id) is False
+    assert {source.label for source in lm.list_watch_sources(db_path, user_id=bob.id)} == {"Official", "Bob FC"}
+    assert lm.remove_watch_source(db_path, str(alice_source.id), user_id=alice.id) is True
+    assert {source.label for source in lm.list_watch_sources(db_path, user_id=alice.id)} == {"Official"}
 
 
 def test_sources_and_alerts_scope_to_subscribed_user(tmp_path):
@@ -754,6 +829,34 @@ def test_storage_connect_seam(tmp_path):
     assert not lm.is_postgres_url("chusennote.sqlite3")
     assert lm.dialect_of("postgres://u@h/db") == "postgres"
     assert lm.dialect_of("chusennote.sqlite3") == "sqlite"
+
+
+def test_subscription_migration_rebuilds_old_sqlite_unique_key(tmp_path):
+    db_path = str(tmp_path / "old-subscriptions.sqlite3")
+    with lm.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE notification_subscriptions (
+                id INTEGER PRIMARY KEY,
+                watch_id INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                location TEXT NOT NULL DEFAULT '',
+                round_key TEXT NOT NULL DEFAULT '',
+                channels TEXT NOT NULL DEFAULT 'feed',
+                lead_days TEXT NOT NULL DEFAULT '7,1,0',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(watch_id, scope, location, round_key)
+            )
+            """
+        )
+        lm.init_db(connection)
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_subscriptions'"
+        ).fetchone()[0]
+
+    assert "UNIQUE(user_id, watch_id, scope, location, round_key)" in table_sql.replace("\n", " ")
 
 
 POSTGRES_TEST_URL_ENV = "CHUSENNOTE_TEST_DATABASE_URL"
@@ -827,6 +930,8 @@ def test_postgres_backend_round_trips_core_flows():
     # Per-user watch subscriptions scope on Postgres too.
     lm.add_watch(url, "PG Subscribed", kind=lm.WATCH_KIND_EVENT, user_id=user.id)
     assert {watch.keyword for watch in lm.list_watches(url, user_id=user.id)} == {"PG Subscribed"}
+    subscription = lm.add_subscription(url, "PG Subscribed", lm.NOTIFY_SCOPE_EVENT_ALL, user_id=user.id)
+    assert subscription.user_id == user.id
 
 
 def test_adapt_sql_rewrites_sqlite_isms_for_postgres():
@@ -1021,6 +1126,41 @@ def test_notification_run_delivers_due_reminders_and_is_idempotent(tmp_path):
     later = lm.run_notifications(str(db_path), now="2026-06-29T00:00:00+00:00")
     assert any(n["label"] == "Lottery application closes" and n["lead_days"] == 1 for n in later)
     assert lm.notification_feed(str(db_path))
+
+
+def test_authenticated_email_notifications_do_not_use_global_recipient(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "email-scope.sqlite3")
+    user = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    anonymous_watch = lm.add_watch(db_path, "Anon Email", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    user_watch = lm.add_watch(db_path, "User Email", kind=lm.WATCH_KIND_EVENT, user_id=user.id, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Anon Email"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=anonymous_watch.id,
+    )
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("User Email"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=user_watch.id,
+    )
+    lm.add_subscription(db_path, str(anonymous_watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,email")
+    lm.add_subscription(db_path, str(user_watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,email", user_id=user.id)
+    emailed = []
+
+    def fake_email(notification):
+        emailed.append(notification["event_title"])
+        return True
+
+    monkeypatch.setattr(lm.notifications, "send_email_notification", fake_email)
+
+    anonymous = lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0)
+    authenticated = lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=user.id)
+
+    assert emailed == ["Anon Email Tour"]
+    assert anonymous[0]["delivered"]["email"] is True
+    assert authenticated[0]["delivered"]["email"] is False
 
 
 def test_event_location_subscription_filters_rounds_by_city(tmp_path):
