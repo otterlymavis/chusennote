@@ -257,7 +257,7 @@ def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
     existing_urls = {link.url for link in info.ticket_links}
     merged_links = info.ticket_links + tuple(link for link in manual_links if link.url not in existing_urls)
     merged_info = dataclasses.replace(info, ticket_links=merged_links)
-    ticket_link_rounds = fetch_ticket_link_rounds(info.ticket_links)
+    ticket_link_rounds = fetch_ticket_link_rounds(info.ticket_links) if source_pages else []
     all_rounds = clear_performance_window_rounds(
         base_rounds + tuple(extra_rounds) + tuple(ticket_link_rounds), merged_info.event_dates
     )
@@ -293,10 +293,15 @@ def filter_alerts_for_watch(watch: Watch, blocks: AppBlocks, alerts: Sequence[di
     return [alert for alert in alerts if alert.get("type", "").lower() in allowed]
 
 
-def run_watches(db_path: str, now: str | None = None, kind: str | None = None) -> list[dict[str, str]]:
+def run_watches(
+    db_path: str,
+    now: str | None = None,
+    kind: str | None = None,
+    user_id: int | None = None,
+) -> list[dict[str, str]]:
     timestamp = now or utc_now_iso()
     alerts: list[dict[str, str]] = []
-    for watch in list_watches(db_path, kind=kind):
+    for watch in list_watches(db_path, kind=kind, user_id=user_id):
         try:
             if watch.kind == WATCH_KIND_ARTIST:
                 artist_blocks = build_artist_event_blocks(watch.keyword)
@@ -309,7 +314,7 @@ def run_watches(db_path: str, now: str | None = None, kind: str | None = None) -
                     alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
             else:
                 blocks = build_blocks_for_watch(db_path, watch)
-                saved_alerts = save_blocks(db_path, blocks, now=timestamp)
+                saved_alerts = save_blocks(db_path, blocks, now=timestamp, watch_id=watch.id)
                 alerts.extend(filter_alerts_for_watch(watch, blocks, saved_alerts))
         except (OSError, ValueError, sqlite3.Error) as error:
             alerts.append(

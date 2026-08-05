@@ -625,6 +625,16 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     labels = {event["title"]: event["venue_label"] for event in lm.recent_events(str(db_path))}
     assert labels["YOASOBI ASIA 10-CITY DOME & STADIUM TOUR 2026"] == "Multiple cities"
     assert labels["YOASOBI at Tokyo"] == "東京 有明アリーナ"
+    locations = {event["title"]: event["event_locations"] for event in lm.recent_events(str(db_path))}
+    assert locations["YOASOBI ASIA 10-CITY DOME & STADIUM TOUR 2026"] == []
+    assert locations["YOASOBI at Tokyo"] == [
+        {
+            "location": "東京",
+            "city": "東京",
+            "venue": "東京 有明アリーナ",
+            "date": "2026年7月31日",
+        }
+    ]
 
 
 def test_auth_account_and_token_lifecycle(tmp_path):
@@ -2948,6 +2958,21 @@ def test_public_manual_source_fetches_discovered_ticket_links(tmp_path, monkeypa
     assert all("ゴールド会員" in round_.name for round_ in blocks.ticket_info if round_.platform in {"eplus", "pia"})
 
 
+def test_watch_discovery_does_not_refetch_ticket_links_already_in_blocks(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    watch = lm.add_watch(str(db_path), "Example", now="2026-06-01T00:00:00+00:00", kind=lm.WATCH_KIND_EVENT)
+    monkeypatch.setattr(lm.pipeline, "build_blocks", lambda keyword: example_blocks(keyword))
+
+    def fail_refetch(links):
+        raise AssertionError("ticket links from build_blocks should not be fetched twice")
+
+    monkeypatch.setattr(lm.pipeline, "fetch_ticket_link_rounds", fail_refetch)
+
+    blocks = lm.build_blocks_for_watch(str(db_path), watch)
+
+    assert blocks.ticket_info
+
+
 def test_recent_events_sorts_lottery_rounds_latest_to_oldest(tmp_path):
     db_path = tmp_path / "chusennote.sqlite3"
     blocks = lm.AppBlocks(
@@ -3022,7 +3047,7 @@ def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path, capsys):
     )
     lm.save_blocks(str(db_path), blocks, now="2026-06-03T00:00:00+00:00")
 
-    calendar = lm.render_calendar_ics(str(db_path), generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC))
+    calendar = lm.render_calendar_ics(str(db_path), generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.timezone.utc))
 
     assert "BEGIN:VCALENDAR" in calendar
     assert "DTSTAMP:20260603T000000Z" in calendar
@@ -3035,10 +3060,10 @@ def test_calendar_export_includes_tracked_event_ticket_dates(tmp_path, capsys):
     assert "URL:https://t.pia.jp/example" in calendar
 
     assert lm.remove_watch(str(db_path), "Example") is True
-    active_calendar = lm.render_calendar_ics(str(db_path), generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC))
+    active_calendar = lm.render_calendar_ics(str(db_path), generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.timezone.utc))
     muted_calendar = lm.render_calendar_ics(
         str(db_path),
-        generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.UTC),
+        generated_at=dt.datetime(2026, 6, 3, tzinfo=dt.timezone.utc),
         include_muted_watches=True,
     )
     assert "SUMMARY:Lottery application: Example Tour - First lottery" not in active_calendar
@@ -3150,6 +3175,13 @@ def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatc
         "build_exact_event_blocks",
         lambda keyword, title, url, snippet="": example_blocks("Example Musical"),
     )
+    monkeypatch.setattr(
+        lm.web,
+        "save_blocks",
+        lambda db_path, blocks, watch_id=None: lm.save_blocks(
+            db_path, blocks, now="2026-06-03T00:00:00+00:00", watch_id=watch_id
+        ),
+    )
     server = lm.create_web_server(str(db_path), 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -3183,6 +3215,239 @@ def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatc
         # omitted instead of rendered as blank "unknown" cells.
         assert "Payment due" not in detail
         assert "On sale" not in detail
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_api_event_search_adds_exact_event(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    monkeypatch.setattr(
+        lm.web,
+        "search_web",
+        lambda keyword, limit=6: (
+            lm.SearchResult("Example Musical Official", "https://official.example/stage", "official event page"),
+        ),
+    )
+    monkeypatch.setattr(
+        lm.web,
+        "build_exact_event_blocks",
+        lambda keyword, title, url, snippet="": example_blocks("Example Musical"),
+    )
+    monkeypatch.setattr(
+        lm.web,
+        "save_blocks",
+        lambda db_path, blocks, watch_id=None: lm.save_blocks(
+            db_path, blocks, now="2026-06-03T00:00:00+00:00", watch_id=watch_id
+        ),
+    )
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        results = json_load_url(f"{base}/api/event/search?keyword=Example%20Musical")
+        assert results == [
+            {
+                "title": "Example Musical Official",
+                "url": "https://official.example/stage",
+                "snippet": "official event page",
+            }
+        ]
+
+        added = json.loads(
+            post_text(
+                f"{base}/api/event/add",
+                {
+                    "keyword": "Example Musical",
+                    "title": "Example Musical Official",
+                    "url": "https://official.example/stage",
+                    "snippet": "official event page",
+                },
+            )
+        )
+        assert added["added"] is True
+        events = json_load_url(f"{base}/api/events")
+        assert events[0]["title"] == "Example Musical Tour"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_api_event_add_scopes_exact_event_to_authenticated_user(tmp_path, monkeypatch):
+    db_path = tmp_path / "chusennote.sqlite3"
+    monkeypatch.setattr(
+        lm.web,
+        "build_exact_event_blocks",
+        lambda keyword, title, url, snippet="": example_blocks(keyword),
+    )
+    monkeypatch.setattr(
+        lm.web,
+        "save_blocks",
+        lambda db_path, blocks, watch_id=None: lm.save_blocks(
+            db_path, blocks, now="2026-06-03T00:00:00+00:00", watch_id=watch_id
+        ),
+    )
+    server = lm.create_web_server(str(db_path), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        alice = post_form(
+            f"{base}/api/auth/register",
+            {"email": "alice@example.com", "password": "alice password 1"},
+        )
+        bob = post_form(
+            f"{base}/api/auth/register",
+            {"email": "bob@example.com", "password": "bob password 12"},
+        )
+
+        added = json.loads(
+            post_text_with_token(
+                f"{base}/api/event/add",
+                alice["token"],
+                {
+                    "keyword": "Alice Musical",
+                    "title": "Alice Musical Official",
+                    "url": "https://official.example/alice-stage",
+                    "snippet": "official event page",
+                },
+            )
+        )
+
+        assert added["added"] is True
+        assert [watch["keyword"] for watch in _get_with_token(f"{base}/api/watchlist", alice["token"])] == ["Alice Musical"]
+        assert _get_with_token(f"{base}/api/watchlist", bob["token"]) == []
+        assert json_load_url(f"{base}/api/watchlist") == []
+        assert [event["title"] for event in _get_with_token(f"{base}/api/events", alice["token"])] == ["Alice Musical Tour"]
+        assert _get_with_token(f"{base}/api/events", bob["token"]) == []
+        assert json_load_url(f"{base}/api/events") == []
+        assert json_load_url(f"{base}/api/upcoming") == []
+        assert json_load_url(f"{base}/api/alerts") == []
+        anonymous_calendar = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5).read().decode("utf-8")
+        token_calendar = urllib.request.urlopen(
+            f"{base}/calendar.ics?token={urllib.parse.quote(alice['token'])}", timeout=5
+        ).read().decode("utf-8")
+        assert "Alice Musical Tour" not in anonymous_calendar
+        assert "Alice Musical Tour" in token_calendar
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_authenticated_api_watch_and_source_mutations_are_user_scoped(tmp_path):
+    db_path = str(tmp_path / "api-owner-mutations.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_token = lm.issue_token(db_path, alice.id)
+    bob_token = lm.issue_token(db_path, bob.id)
+    watch = lm.add_watch(db_path, "Shared Show", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    lm.add_watch(db_path, "Shared Show", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        alice_source = post_form_with_token(
+            f"{base}/api/sources",
+            {"watch": str(watch.id), "url": "https://fan.example/alice", "label": "Alice FC", "private_note": "1"},
+            alice_token,
+        )
+        bob_source = post_form_with_token(
+            f"{base}/api/sources",
+            {"watch": str(watch.id), "url": "https://fan.example/bob", "label": "Bob FC", "private_note": "1"},
+            bob_token,
+        )
+
+        assert [source["label"] for source in _get_with_token(f"{base}/api/sources", alice_token)] == ["Alice FC"]
+        assert [source["label"] for source in _get_with_token(f"{base}/api/sources", bob_token)] == ["Bob FC"]
+        assert json_load_url(f"{base}/api/sources") == []
+        assert post_form_with_token(
+            f"{base}/api/sources/remove", {"identifier": str(bob_source["id"])}, alice_token
+        ) == {"removed": False}
+        assert [source["label"] for source in _get_with_token(f"{base}/api/sources", bob_token)] == ["Bob FC"]
+        assert post_form_with_token(
+            f"{base}/api/sources/remove", {"identifier": str(alice_source["id"])}, alice_token
+        ) == {"removed": True}
+        assert _get_with_token(f"{base}/api/sources", alice_token) == []
+
+        assert post_form_with_token(f"{base}/api/watchlist/remove", {"identifier": "Shared Show"}, alice_token) == {
+            "removed": True
+        }
+        assert _get_with_token(f"{base}/api/watchlist", alice_token) == []
+        assert [watch["keyword"] for watch in _get_with_token(f"{base}/api/watchlist", bob_token)] == ["Shared Show"]
+        assert _get_with_token(f"{base}/api/watchlist", bob_token)[0]["muted"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_anonymous_api_mutations_cannot_touch_authenticated_watches(tmp_path):
+    db_path = str(tmp_path / "api-anonymous-owner-boundary.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    alice_token = lm.issue_token(db_path, alice.id)
+    alice_watch = lm.add_watch(db_path, "Private Show", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    alice_source = lm.add_watch_source(
+        db_path,
+        str(alice_watch.id),
+        "https://fan.example/alice",
+        "Alice FC",
+        private_note=True,
+        user_id=alice.id,
+    )
+    alice_sub = lm.add_subscription(db_path, str(alice_watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, user_id=alice.id)
+
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert post_form(f"{base}/api/watchlist/remove", {"identifier": "Private Show"}) == {"removed": False}
+        assert post_form(f"{base}/api/watchlist/mute", {"identifier": "Private Show"}) == {"muted": False}
+        assert post_form(f"{base}/api/watchlist/unmute", {"identifier": "Private Show"}) == {"unmuted": False}
+        assert post_form(f"{base}/api/sources/remove", {"identifier": str(alice_source.id)}) == {"removed": False}
+        assert post_form(f"{base}/api/sources/mute", {"identifier": str(alice_source.id)}) == {"muted": False}
+        assert post_form(f"{base}/api/sources/unmute", {"identifier": str(alice_source.id)}) == {"unmuted": False}
+        assert post_form(f"{base}/api/subscriptions/remove", {"identifier": str(alice_sub.id)}) == {"removed": False}
+
+        with pytest.raises(urllib.error.HTTPError) as add_existing:
+            post_form(f"{base}/api/watchlist", {"keyword": "Private Show", "kind": "event"})
+        assert add_existing.value.code == 400
+
+        with pytest.raises(urllib.error.HTTPError) as add_source:
+            post_form(
+                f"{base}/api/sources",
+                {"watch": str(alice_watch.id), "url": "https://fan.example/anon", "label": "Anon"},
+            )
+        assert add_source.value.code == 400
+
+        with pytest.raises(urllib.error.HTTPError) as add_subscription:
+            post_form(f"{base}/api/subscriptions", {"watch": str(alice_watch.id), "scope": lm.NOTIFY_SCOPE_EVENT_ALL})
+        assert add_subscription.value.code == 400
+
+        assert [watch["keyword"] for watch in _get_with_token(f"{base}/api/watchlist", alice_token)] == ["Private Show"]
+        assert _get_with_token(f"{base}/api/watchlist", alice_token)[0]["muted"] is False
+        assert [source["label"] for source in _get_with_token(f"{base}/api/sources", alice_token)] == ["Alice FC"]
+        assert [sub["id"] for sub in _get_with_token(f"{base}/api/subscriptions", alice_token)] == [alice_sub.id]
+        assert json_load_url(f"{base}/api/watchlist") == []
+
+        anonymous_watch = post_form(f"{base}/api/watchlist", {"keyword": "Anonymous Show", "kind": "event"})
+        assert anonymous_watch["keyword"] == "Anonymous Show"
+        assert [watch["keyword"] for watch in json_load_url(f"{base}/api/watchlist")] == ["Anonymous Show"]
+        assert post_form_with_token(
+            f"{base}/api/watchlist", {"keyword": "Anonymous Show", "kind": "event"}, alice_token
+        )["keyword"] == "Anonymous Show"
+        assert [watch["keyword"] for watch in json_load_url(f"{base}/api/watchlist")] == ["Anonymous Show"]
+        assert [watch["keyword"] for watch in _get_with_token(f"{base}/api/watchlist", alice_token)] == [
+            "Private Show",
+            "Anonymous Show",
+        ]
+        assert post_form(f"{base}/api/watchlist/remove", {"identifier": "Anonymous Show"}) == {"removed": True}
+        assert [watch["keyword"] for watch in _get_with_token(f"{base}/api/watchlist", alice_token)] == [
+            "Private Show",
+            "Anonymous Show",
+        ]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -3389,15 +3654,170 @@ def post_form(url, values):
     return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))
 
 
+def post_form_with_token(url, values, token):
+    data = urllib.parse.urlencode(values).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))
+
+
 def post_text(url, values):
     data = urllib.parse.urlencode(values).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
     return urllib.request.urlopen(request, timeout=5).read().decode("utf-8")
 
 
+def post_text_with_token(url, token, values):
+    data = urllib.parse.urlencode(values).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    return urllib.request.urlopen(request, timeout=5).read().decode("utf-8")
+
+
 def _get_with_token(url, token):
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))
+
+
+def test_notification_api_scopes_authenticated_feed_subscriptions_and_devices(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notify-api-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_token = lm.issue_token(db_path, alice.id)
+    bob_token = lm.issue_token(db_path, bob.id)
+    alice_watch = lm.add_watch(db_path, "Shared Notify", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    bob_watch = lm.add_watch(db_path, "Shared Notify", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+    assert alice_watch.id == bob_watch.id
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Shared Notify"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=alice_watch.id,
+    )
+    alice_sub = lm.add_subscription(
+        db_path, str(alice_watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=alice.id
+    )
+    bob_sub = lm.add_subscription(
+        db_path, str(bob_watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=bob.id
+    )
+    lm.register_device(db_path, "alice-device", platform="ios", user_id=alice.id)
+    lm.register_device(db_path, "bob-device", platform="ios", user_id=bob.id)
+    sent_tokens = []
+
+    def fake_push(notification, devices):
+        sent_tokens.append((notification["subscription_id"], [device.token for device in devices]))
+        return True
+
+    monkeypatch.setattr(lm.notifications, "send_push_notification", fake_push)
+    lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00")
+    assert (alice_sub.id, ["alice-device"]) in sent_tokens
+    assert (bob_sub.id, ["bob-device"]) in sent_tokens
+
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        alice_feed = _get_with_token(f"{base}/api/notifications", alice_token)
+        bob_feed = _get_with_token(f"{base}/api/notifications", bob_token)
+        assert {item["event_title"] for item in alice_feed} == {"Shared Notify Tour"}
+        assert {item["event_title"] for item in bob_feed} == {"Shared Notify Tour"}
+
+        assert [sub["id"] for sub in _get_with_token(f"{base}/api/subscriptions", alice_token)] == [alice_sub.id]
+        assert [sub["id"] for sub in _get_with_token(f"{base}/api/subscriptions", bob_token)] == [bob_sub.id]
+
+        post_form(f"{base}/api/devices", {"token": "anon-device", "platform": "ios"})
+        assert [device["token"] for device in json_load_url(f"{base}/api/devices")] == ["anon-device"]
+        assert [device["token"] for device in _get_with_token(f"{base}/api/devices", alice_token)] == ["alice-device"]
+        assert [device["token"] for device in _get_with_token(f"{base}/api/devices", bob_token)] == ["bob-device"]
+        post_form(f"{base}/api/devices", {"token": "alice-device", "platform": "ios"})
+        assert [device["token"] for device in json_load_url(f"{base}/api/devices")] == ["anon-device"]
+        assert [device["token"] for device in _get_with_token(f"{base}/api/devices", alice_token)] == ["alice-device"]
+        assert json_load_url(f"{base}/api/subscriptions") == []
+        assert json_load_url(f"{base}/api/notifications") == []
+
+        assert post_form_with_token(
+            f"{base}/api/subscriptions/remove", {"identifier": str(bob_sub.id)}, alice_token
+        ) == {"removed": False}
+        assert [sub["id"] for sub in _get_with_token(f"{base}/api/subscriptions", bob_token)] == [bob_sub.id]
+        assert post_form(f"{base}/api/subscriptions/remove", {"identifier": str(bob_sub.id)}) == {"removed": False}
+        assert [sub["id"] for sub in _get_with_token(f"{base}/api/subscriptions", bob_token)] == [bob_sub.id]
+        assert post_form_with_token(
+            f"{base}/api/subscriptions/remove", {"identifier": str(alice_sub.id)}, alice_token
+        ) == {"removed": True}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_api_notifications_run_scopes_to_authenticated_user(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notify-api-run-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_token = lm.issue_token(db_path, alice.id)
+    bob_token = lm.issue_token(db_path, bob.id)
+    seen_user_ids = []
+
+    def fake_run_notifications(db_path, user_id=None):
+        seen_user_ids.append(user_id)
+        return [{"event_title": f"user {user_id}", "title": "Reminder"}]
+
+    monkeypatch.setattr(lm.web, "run_notifications", fake_run_notifications)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        alice_delivered = post_form_with_token(f"{base}/api/notifications/run", {}, alice_token)
+        bob_delivered = post_form_with_token(f"{base}/api/notifications/run", {}, bob_token)
+        anonymous_delivered = post_form(f"{base}/api/notifications/run", {})
+
+        assert alice_delivered == [{"event_title": f"user {alice.id}", "title": "Reminder"}]
+        assert bob_delivered == [{"event_title": f"user {bob.id}", "title": "Reminder"}]
+        assert anonymous_delivered == [{"event_title": "user 0", "title": "Reminder"}]
+        assert seen_user_ids == [alice.id, bob.id, 0]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_api_watch_run_scopes_to_authenticated_user(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "watch-api-run-scope.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_token = lm.issue_token(db_path, alice.id)
+    bob_token = lm.issue_token(db_path, bob.id)
+    seen_user_ids = []
+
+    def fake_run_watches(db_path, now=None, kind=None, user_id=None):
+        seen_user_ids.append(user_id)
+        return [{"type": "new_lottery_round", "keyword": f"user {user_id}"}]
+
+    monkeypatch.setattr(lm.web, "run_watches", fake_run_watches)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        alice_alerts = post_form_with_token(f"{base}/api/run", {}, alice_token)
+        bob_alerts = post_form_with_token(f"{base}/api/run", {}, bob_token)
+        anonymous_alerts = post_form(f"{base}/api/run", {})
+
+        assert alice_alerts == [{"type": "new_lottery_round", "keyword": f"user {alice.id}"}]
+        assert bob_alerts == [{"type": "new_lottery_round", "keyword": f"user {bob.id}"}]
+        assert anonymous_alerts == [{"type": "new_lottery_round", "keyword": "user 0"}]
+        assert seen_user_ids == [alice.id, bob.id, 0]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
 
 def test_web_auth_register_login_me_logout(tmp_path):

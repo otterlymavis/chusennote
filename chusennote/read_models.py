@@ -360,6 +360,14 @@ def recent_events(
                     "rounds": round_items,
                 }
             event["venue_label"] = venue_label(event)
+            event["event_locations"] = [
+                {"location": city or venue, "city": city, "venue": venue, "date": date}
+                for city, venue, date in tour_stops(
+                    [clean_text(str(value)) for value in event.get("venues", []) if clean_text(str(value))],
+                    [clean_text(str(value)) for value in event.get("event_dates", []) if clean_text(str(value))],
+                )
+                if city or venue
+            ]
             event["match_reasons"] = event_match_reasons(event)
             events.append(event)
         return events
