@@ -1,19 +1,55 @@
 import Foundation
 
+enum ChusennoteSettings {
+    static let baseURLKey = "baseURL"
+    static let apiTokenKey = "apiToken"
+    static let defaultBaseURL = "http://127.0.0.1:8877"
+
+    static var baseURL: String {
+        get {
+            UserDefaults.standard.string(forKey: baseURLKey) ?? defaultBaseURL
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: baseURLKey)
+        }
+    }
+
+    static var apiToken: String {
+        get {
+            UserDefaults.standard.string(forKey: apiTokenKey) ?? ""
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: apiTokenKey)
+        }
+    }
+}
+
 @MainActor
 final class ChusennoteStore: ObservableObject {
-    @Published var baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? "http://127.0.0.1:8877" {
+    @Published var baseURL = ChusennoteSettings.baseURL {
         didSet {
-            UserDefaults.standard.set(baseURL, forKey: "baseURL")
+            ChusennoteSettings.baseURL = baseURL
+        }
+    }
+    @Published var apiToken = ChusennoteSettings.apiToken {
+        didSet {
+            ChusennoteSettings.apiToken = apiToken
+            DeviceRegistration.registerSavedTokenIfPossible()
         }
     }
     @Published var watches: [Watch] = []
     @Published var events: [EventSummary] = []
     @Published var upcoming: [UpcomingItem] = []
     @Published var alerts: [AlertPayload] = []
+    @Published var notificationFeed: [NotificationFeedItem] = []
+    @Published var subscriptions: [NotificationSubscription] = []
+    @Published var devices: [DeviceToken] = []
     @Published var sources: [WatchSource] = []
     @Published var health: HealthSummary?
     @Published var errorMessage: String?
+    @Published var isRefreshing = false
+    @Published var isRunningChecks = false
+    @Published var isRunningNotifications = false
 
     var trackedArtists: [Watch] {
         watches.filter { !$0.muted && ($0.kind ?? "event") == "artist" }
@@ -36,23 +72,37 @@ final class ChusennoteStore: ObservableObject {
     }
 
     var calendarFeedURL: URL? {
-        URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics")
+        var components = URLComponents(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics")
+        let token = apiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !token.isEmpty {
+            components?.queryItems = [URLQueryItem(name: "token", value: token)]
+        }
+        return components?.url
     }
 
     func refresh() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
         do {
             async let fetchedWatches: [Watch] = fetch("/api/watchlist?include_muted=1")
             async let fetchedEvents: [EventSummary] = fetch("/api/events")
             async let fetchedUpcoming: [UpcomingItem] = fetch("/api/upcoming")
             async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
+            async let fetchedNotificationFeed: [NotificationFeedItem] = fetch("/api/notifications?limit=100")
+            async let fetchedSubscriptions: [NotificationSubscription] = fetch("/api/subscriptions")
+            async let fetchedDevices: [DeviceToken] = fetch("/api/devices")
             async let fetchedSources: [WatchSource] = fetch("/api/sources?include_muted=1")
             async let fetchedHealth: HealthSummary = fetch("/api/health")
             watches = try await fetchedWatches
             events = try await fetchedEvents
             upcoming = try await fetchedUpcoming
             alerts = try await fetchedAlerts
+            notificationFeed = try await fetchedNotificationFeed
+            subscriptions = try await fetchedSubscriptions
+            devices = try await fetchedDevices
             sources = try await fetchedSources
             health = try await fetchedHealth
+            DeviceRegistration.registerSavedTokenIfPossible()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -74,12 +124,21 @@ final class ChusennoteStore: ObservableObject {
                 URLQueryItem(name: "kind", value: kind),
                 URLQueryItem(name: "tags", value: tags),
                 URLQueryItem(name: "regions", value: regions),
-                URLQueryItem(name: "venues", value: venues)
+                URLQueryItem(name: "venues", value: venues),
+                URLQueryItem(name: "alerts", value: alerts)
             ]
-            if !alerts.isEmpty {
-                fields.queryItems?.append(URLQueryItem(name: "alerts", value: alerts))
-            }
-            let _: Watch = try await post("/api/watchlist", body: fields.percentEncodedQuery ?? "")
+            let _: Watch = try await post("/api/watchlist", body: formBody(fields))
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func runWatches(kind: String) async {
+        isRunningChecks = true
+        defer { isRunningChecks = false }
+        do {
+            let _: [AlertPayload] = try await post("/api/run", body: formBody([URLQueryItem(name: "kind", value: kind)]))
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -87,8 +146,18 @@ final class ChusennoteStore: ObservableObject {
     }
 
     func runEventWatches() async {
+        await runWatches(kind: "event")
+    }
+
+    func runArtistWatches() async {
+        await runWatches(kind: "artist")
+    }
+
+    func runNotifications() async {
+        isRunningNotifications = true
+        defer { isRunningNotifications = false }
         do {
-            let _: [AlertPayload] = try await post("/api/run", body: "kind=event")
+            let _: [NotificationFeedItem] = try await post("/api/notifications/run", body: "")
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -106,7 +175,7 @@ final class ChusennoteStore: ObservableObject {
             if privateNote {
                 fields.queryItems?.append(URLQueryItem(name: "private_note", value: "1"))
             }
-            let _: WatchSource = try await post("/api/sources", body: fields.percentEncodedQuery ?? "")
+            let _: WatchSource = try await post("/api/sources", body: formBody(fields))
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -115,7 +184,7 @@ final class ChusennoteStore: ObservableObject {
 
     func removeWatch(id: Int) async {
         do {
-            let _: RemoveResponse = try await post("/api/watchlist/remove", body: "identifier=\(id)")
+            let _: RemoveResponse = try await post("/api/watchlist/remove", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -124,7 +193,7 @@ final class ChusennoteStore: ObservableObject {
 
     func restoreWatch(id: Int) async {
         do {
-            let _: UnmuteResponse = try await post("/api/watchlist/unmute", body: "identifier=\(id)")
+            let _: UnmuteResponse = try await post("/api/watchlist/unmute", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -133,7 +202,7 @@ final class ChusennoteStore: ObservableObject {
 
     func removeSource(id: Int) async {
         do {
-            let _: RemoveResponse = try await post("/api/sources/remove", body: "identifier=\(id)")
+            let _: RemoveResponse = try await post("/api/sources/remove", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -142,7 +211,71 @@ final class ChusennoteStore: ObservableObject {
 
     func restoreSource(id: Int) async {
         do {
-            let _: UnmuteResponse = try await post("/api/sources/unmute", body: "identifier=\(id)")
+            let _: UnmuteResponse = try await post("/api/sources/unmute", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func addSubscription(
+        watch: String,
+        scope: String,
+        location: String = "",
+        roundKey: String = "",
+        channels: String = "feed,push",
+        leadDays: String = "7,1,0"
+    ) async {
+        do {
+            let _: NotificationSubscription = try await post(
+                "/api/subscriptions",
+                body: formBody([
+                    URLQueryItem(name: "watch", value: watch),
+                    URLQueryItem(name: "scope", value: scope),
+                    URLQueryItem(name: "location", value: location),
+                    URLQueryItem(name: "round_key", value: roundKey),
+                    URLQueryItem(name: "channels", value: channels),
+                    URLQueryItem(name: "lead_days", value: leadDays)
+                ])
+            )
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeSubscription(id: Int) async {
+        do {
+            let _: RemoveResponse = try await post("/api/subscriptions/remove", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func searchExactEvents(keyword: String) async -> [SearchResult] {
+        let query = formBody([URLQueryItem(name: "keyword", value: keyword), URLQueryItem(name: "limit", value: "6")])
+        do {
+            let results: [SearchResult] = try await fetch("/api/event/search?\(query)")
+            errorMessage = nil
+            return results
+        } catch {
+            errorMessage = error.localizedDescription
+            return []
+        }
+    }
+
+    func addExactEvent(keyword: String, title: String, url: String, snippet: String) async {
+        do {
+            let _: AddedEventResponse = try await post(
+                "/api/event/add",
+                body: formBody([
+                    URLQueryItem(name: "keyword", value: keyword),
+                    URLQueryItem(name: "title", value: title),
+                    URLQueryItem(name: "url", value: url),
+                    URLQueryItem(name: "snippet", value: snippet)
+                ])
+            )
             await refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -153,7 +286,7 @@ final class ChusennoteStore: ObservableObject {
         guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
             throw URLError(.badURL)
         }
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(for: request(url: url))
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw URLError(.badServerResponse)
         }
@@ -167,11 +300,34 @@ final class ChusennoteStore: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        applyAuthorization(to: &request)
         request.httpBody = body.data(using: .utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
             throw URLError(.badServerResponse)
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func formBody(_ queryItems: [URLQueryItem]) -> String {
+        var fields = URLComponents()
+        fields.queryItems = queryItems
+        return formBody(fields)
+    }
+
+    private func formBody(_ fields: URLComponents) -> String {
+        fields.percentEncodedQuery ?? ""
+    }
+
+    private func request(url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        applyAuthorization(to: &request)
+        return request
+    }
+
+    private func applyAuthorization(to request: inout URLRequest) {
+        let token = apiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 }

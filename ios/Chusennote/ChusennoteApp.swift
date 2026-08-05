@@ -28,10 +28,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Messaging.messaging().delegate = PushRegistrar.shared
         #endif
         UNUserNotificationCenter.current().delegate = self
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-            guard granted else { return }
-            DispatchQueue.main.async { application.registerForRemoteNotifications() }
-        }
+        PushNotifications.registerIfAuthorized(application: application)
         return true
     }
 
@@ -69,16 +66,58 @@ final class PushRegistrar: NSObject, MessagingDelegate {
 }
 #endif
 
+enum PushNotifications {
+    @MainActor
+    static func requestAuthorization(completion: (() -> Void)? = nil) {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            DispatchQueue.main.async {
+                if granted {
+                    UIApplication.shared.registerForRemoteNotifications()
+                }
+                completion?()
+            }
+        }
+    }
+
+    static func registerIfAuthorized(application: UIApplication) {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                return
+            }
+            DispatchQueue.main.async {
+                application.registerForRemoteNotifications()
+            }
+        }
+    }
+}
+
 /// Posts a push token to POST /api/devices using the saved base URL.
 enum DeviceRegistration {
+    private static let savedTokenKey = "iosPushToken"
+
     static func register(token: String) {
-        let base = (UserDefaults.standard.string(forKey: "baseURL") ?? "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        UserDefaults.standard.set(token, forKey: savedTokenKey)
+        post(token: token)
+    }
+
+    static func registerSavedTokenIfPossible() {
+        guard let token = UserDefaults.standard.string(forKey: savedTokenKey), !token.isEmpty else {
+            return
+        }
+        post(token: token)
+    }
+
+    private static func post(token: String) {
+        let base = ChusennoteSettings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         guard !base.isEmpty, let url = URL(string: base + "/api/devices") else { return }
         let encoded = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? token
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let apiToken = ChusennoteSettings.apiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !apiToken.isEmpty {
+            request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = "token=\(encoded)&platform=ios".data(using: .utf8)
         URLSession.shared.dataTask(with: request).resume()
     }
