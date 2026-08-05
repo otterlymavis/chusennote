@@ -1173,6 +1173,23 @@ def test_authenticated_email_notifications_do_not_use_global_recipient(tmp_path,
     assert authenticated[0]["delivered"]["email"] is False
 
 
+def test_anonymous_notification_run_respects_local_muted_watches(tmp_path):
+    db_path = str(tmp_path / "anonymous-muted-notifications.sqlite3")
+    watch = lm.add_watch(db_path, "Anon Muted", kind=lm.WATCH_KIND_EVENT, user_id=0, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Anon Muted"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(db_path, str(watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed", user_id=0)
+
+    assert lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0)
+    assert lm.set_watch_muted(db_path, str(watch.id), True, user_id=0) is True
+    assert lm.pending_notifications(db_path, now="2026-06-29T00:00:00+00:00", user_id=0) == []
+    assert lm.run_notifications(db_path, now="2026-06-29T00:00:00+00:00", user_id=0) == []
+
+
 def test_event_location_subscription_filters_rounds_by_city(tmp_path):
     db_path = tmp_path / "n.sqlite3"
     watch = lm.add_watch(str(db_path), "Tour", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")

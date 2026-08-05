@@ -131,7 +131,7 @@ def pending_notifications(
     if not subscriptions:
         return []
     events_by_watch: dict[int, list[dict[str, object]]] = {}
-    event_user_id = user_id if user_id and user_id > 0 else None
+    event_user_id = user_id if user_id is not None else None
     for event in recent_events(db_path, limit=500, user_id=event_user_id):
         events_by_watch.setdefault(int(event.get("watch_id") or 0), []).append(event)
 
