@@ -86,7 +86,15 @@ def verify_user(db_path: str, email: str, password: str) -> User | None:
             "SELECT id, email, created_at, password_hash, password_salt FROM users WHERE email = ?",
             (email,),
         ).fetchone()
-    if not row or not password_matches(password, str(row[3]), str(row[4])):
+    # Always run the pbkdf2 comparison, even for an unknown email, using a
+    # freshly-generated dummy hash/salt so a missing account can't be told
+    # apart from a wrong password by response timing.
+    if row:
+        password_hash, salt = str(row[3]), str(row[4])
+    else:
+        password_hash, salt = hash_password(secrets.token_urlsafe(16))
+    matches = password_matches(password, password_hash, salt)
+    if not row or not matches:
         return None
     return user_from_row(row)
 

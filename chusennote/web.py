@@ -413,8 +413,8 @@ def subscribe_button(
 
 def render_notifications_page(db_path: str) -> str:
     watches = {watch.id: watch.keyword for watch in list_watches(db_path, include_muted=True)}
-    subscriptions = list_subscriptions(db_path)
-    feed = notification_feed(db_path, limit=100)
+    subscriptions = list_subscriptions(db_path, user_id=0)
+    feed = notification_feed(db_path, limit=100, user_id=0)
     subscription_items = "".join(
         f"""
         <li>
@@ -1260,16 +1260,17 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         form.get("url", ""),
                         form.get("label", ""),
                         bool(form.get("private_note")),
+                        user_id=0,
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
                     return
                 redirect_response(self)
             elif path == "/source/remove":
-                remove_watch_source(db_path, form.get("identifier", ""))
+                remove_watch_source(db_path, form.get("identifier", ""), user_id=0)
                 redirect_response(self)
             elif path == "/source/unmute":
-                set_watch_source_muted(db_path, form.get("identifier", ""), False)
+                set_watch_source_muted(db_path, form.get("identifier", ""), False, user_id=0)
                 redirect_response(self)
             elif path == "/api/watchlist":
                 keyword = clean_text(form.get("keyword", ""))
@@ -1338,6 +1339,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         round_key=form.get("round_key", ""),
                         channels=form.get("channels", NOTIFY_CHANNEL_PRESET),
                         lead_days=form.get("lead_days", "7,1,0"),
+                        user_id=0,
                     )
                 except ValueError:
                     pass
@@ -1345,7 +1347,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/subscribe/remove":
                 identifier = form.get("identifier", "")
                 if str(identifier).isdigit():
-                    remove_subscription(db_path, int(identifier))
+                    remove_subscription(db_path, int(identifier), user_id=0)
                 redirect_response(self, form.get("redirect") or "/notifications")
             elif path == "/api/subscriptions":
                 try:
