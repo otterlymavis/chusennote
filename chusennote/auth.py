@@ -142,3 +142,34 @@ def revoke_token(db_path: str, token: str) -> None:
         connection.execute(
             "DELETE FROM api_tokens WHERE token_hash = ?", (token_fingerprint(token),)
         )
+
+
+def issue_calendar_token(db_path: str, user_id: int, now: str | None = None) -> str:
+    """Mint a calendar-only token for ``user_id``, replacing any existing one.
+
+    Kept in its own table (never consulted by ``user_for_token``) so it can be
+    embedded in a shareable ``/calendar.ics?token=...`` URL without handing out
+    full API access the way the regular bearer token would.
+    """
+    token = generate_token()
+    timestamp = now or utc_now_iso()
+    with connect(db_path) as connection:
+        init_db(connection)
+        connection.execute("DELETE FROM calendar_tokens WHERE user_id = ?", (user_id,))
+        connection.execute(
+            "INSERT INTO calendar_tokens(user_id, token_hash, created_at) VALUES (?, ?, ?)",
+            (user_id, token_fingerprint(token), timestamp),
+        )
+    return token
+
+
+def user_id_for_calendar_token(db_path: str, token: str | None) -> int | None:
+    if not token:
+        return None
+    fingerprint = token_fingerprint(token)
+    with connect(db_path) as connection:
+        init_db(connection)
+        row = connection.execute(
+            "SELECT user_id FROM calendar_tokens WHERE token_hash = ?", (fingerprint,)
+        ).fetchone()
+    return int(row[0]) if row else None

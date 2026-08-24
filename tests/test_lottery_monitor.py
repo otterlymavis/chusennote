@@ -3342,11 +3342,61 @@ def test_api_event_add_scopes_exact_event_to_authenticated_user(tmp_path, monkey
         assert json_load_url(f"{base}/api/upcoming") == []
         assert json_load_url(f"{base}/api/alerts") == []
         anonymous_calendar = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5).read().decode("utf-8")
+        # The calendar feed takes a calendar-only token (minted separately),
+        # not the account's full-access bearer token, so a leaked feed URL
+        # can't be replayed to mutate the account.
+        calendar_token = post_form_with_token(f"{base}/api/calendar/token", {}, alice["token"])["token"]
         token_calendar = urllib.request.urlopen(
+            f"{base}/calendar.ics?token={urllib.parse.quote(calendar_token)}", timeout=5
+        ).read().decode("utf-8")
+        bearer_as_calendar_token = urllib.request.urlopen(
             f"{base}/calendar.ics?token={urllib.parse.quote(alice['token'])}", timeout=5
         ).read().decode("utf-8")
         assert "Alice Musical Tour" not in anonymous_calendar
         assert "Alice Musical Tour" in token_calendar
+        assert "Alice Musical Tour" not in bearer_as_calendar_token
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_calendar_token_is_scoped_and_not_a_bearer_token(tmp_path):
+    db_path = str(tmp_path / "calendar-token.sqlite3")
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        registered = post_form(
+            f"{base}/api/auth/register",
+            {"email": "cal@example.com", "password": "correct horse battery"},
+        )
+        token = registered["token"]
+
+        # Minting requires authentication.
+        with pytest.raises(urllib.error.HTTPError) as unauthorized:
+            post_form(f"{base}/api/calendar/token", {})
+        assert unauthorized.value.code == 401
+
+        first_token = post_form_with_token(f"{base}/api/calendar/token", {}, token)["token"]
+        second_token = post_form_with_token(f"{base}/api/calendar/token", {}, token)["token"]
+        assert first_token != second_token
+
+        # Only one calendar token is live at a time; minting a new one revokes
+        # the old one (an unrecognized token just falls back to the anonymous
+        # calendar rather than erroring, same as an empty/missing token).
+        stale_feed = urllib.request.urlopen(
+            f"{base}/calendar.ics?token={urllib.parse.quote(first_token)}", timeout=5
+        ).read()
+        anonymous_feed = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5).read()
+        assert stale_feed == anonymous_feed
+        urllib.request.urlopen(f"{base}/calendar.ics?token={urllib.parse.quote(second_token)}", timeout=5)
+
+        # A calendar token carries no API privileges: used as a bearer token it
+        # is simply unauthenticated, not the account it was minted for.
+        with pytest.raises(urllib.error.HTTPError) as bearer_misuse:
+            _get_with_token(f"{base}/api/auth/me", second_token)
+        assert bearer_misuse.value.code == 401
     finally:
         server.shutdown()
         thread.join(timeout=5)

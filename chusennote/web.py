@@ -1178,8 +1178,15 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/calendar.ics":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
                 token = clean_text(query.get("token", [""])[0])
-                user = user_for_token(db_path, token) if token else self.authenticated_user()
-                user_id = user.id if user else 0
+                # The query-string token is a calendar-only token (its own table,
+                # unrelated to api_tokens) so a leaked feed URL can't be replayed
+                # as a full-access bearer token; the Authorization header path
+                # still checks the regular account token.
+                if token:
+                    user_id = user_id_for_calendar_token(db_path, token) or 0
+                else:
+                    user = self.authenticated_user()
+                    user_id = user.id if user else 0
                 text_response(
                     self,
                     render_calendar_ics(db_path, include_muted_watches=include_muted, user_id=user_id),
@@ -1373,6 +1380,12 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     else False
                 )
                 json_response(self, {"removed": removed})
+            elif path == "/api/calendar/token":
+                user_id = self.notification_user_id()
+                if user_id <= 0:
+                    json_response(self, {"error": "unauthorized"}, status=401)
+                    return
+                json_response(self, {"token": issue_calendar_token(db_path, user_id)})
             elif path == "/api/devices":
                 try:
                     device = register_device(

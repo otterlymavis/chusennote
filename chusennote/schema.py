@@ -402,6 +402,19 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
 
+        -- A separate, low-privilege token scoped to GET /calendar.ics only: it
+        -- lives in its own table (never checked by user_for_token) so it can be
+        -- put in a shareable subscription URL without carrying full API access
+        -- the way an api_tokens bearer token would. One active token per user;
+        -- issuing a new one replaces the old.
+        CREATE TABLE IF NOT EXISTS calendar_tokens (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL UNIQUE,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
         -- Per-user subscriptions to the shared canonical watched_keywords rows:
         -- a popular keyword is one row (scraped once); each user subscribes to it.
         CREATE TABLE IF NOT EXISTS user_watches (
