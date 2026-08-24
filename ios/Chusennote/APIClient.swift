@@ -3,6 +3,7 @@ import Foundation
 enum ChusennoteSettings {
     static let baseURLKey = "baseURL"
     static let apiTokenKey = "apiToken"
+    static let calendarTokenKey = "calendarToken"
     static let defaultBaseURL = "http://127.0.0.1:8877"
 
     static var baseURL: String {
@@ -15,12 +16,27 @@ enum ChusennoteSettings {
     }
 
     static var apiToken: String {
-        get {
-            UserDefaults.standard.string(forKey: apiTokenKey) ?? ""
+        get { migratedAPIToken() }
+        set { KeychainStore.set(newValue, forKey: apiTokenKey) }
+    }
+
+    static var calendarToken: String {
+        get { KeychainStore.string(forKey: calendarTokenKey) ?? "" }
+        set { KeychainStore.set(newValue, forKey: calendarTokenKey) }
+    }
+
+    /// One-time migration off the old UserDefaults-backed token (a full-access
+    /// credential that plist storage isn't a safe place for) into the Keychain.
+    private static func migratedAPIToken() -> String {
+        if let existing = KeychainStore.string(forKey: apiTokenKey) {
+            return existing
         }
-        set {
-            UserDefaults.standard.set(newValue, forKey: apiTokenKey)
+        if let legacy = UserDefaults.standard.string(forKey: apiTokenKey), !legacy.isEmpty {
+            KeychainStore.set(legacy, forKey: apiTokenKey)
+            UserDefaults.standard.removeObject(forKey: apiTokenKey)
+            return legacy
         }
+        return ""
     }
 }
 
@@ -34,7 +50,16 @@ final class ChusennoteStore: ObservableObject {
     @Published var apiToken = ChusennoteSettings.apiToken {
         didSet {
             ChusennoteSettings.apiToken = apiToken
+            // The cached calendar token belongs to whichever account was
+            // signed in when it was minted; drop it so a stale one from a
+            // previous account/server is never reused after switching.
+            calendarToken = ""
             DeviceRegistration.registerSavedTokenIfPossible()
+        }
+    }
+    @Published var calendarToken = ChusennoteSettings.calendarToken {
+        didSet {
+            ChusennoteSettings.calendarToken = calendarToken
         }
     }
     @Published var watches: [Watch] = []
@@ -71,13 +96,37 @@ final class ChusennoteStore: ObservableObject {
         sources.filter { $0.muted }
     }
 
-    var calendarFeedURL: URL? {
-        var components = URLComponents(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics")
-        let token = apiToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !token.isEmpty {
-            components?.queryItems = [URLQueryItem(name: "token", value: token)]
+    /// The calendar subscription URL, authorized with a calendar-only token
+    /// (never the full-access API token) so a leaked/shared link can't be
+    /// replayed to mutate the account. Mints one on first use via
+    /// POST /api/calendar/token and caches it; call again after switching
+    /// accounts or servers to pick up a fresh one.
+    func calendarFeedURL() async -> URL? {
+        guard var components = URLComponents(
+            string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics"
+        ) else {
+            return nil
         }
-        return components?.url
+        guard !apiToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return components.url
+        }
+        if calendarToken.isEmpty {
+            await refreshCalendarToken()
+        }
+        if !calendarToken.isEmpty {
+            components.queryItems = [URLQueryItem(name: "token", value: calendarToken)]
+        }
+        return components.url
+    }
+
+    private func refreshCalendarToken() async {
+        do {
+            let response: CalendarTokenResponse = try await post("/api/calendar/token", body: "")
+            calendarToken = response.token
+        } catch {
+            // Leave calendarToken empty; the feed falls back to the anonymous
+            // workspace rather than failing outright.
+        }
     }
 
     func refresh() async {

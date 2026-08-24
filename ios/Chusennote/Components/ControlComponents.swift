@@ -49,20 +49,28 @@ struct IconActionButton: View {
 struct AppTextField: View {
     let title: String
     @Binding var text: String
+    var isSecure: Bool = false
 
-    init(_ title: String, text: Binding<String>) {
+    init(_ title: String, text: Binding<String>, isSecure: Bool = false) {
         self.title = title
         self._text = text
+        self.isSecure = isSecure
     }
 
     var body: some View {
-        TextField(title, text: $text)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 10)
-            .background(Color(.tertiarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: Radius.small, style: .continuous))
+        Group {
+            if isSecure {
+                SecureField(title, text: $text)
+            } else {
+                TextField(title, text: $text)
+            }
+        }
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, 10)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.small, style: .continuous))
     }
 }
 

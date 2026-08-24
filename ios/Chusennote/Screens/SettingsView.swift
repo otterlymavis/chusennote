@@ -22,7 +22,7 @@ struct SettingsView: View {
             LazyVStack(alignment: .leading, spacing: Spacing.lg) {
                 NotificationSection(title: "Server", icon: "server.rack", accent: .info) {
                     AppTextField("Base URL", text: $store.baseURL)
-                    AppTextField("API token", text: $store.apiToken)
+                    AppTextField("API token", text: $store.apiToken, isSecure: true)
                     Button {
                         Task { await store.refresh() }
                     } label: {
@@ -65,13 +65,15 @@ struct SettingsView: View {
                     .buttonStyle(.bordered)
                     .disabled(store.isRunningNotifications)
 
-                    if let calendarURL = store.calendarFeedURL {
-                        Button {
-                            openURL(calendarURL)
-                        } label: {
-                            Label("Open Calendar Feed", systemImage: "calendar")
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        Task {
+                            if let calendarURL = await store.calendarFeedURL() {
+                                openURL(calendarURL)
+                            }
                         }
+                    } label: {
+                        Label("Open Calendar Feed", systemImage: "calendar")
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
                     if store.devices.isEmpty {

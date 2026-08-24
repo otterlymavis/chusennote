@@ -287,6 +287,10 @@ struct AddedEventResponse: Codable {
     let alerts: [AlertPayload]?
 }
 
+struct CalendarTokenResponse: Codable {
+    let token: String
+}
+
 struct SearchResult: Codable, Identifiable {
     var id: String { url }
     let title: String
