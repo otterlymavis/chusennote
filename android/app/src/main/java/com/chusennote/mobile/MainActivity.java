@@ -12,6 +12,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
+import android.text.method.PasswordTransformationMethod;
 
 import com.google.firebase.messaging.FirebaseMessaging;
 import android.view.View;
@@ -41,6 +43,9 @@ public class MainActivity extends Activity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private EditText baseUrlInput;
+    private TextView accountStatusText;
+    private EditText emailInput;
+    private EditText passwordInput;
     private EditText artistInput;
     private EditText artistTagsInput;
     private EditText artistRegionsInput;
@@ -70,6 +75,7 @@ public class MainActivity extends Activity {
         ensureNotificationChannel();
         requestNotificationPermissionIfNeeded();
         registerPushToken();
+        refreshAccountStatus();
         refresh();
     }
 
@@ -139,6 +145,36 @@ public class MainActivity extends Activity {
         calendar.setText("Open Calendar Feed");
         calendar.setOnClickListener(view -> openCalendarFeed());
         root.addView(calendar);
+
+        root.addView(section("Account"));
+        accountStatusText = body("Not signed in.");
+        root.addView(accountStatusText);
+        emailInput = new EditText(this);
+        emailInput.setSingleLine(true);
+        emailInput.setHint("Email");
+        emailInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        root.addView(emailInput);
+        passwordInput = new EditText(this);
+        passwordInput.setSingleLine(true);
+        passwordInput.setHint("Password");
+        passwordInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        passwordInput.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        root.addView(passwordInput);
+        LinearLayout accountButtons = new LinearLayout(this);
+        accountButtons.setOrientation(LinearLayout.HORIZONTAL);
+        Button registerButton = new Button(this);
+        registerButton.setText("Register");
+        registerButton.setOnClickListener(view -> registerAccount());
+        accountButtons.addView(registerButton);
+        Button loginButton = new Button(this);
+        loginButton.setText("Log In");
+        loginButton.setOnClickListener(view -> loginAccount());
+        accountButtons.addView(loginButton);
+        Button logoutButton = new Button(this);
+        logoutButton.setText("Log Out");
+        logoutButton.setOnClickListener(view -> logoutAccount());
+        accountButtons.addView(logoutButton);
+        root.addView(accountButtons);
 
         root.addView(section("Tracked Artists"));
         artistInput = new EditText(this);
@@ -263,8 +299,28 @@ public class MainActivity extends Activity {
             statusText.setText("Enter the API base URL first.");
             return;
         }
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(baseUrl + "/calendar.ics"));
-        startActivity(intent);
+        if (SecureTokenStore.apiToken(getApplicationContext()).isEmpty()) {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(baseUrl + "/calendar.ics")));
+            return;
+        }
+        // Signed-in: authorize the feed with a calendar-only token (minted
+        // separately from, and unusable as, the account's full API token) so
+        // this shareable URL can't be replayed to mutate the account.
+        executor.execute(() -> {
+            try {
+                String calendarToken = SecureTokenStore.calendarToken(getApplicationContext());
+                if (calendarToken.isEmpty()) {
+                    calendarToken = new JSONObject(postForm("/api/calendar/token", "")).getString("token");
+                    SecureTokenStore.setCalendarToken(getApplicationContext(), calendarToken);
+                }
+                Uri uri = Uri.parse(baseUrl + "/calendar.ics").buildUpon()
+                        .appendQueryParameter("token", calendarToken)
+                        .build();
+                mainHandler.post(() -> startActivity(new Intent(Intent.ACTION_VIEW, uri)));
+            } catch (Exception error) {
+                mainHandler.post(() -> statusText.setText("Could not open calendar feed: " + error.getMessage()));
+            }
+        });
     }
 
     private void openUrl(String url) {
@@ -436,6 +492,7 @@ public class MainActivity extends Activity {
         connection.setRequestMethod("GET");
         connection.setConnectTimeout(5000);
         connection.setReadTimeout(5000);
+        applyAuthorization(connection);
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
             StringBuilder body = new StringBuilder();
             String line;
@@ -456,6 +513,7 @@ public class MainActivity extends Activity {
         connection.setReadTimeout(30000);
         connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
         connection.setRequestProperty("Content-Length", String.valueOf(data.length));
+        applyAuthorization(connection);
         try (OutputStream output = connection.getOutputStream()) {
             output.write(data);
         }
@@ -469,12 +527,94 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Attaches the signed-in account's bearer token, if any, to a request. */
+    private void applyAuthorization(HttpURLConnection connection) {
+        String token = SecureTokenStore.apiToken(getApplicationContext());
+        if (!token.isEmpty()) {
+            connection.setRequestProperty("Authorization", "Bearer " + token);
+        }
+    }
+
     private JSONArray postJsonArray(String path, String body) throws Exception {
         return new JSONArray(postForm(path, body));
     }
 
     private String encode(String value) throws Exception {
         return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
+    }
+
+    private void registerAccount() {
+        submitAccountForm("Registering...", "/api/auth/register", "Could not register: ");
+    }
+
+    private void loginAccount() {
+        submitAccountForm("Logging in...", "/api/auth/login", "Could not log in: ");
+    }
+
+    private void submitAccountForm(String progressMessage, String path, String errorPrefix) {
+        String email = emailInput.getText().toString().trim();
+        String password = passwordInput.getText().toString();
+        if (email.isEmpty() || password.isEmpty()) {
+            statusText.setText("Enter an email and password first.");
+            return;
+        }
+        accountStatusText.setText(progressMessage);
+        executor.execute(() -> {
+            try {
+                String body = "email=" + encode(email) + "&password=" + encode(password);
+                JSONObject response = new JSONObject(postForm(path, body));
+                String token = response.getString("token");
+                String signedInEmail = response.getJSONObject("user").getString("email");
+                SecureTokenStore.setApiToken(getApplicationContext(), token);
+                mainHandler.post(() -> {
+                    passwordInput.setText("");
+                    accountStatusText.setText("Signed in as " + signedInEmail);
+                    registerPushToken();
+                    refresh();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> accountStatusText.setText(errorPrefix + error.getMessage()));
+            }
+        });
+    }
+
+    private void logoutAccount() {
+        boolean wasSignedIn = !SecureTokenStore.apiToken(getApplicationContext()).isEmpty();
+        if (!wasSignedIn) {
+            accountStatusText.setText("Not signed in.");
+            return;
+        }
+        accountStatusText.setText("Signing out...");
+        executor.execute(() -> {
+            try {
+                postForm("/api/auth/logout", "");
+            } catch (Exception ignored) {
+                // Best effort: still clear the local token even if the
+                // revoke call itself failed (e.g. offline).
+            }
+            SecureTokenStore.setApiToken(getApplicationContext(), "");
+            mainHandler.post(() -> {
+                accountStatusText.setText("Not signed in.");
+                refresh();
+            });
+        });
+    }
+
+    private void refreshAccountStatus() {
+        if (SecureTokenStore.apiToken(getApplicationContext()).isEmpty()) {
+            accountStatusText.setText("Not signed in.");
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                String email = new JSONObject(getText("/api/auth/me")).getString("email");
+                mainHandler.post(() -> accountStatusText.setText("Signed in as " + email));
+            } catch (Exception error) {
+                // Token expired or was revoked server-side: drop it locally too.
+                SecureTokenStore.setApiToken(getApplicationContext(), "");
+                mainHandler.post(() -> accountStatusText.setText("Not signed in."));
+            }
+        });
     }
 
     private void render(JSONArray watches, JSONArray events, JSONArray upcoming, JSONArray alerts, JSONArray sources, JSONObject health) {

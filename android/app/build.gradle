@@ -18,6 +18,10 @@ android {
 dependencies {
     implementation platform("com.google.firebase:firebase-bom:33.5.1")
     implementation "com.google.firebase:firebase-messaging"
+    // Keystore-backed encrypted storage for the account's bearer token (a
+    // full-access credential that plain SharedPreferences' unencrypted XML
+    // file isn't a safe place for).
+    implementation "androidx.security:security-crypto:1.1.0-alpha06"
 }
 
 // Apply Firebase's google-services plugin only once you have added

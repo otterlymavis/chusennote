@@ -70,6 +70,10 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
         if (baseUrl.isEmpty()) {
             return;
         }
+        // Read outside the background thread: SecureTokenStore.apiToken()
+        // only needs a Context, which is safe to use immediately here too,
+        // but resolving it up front keeps the request-building block plain.
+        String apiToken = SecureTokenStore.apiToken(context.getApplicationContext());
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
@@ -83,6 +87,9 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
                 connection.setConnectTimeout(10000);
                 connection.setReadTimeout(10000);
                 connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+                if (!apiToken.isEmpty()) {
+                    connection.setRequestProperty("Authorization", "Bearer " + apiToken);
+                }
                 try (OutputStream stream = connection.getOutputStream()) {
                     stream.write(body.getBytes(StandardCharsets.UTF_8));
                 }

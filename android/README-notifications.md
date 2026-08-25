@@ -38,6 +38,12 @@ If a channel is unconfigured it silently no-ops; the in-app feed
 
 ## 3. Android
 
+The app's Account section (Register/Log In) is optional but recommended once
+you're pointing it at a shared/hosted backend rather than a personal local
+server: signing in scopes your watches, sources, subscriptions, and this
+device's push registration to your account instead of the single shared
+anonymous workspace every signed-out install shares.
+
 1. Download `google-services.json` from the Firebase console and place it at
    `android/app/google-services.json`.
 2. Build & run. The app requests the notification permission, creates the
