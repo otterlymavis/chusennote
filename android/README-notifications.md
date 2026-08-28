@@ -44,6 +44,8 @@ server: signing in scopes your watches, sources, subscriptions, and this
 device's push registration to your account instead of the single shared
 anonymous workspace every signed-out install shares.
 
+Temporary failures checking account status also preserve the saved login.
+
 1. Download `google-services.json` from the Firebase console and place it at
    `android/app/google-services.json`.
 2. Build & run. The app requests the notification permission, creates the

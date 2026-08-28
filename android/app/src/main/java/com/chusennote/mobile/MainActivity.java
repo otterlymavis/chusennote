@@ -28,6 +28,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
@@ -493,6 +494,11 @@ public class MainActivity extends Activity {
         connection.setConnectTimeout(5000);
         connection.setReadTimeout(5000);
         applyAuthorization(connection);
+        int responseCode = connection.getResponseCode();
+        if (responseCode < 200 || responseCode >= 300) {
+            connection.disconnect();
+            throw new HttpStatusException(responseCode);
+        }
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
             StringBuilder body = new StringBuilder();
             String line;
@@ -500,6 +506,17 @@ public class MainActivity extends Activity {
                 body.append(line);
             }
             return body.toString();
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static final class HttpStatusException extends IOException {
+        final int statusCode;
+
+        HttpStatusException(int statusCode) {
+            super("HTTP " + statusCode);
+            this.statusCode = statusCode;
         }
     }
 
@@ -610,9 +627,13 @@ public class MainActivity extends Activity {
                 String email = new JSONObject(getText("/api/auth/me")).getString("email");
                 mainHandler.post(() -> accountStatusText.setText("Signed in as " + email));
             } catch (Exception error) {
-                // Token expired or was revoked server-side: drop it locally too.
-                SecureTokenStore.setApiToken(getApplicationContext(), "");
-                mainHandler.post(() -> accountStatusText.setText("Not signed in."));
+                if (error instanceof HttpStatusException && ((HttpStatusException) error).statusCode == 401) {
+                    SecureTokenStore.setApiToken(getApplicationContext(), "");
+                    mainHandler.post(() -> accountStatusText.setText("Not signed in."));
+                } else {
+                    mainHandler.post(() -> accountStatusText.setText(
+                            "Could not verify account. Login saved; try again when the server is available."));
+                }
             }
         });
     }
