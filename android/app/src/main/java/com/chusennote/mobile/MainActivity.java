@@ -16,6 +16,7 @@ import android.text.InputType;
 import android.text.method.PasswordTransformationMethod;
 
 import com.google.firebase.messaging.FirebaseMessaging;
+import com.google.android.gms.tasks.Tasks;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -37,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.net.URLEncoder;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private static final String PREFS_NAME = "chusennote";
@@ -604,16 +606,36 @@ public class MainActivity extends Activity {
         accountStatusText.setText("Signing out...");
         executor.execute(() -> {
             try {
-                postForm("/api/auth/logout", "");
-            } catch (Exception ignored) {
-                // Best effort: still clear the local token even if the
-                // revoke call itself failed (e.g. offline).
+                synchronized (ChusennoteMessagingService.REGISTRATION_LOCK) {
+                    String pushToken = ChusennoteMessagingService.savedToken(getApplicationContext());
+                    if (pushToken.isEmpty()) {
+                        // Upgrades may predate our persisted FCM token. Resolve
+                        // it before logout rather than leave that registration.
+                        FirebaseMessaging messaging = null;
+                        try {
+                            messaging = FirebaseMessaging.getInstance();
+                        } catch (IllegalStateException notConfigured) {
+                            // Builds without Firebase have no push registration.
+                        }
+                        if (messaging != null) {
+                            pushToken = Tasks.await(messaging.getToken(), 10, TimeUnit.SECONDS);
+                        }
+                    }
+                    JSONObject response = new JSONObject(postForm(
+                            "/api/auth/logout", "device_token=" + encode(pushToken)));
+                    if (!pushToken.isEmpty() && !response.optBoolean("device_detached")) {
+                        throw new IOException("Update the server to detach this push device before signing out.");
+                    }
+                    SecureTokenStore.setApiToken(getApplicationContext(), "");
+                }
+                mainHandler.post(() -> {
+                    accountStatusText.setText("Not signed in.");
+                    refresh();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> accountStatusText.setText(
+                        "Could not finish signing out. Reconnect and retry: " + error.getMessage()));
             }
-            SecureTokenStore.setApiToken(getApplicationContext(), "");
-            mainHandler.post(() -> {
-                accountStatusText.setText("Not signed in.");
-                refresh();
-            });
         });
     }
 

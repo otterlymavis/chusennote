@@ -136,12 +136,34 @@ def user_for_token(db_path: str, token: str | None, now: str | None = None) -> U
     return user_from_row(row)
 
 
-def revoke_token(db_path: str, token: str) -> None:
+def revoke_token(db_path: str, token: str, device_token: str = "") -> bool:
     with connect(db_path) as connection:
         init_db(connection)
+        # Detach only this session's device, never another account's or the
+        # user's other devices. Keep detachment and revocation atomic.
+        if device_token:
+            owner = connection.execute(
+                "SELECT user_id FROM api_tokens WHERE token_hash = ?", (token_fingerprint(token),)
+            ).fetchone()
+            if owner is None and connection.execute(
+                "SELECT 1 FROM device_tokens WHERE token = ? AND user_id > 0", (device_token,)
+            ).fetchone():
+                return False
+            # A retry after a lost logout response is safe once this device is
+            # no longer registered to an account, even though auth was revoked.
+            connection.execute(
+                """
+                DELETE FROM device_tokens
+                WHERE token = ? AND user_id = (
+                    SELECT user_id FROM api_tokens WHERE token_hash = ?
+                )
+                """,
+                (device_token, token_fingerprint(token)),
+            )
         connection.execute(
             "DELETE FROM api_tokens WHERE token_hash = ?", (token_fingerprint(token),)
         )
+    return True
 
 
 def issue_calendar_token(

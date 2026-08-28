@@ -1214,8 +1214,11 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 token = issue_token(db_path, user.id)
                 json_response(self, {"token": token, "user": dataclasses.asdict(user)})
             elif path == "/api/auth/logout":
-                revoke_token(db_path, self.bearer_token())
-                json_response(self, {"revoked": True})
+                device_token = clean_text(form.get("device_token", ""))
+                if not revoke_token(db_path, self.bearer_token(), device_token):
+                    json_response(self, {"error": "unauthorized"}, status=401)
+                    return
+                json_response(self, {"revoked": True, "device_detached": True})
             elif path == "/watch/add":
                 keyword = clean_text(form.get("keyword", ""))
                 if not keyword:

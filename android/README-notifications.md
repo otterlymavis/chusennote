@@ -44,6 +44,10 @@ server: signing in scopes your watches, sources, subscriptions, and this
 device's push registration to your account instead of the single shared
 anonymous workspace every signed-out install shares.
 
+Deploy the updated backend before the Android client: logout now sends this
+device's FCM token to `/api/auth/logout` and requires confirmation that it was
+detached before clearing the login. If the server cannot be reached, logout
+shows a retry message and retains the credential so detachment can be retried.
 Temporary failures checking account status also preserve the saved login.
 
 1. Download `google-services.json` from the Firebase console and place it at

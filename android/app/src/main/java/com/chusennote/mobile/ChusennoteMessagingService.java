@@ -25,6 +25,15 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
     static final String CHANNEL_ID = "chusennote_reminders";
     private static final String PREFS_NAME = "chusennote";
     private static final String PREF_BASE_URL = "base_url";
+    private static final String PREF_PUSH_TOKEN = "push_token";
+    // Registration must finish before logout detaches the device, and queued
+    // registrations must read the cleared credential after logout completes.
+    static final Object REGISTRATION_LOCK = new Object();
+
+    static String savedToken(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(PREF_PUSH_TOKEN, "");
+    }
 
     @Override
     public void onNewToken(String token) {
@@ -65,42 +74,46 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
         if (token == null || token.isEmpty()) {
             return;
         }
+        new Thread(() -> {
+            synchronized (REGISTRATION_LOCK) {
+                registerTokenLocked(context, token);
+            }
+        }).start();
+    }
+
+    private static void registerTokenLocked(Context context, String token) {
         SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        preferences.edit().putString(PREF_PUSH_TOKEN, token).apply();
         String baseUrl = preferences.getString(PREF_BASE_URL, "").trim().replaceAll("/+$", "");
         if (baseUrl.isEmpty()) {
             return;
         }
-        // Read outside the background thread: SecureTokenStore.apiToken()
-        // only needs a Context, which is safe to use immediately here too,
-        // but resolving it up front keeps the request-building block plain.
         String apiToken = SecureTokenStore.apiToken(context.getApplicationContext());
-        new Thread(() -> {
-            HttpURLConnection connection = null;
-            try {
-                String body = "token=" + URLEncoder.encode(token, "UTF-8")
-                        + "&platform=android"
-                        + "&label=" + URLEncoder.encode(android.os.Build.MODEL, "UTF-8");
-                URL url = new URL(baseUrl + "/api/devices");
-                connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("POST");
-                connection.setDoOutput(true);
-                connection.setConnectTimeout(10000);
-                connection.setReadTimeout(10000);
-                connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-                if (!apiToken.isEmpty()) {
-                    connection.setRequestProperty("Authorization", "Bearer " + apiToken);
-                }
-                try (OutputStream stream = connection.getOutputStream()) {
-                    stream.write(body.getBytes(StandardCharsets.UTF_8));
-                }
-                connection.getResponseCode();
-            } catch (Exception ignored) {
-                // Best effort: a failed registration is retried on the next launch.
-            } finally {
-                if (connection != null) {
-                    connection.disconnect();
-                }
+        HttpURLConnection connection = null;
+        try {
+            String body = "token=" + URLEncoder.encode(token, "UTF-8")
+                    + "&platform=android"
+                    + "&label=" + URLEncoder.encode(android.os.Build.MODEL, "UTF-8");
+            URL url = new URL(baseUrl + "/api/devices");
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+            if (!apiToken.isEmpty()) {
+                connection.setRequestProperty("Authorization", "Bearer " + apiToken);
             }
-        }).start();
+            try (OutputStream stream = connection.getOutputStream()) {
+                stream.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+            connection.getResponseCode();
+        } catch (Exception ignored) {
+            // Best effort: a failed registration is retried on the next launch.
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
     }
 }

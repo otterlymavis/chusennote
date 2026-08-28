@@ -3983,6 +3983,46 @@ def test_web_auth_register_login_me_logout(tmp_path):
         server.shutdown()
 
 
+def test_logout_detaches_only_the_authenticated_accounts_selected_device(tmp_path):
+    db_path = str(tmp_path / "logout-device.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "correct horse battery")
+    bob = lm.create_user(db_path, "bob@example.com", "correct horse battery")
+    alice_token = lm.issue_token(db_path, alice.id)
+    other_session = lm.issue_token(db_path, alice.id)
+    bob_token = lm.issue_token(db_path, bob.id)
+    lm.register_device(db_path, "alice-phone", user_id=alice.id)
+    lm.register_device(db_path, "alice-tablet", user_id=alice.id)
+    lm.register_device(db_path, "bob-phone", user_id=bob.id)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as anonymous:
+            post_form(f"{base}/api/auth/logout", {"device_token": "alice-phone"})
+        assert anonymous.value.code == 401
+        # A different account cannot remove Alice's registration.
+        post_form_with_token(f"{base}/api/auth/logout", {"device_token": "alice-phone"}, bob_token)
+        assert {d.token for d in lm.list_devices(db_path, user_id=alice.id)} == {"alice-phone", "alice-tablet"}
+
+        result = post_form_with_token(f"{base}/api/auth/logout", {"device_token": "alice-phone"}, alice_token)
+        assert result == {"revoked": True, "device_detached": True}
+        assert lm.user_for_token(db_path, alice_token) is None
+        assert lm.user_for_token(db_path, other_session).id == alice.id
+        assert {d.token for d in lm.list_devices(db_path, user_id=alice.id)} == {"alice-tablet"}
+        assert {d.token for d in lm.list_devices(db_path, user_id=bob.id)} == {"bob-phone"}
+        post_form(f"{base}/api/devices", {"token": "alice-phone", "platform": "android"})
+        assert {d.token for d in lm.list_devices(db_path, user_id=alice.id)} == {"alice-tablet"}
+        # Retrying after a lost response is harmless even with revoked auth
+        # and a queued anonymous registration from the signed-out app.
+        retry = post_form_with_token(f"{base}/api/auth/logout", {"device_token": "alice-phone"}, alice_token)
+        assert retry["device_detached"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_official_score_ranks_cjk_official_above_noise():
     keyword = "ミュージカル『ディア・エヴァン・ハンセン』"
     official = lm.SearchResult(
