@@ -45,6 +45,9 @@ final class ChusennoteStore: ObservableObject {
     @Published var baseURL = ChusennoteSettings.baseURL {
         didSet {
             ChusennoteSettings.baseURL = baseURL
+            if baseURL != oldValue {
+                calendarToken = ""
+            }
         }
     }
     @Published var apiToken = ChusennoteSettings.apiToken {
@@ -102,6 +105,8 @@ final class ChusennoteStore: ObservableObject {
     /// POST /api/calendar/token and caches it; call again after switching
     /// accounts or servers to pick up a fresh one.
     func calendarFeedURL() async -> URL? {
+        let requestedBaseURL = baseURL
+        let requestedAPIToken = apiToken
         guard var components = URLComponents(
             string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/calendar.ics"
         ) else {
@@ -111,22 +116,23 @@ final class ChusennoteStore: ObservableObject {
             return components.url
         }
         if calendarToken.isEmpty {
-            await refreshCalendarToken()
+            do {
+                let response: CalendarTokenResponse = try await post("/api/calendar/token", body: "")
+                // Settings may change while the request is suspended. Never
+                // cache a response or open a URL for a previous account/server.
+                guard baseURL == requestedBaseURL, apiToken == requestedAPIToken else { return nil }
+                guard !response.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw URLError(.badServerResponse)
+                }
+                calendarToken = response.token
+            } catch {
+                errorMessage = "Could not authorize calendar feed: \(error.localizedDescription)"
+                return nil
+            }
         }
-        if !calendarToken.isEmpty {
-            components.queryItems = [URLQueryItem(name: "token", value: calendarToken)]
-        }
+        components.queryItems = [URLQueryItem(name: "token", value: calendarToken)]
+        errorMessage = nil
         return components.url
-    }
-
-    private func refreshCalendarToken() async {
-        do {
-            let response: CalendarTokenResponse = try await post("/api/calendar/token", body: "")
-            calendarToken = response.token
-        } catch {
-            // Leave calendarToken empty; the feed falls back to the anonymous
-            // workspace rather than failing outright.
-        }
     }
 
     func refresh() async {

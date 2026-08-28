@@ -300,6 +300,33 @@ def migrate_watch_sources_for_user_scope(connection: sqlite3.Connection) -> None
     )
 
 
+def migrate_calendar_tokens_for_multiple_devices(connection: sqlite3.Connection) -> None:
+    if connection_dialect(connection) == "postgres":
+        # This is the name PostgreSQL assigns to the version-12 inline UNIQUE.
+        connection.execute("ALTER TABLE calendar_tokens DROP CONSTRAINT IF EXISTS calendar_tokens_user_id_key")
+    elif re.search(r"user_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE", sqlite_table_sql(connection, "calendar_tokens"), re.I):
+        # SQLite cannot drop an inline UNIQUE constraint. Preserve existing
+        # token hashes so already-subscribed calendars survive the upgrade.
+        connection.execute(
+            """
+            CREATE TABLE calendar_tokens_new (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO calendar_tokens_new(id, user_id, token_hash, created_at) "
+            "SELECT id, user_id, token_hash, created_at FROM calendar_tokens"
+        )
+        connection.execute("DROP TABLE calendar_tokens")
+        connection.execute("ALTER TABLE calendar_tokens_new RENAME TO calendar_tokens")
+    connection.execute("CREATE INDEX IF NOT EXISTS calendar_tokens_user_idx ON calendar_tokens(user_id)")
+
+
 def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "watched_keywords", "tags", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing(connection, "watched_keywords", "kind", "TEXT NOT NULL DEFAULT 'artist'")
@@ -405,11 +432,11 @@ def migrate_db(connection: sqlite3.Connection) -> None:
         -- A separate, low-privilege token scoped to GET /calendar.ics only: it
         -- lives in its own table (never checked by user_for_token) so it can be
         -- put in a shareable subscription URL without carrying full API access
-        -- the way an api_tokens bearer token would. One active token per user;
-        -- issuing a new one replaces the old.
+        -- the way an api_tokens bearer token would. Multiple devices can each
+        -- keep their own subscription URL until the user explicitly rotates.
         CREATE TABLE IF NOT EXISTS calendar_tokens (
             id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL,
             token_hash TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id)
@@ -445,6 +472,7 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     )
     migrate_notification_subscriptions_for_user_scope(connection)
     migrate_watch_sources_for_user_scope(connection)
+    migrate_calendar_tokens_for_multiple_devices(connection)
     add_column_if_missing(connection, "device_tokens", "user_id", "INTEGER")
     # PRAGMA user_version is SQLite-only; Postgres reports the constant directly.
     if connection_dialect(connection) == "sqlite":

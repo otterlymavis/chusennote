@@ -1385,7 +1385,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if user_id <= 0:
                     json_response(self, {"error": "unauthorized"}, status=401)
                     return
-                json_response(self, {"token": issue_calendar_token(db_path, user_id)})
+                rotate = form.get("rotate", "").lower() in {"1", "true", "yes"}
+                json_response(self, {"token": issue_calendar_token(db_path, user_id, rotate=rotate)})
             elif path == "/api/devices":
                 try:
                     device = register_device(

@@ -872,6 +872,7 @@ def test_subscription_migration_rebuilds_old_sqlite_unique_key(tmp_path):
 POSTGRES_TEST_URL_ENV = "CHUSENNOTE_TEST_DATABASE_URL"
 _POSTGRES_TABLES = (
     "user_watches",
+    "calendar_tokens",
     "api_tokens",
     "users",
     "notification_log",
@@ -936,6 +937,14 @@ def test_postgres_backend_round_trips_core_flows():
     token = lm.issue_token(url, user.id)
     assert lm.user_for_token(url, token).email == "pg@example.com"
     assert lm.verify_user(url, "pg@example.com", "correct horse battery").id == user.id
+
+    # Upgrade the old one-token-per-user constraint without losing its token.
+    first_calendar = lm.issue_calendar_token(url, user.id)
+    with lm.connect(url) as connection:
+        connection.execute("ALTER TABLE calendar_tokens ADD CONSTRAINT calendar_tokens_user_id_key UNIQUE(user_id)")
+    second_calendar = lm.issue_calendar_token(url, user.id)
+    assert lm.user_id_for_calendar_token(url, first_calendar) == user.id
+    assert lm.user_id_for_calendar_token(url, second_calendar) == user.id
 
     # Per-user watch subscriptions scope on Postgres too.
     lm.add_watch(url, "PG Subscribed", kind=lm.WATCH_KIND_EVENT, user_id=user.id)
@@ -3372,6 +3381,9 @@ def test_calendar_token_is_scoped_and_not_a_bearer_token(tmp_path):
             {"email": "cal@example.com", "password": "correct horse battery"},
         )
         token = registered["token"]
+        user_id = registered["user"]["id"]
+        watch = lm.add_watch(db_path, "Example", kind=lm.WATCH_KIND_EVENT, user_id=user_id)
+        lm.save_blocks(db_path, example_blocks("Example"), watch_id=watch.id, now="2026-06-03T00:00:00+00:00")
 
         # Minting requires authentication.
         with pytest.raises(urllib.error.HTTPError) as unauthorized:
@@ -3382,24 +3394,63 @@ def test_calendar_token_is_scoped_and_not_a_bearer_token(tmp_path):
         second_token = post_form_with_token(f"{base}/api/calendar/token", {}, token)["token"]
         assert first_token != second_token
 
-        # Only one calendar token is live at a time; minting a new one revokes
-        # the old one (an unrecognized token just falls back to the anonymous
-        # calendar rather than erroring, same as an empty/missing token).
-        stale_feed = urllib.request.urlopen(
-            f"{base}/calendar.ics?token={urllib.parse.quote(first_token)}", timeout=5
-        ).read()
-        anonymous_feed = urllib.request.urlopen(f"{base}/calendar.ics", timeout=5).read()
-        assert stale_feed == anonymous_feed
-        urllib.request.urlopen(f"{base}/calendar.ics?token={urllib.parse.quote(second_token)}", timeout=5)
+        # A second device's first use must preserve existing subscriptions.
+        for calendar_token in (first_token, second_token):
+            feed = urllib.request.urlopen(
+                f"{base}/calendar.ics?token={urllib.parse.quote(calendar_token)}", timeout=5
+            ).read().decode("utf-8")
+            assert "Example Tour" in feed
+
+        # Revocation is explicit and affects only the authenticated account.
+        other = lm.create_user(db_path, "other-cal@example.com", "correct horse battery")
+        other_calendar = lm.issue_calendar_token(db_path, other.id)
+        rotated = post_form_with_token(f"{base}/api/calendar/token", {"rotate": "1"}, token)["token"]
+        assert lm.user_id_for_calendar_token(db_path, first_token) is None
+        assert lm.user_id_for_calendar_token(db_path, second_token) is None
+        assert lm.user_id_for_calendar_token(db_path, rotated) == user_id
+        assert lm.user_id_for_calendar_token(db_path, other_calendar) == other.id
 
         # A calendar token carries no API privileges: used as a bearer token it
         # is simply unauthenticated, not the account it was minted for.
         with pytest.raises(urllib.error.HTTPError) as bearer_misuse:
-            _get_with_token(f"{base}/api/auth/me", second_token)
+            _get_with_token(f"{base}/api/auth/me", rotated)
         assert bearer_misuse.value.code == 401
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_calendar_token_migration_preserves_existing_subscriptions(tmp_path):
+    db_path = str(tmp_path / "legacy-calendar.sqlite3")
+    user = lm.create_user(db_path, "calendar@example.com", "correct horse battery")
+    legacy_token = "existing-calendar-subscription"
+    with lm.connect(db_path) as connection:
+        connection.execute("DROP TABLE calendar_tokens")
+        connection.execute(
+            """
+            CREATE TABLE calendar_tokens (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL UNIQUE,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO calendar_tokens(user_id, token_hash, created_at) VALUES (?, ?, ?)",
+            (user.id, lm.token_fingerprint(legacy_token), "2026-08-25T00:00:00+00:00"),
+        )
+        connection.execute("PRAGMA user_version = 12")
+
+    new_token = lm.issue_calendar_token(db_path, user.id)
+    assert lm.user_id_for_calendar_token(db_path, legacy_token) == user.id
+    assert lm.user_id_for_calendar_token(db_path, new_token) == user.id
+    # A repeated initialization is harmless and never drops either token.
+    with lm.connect(db_path) as connection:
+        lm.init_db(connection)
+        assert connection.execute("SELECT COUNT(*) FROM calendar_tokens").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == lm.DB_SCHEMA_VERSION
 
 
 def test_authenticated_api_watch_and_source_mutations_are_user_scoped(tmp_path):
