@@ -611,6 +611,7 @@ def test_windows_smoke_helper_delegates_to_canonical_checker():
     assert "Invoke-WebRequest" not in script
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX shell execution")
 def test_linux_systemd_helpers_render_safe_user_units_without_installing(tmp_path):
     install_script = ROOT / "scripts" / "install-chusennote-systemd.sh"
     show_script = (ROOT / "scripts" / "show-chusennote-systemd.sh").read_text()
@@ -659,6 +660,7 @@ def test_linux_systemd_helpers_render_safe_user_units_without_installing(tmp_pat
     assert "at least 1 minute" in invalid.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX shell execution")
 def test_macos_launchd_helpers_render_valid_plist_without_installing(tmp_path):
     install_script = ROOT / "scripts" / "install-chusennote-launchd.sh"
     show_script = (ROOT / "scripts" / "show-chusennote-launchd.sh").read_text()
@@ -703,6 +705,7 @@ def test_macos_launchd_helpers_render_valid_plist_without_installing(tmp_path):
     assert 'launchctl bootout "gui/$(id -u)/$label"' in uninstall_script
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX shell execution")
 def test_service_runner_loads_env_as_data_without_executing_it(tmp_path):
     runner = ROOT / "scripts" / "run-chusennote-once.sh"
     capture_path = tmp_path / "captured.txt"

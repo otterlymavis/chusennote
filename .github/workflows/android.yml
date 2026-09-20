@@ -15,7 +15,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
       # Caching only; the project's Gradle wrapper (android/gradlew) drives the
       # Gradle version so CI matches the verified local build exactly.
       - uses: gradle/actions/setup-gradle@v4
