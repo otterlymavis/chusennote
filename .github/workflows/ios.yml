@@ -7,10 +7,29 @@ on:
 jobs:
   build:
     runs-on: macos-15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Show Xcode version
         run: xcodebuild -version
+      - name: Run iOS unit tests
+        run: |
+          destination_id="$(xcrun simctl list devices available --json | python3 -c 'import json, sys; devices = json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime in devices.values() for device in runtime if device["isAvailable"] and device["name"].startswith("iPhone")))')"
+          xcodebuild \
+            -project ios/Chusennote.xcodeproj \
+            -scheme Chusennote \
+            -destination "platform=iOS Simulator,id=$destination_id" \
+            -derivedDataPath build/ios-tests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+      - name: Upload iOS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chusennote-ios-test-results
+          path: build/ios-tests/Logs/Test/*.xcresult
+          if-no-files-found: warn
       - name: Build simulator app
         run: >
           xcodebuild
@@ -20,6 +39,26 @@ jobs:
           -derivedDataPath build/ios
           CODE_SIGNING_ALLOWED=NO
           build
+      - name: Analyze iOS app
+        run: >
+          xcodebuild
+          -project ios/Chusennote.xcodeproj
+          -scheme Chusennote
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath build/ios-analyze
+          CODE_SIGNING_ALLOWED=NO
+          analyze
+      - name: Archive unsigned iOS release
+        run: >
+          xcodebuild
+          -project ios/Chusennote.xcodeproj
+          -scheme Chusennote
+          -configuration Release
+          -destination 'generic/platform=iOS'
+          -archivePath build/ios-archive/Chusennote.xcarchive
+          -derivedDataPath build/ios-archive-derived
+          CODE_SIGNING_ALLOWED=NO
+          archive
       - name: Upload simulator app
         uses: actions/upload-artifact@v4
         with:

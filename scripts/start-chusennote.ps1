@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Db = "chusennote.sqlite3",
+    [string]$Database = "chusennote.sqlite3",
     [int]$Port = 8877,
     [string]$HostName = "127.0.0.1",
     [switch]$Lan,
@@ -39,4 +39,4 @@ if ($Open) {
     Start-Process $LocalUrl
 }
 
-& python lottery_monitor.py web --db $Db --port $Port --host $HostName
+& python lottery_monitor.py web --db $Database --port $Port --host $HostName

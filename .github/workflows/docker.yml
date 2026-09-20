@@ -22,9 +22,38 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -t chusennote:ci .
-      - name: Smoke test (imports load under the image's Python)
-        run: docker run --rm chusennote:ci python3 -c "import chusennote.pipeline, chusennote.web; print('import OK')"
+      - name: Build image without local secrets
+        run: |
+          printf 'CHUSENNOTE_SENTINEL_SECRET=must-not-enter-image\n' > .env
+          docker build -t chusennote:ci .
+          docker run --rm chusennote:ci test ! -e /app/.env
+          docker run --rm chusennote:ci sh -c 'test -z "$(find /app -type f \( -name "*.pyc" -o -name ".env*" -o -name "*.p8" -o -name "*.jks" -o -name "*.keystore" -o -name "*.p12" -o -name "*.mobileprovision" -o -name "*.provisionprofile" -o -name "GoogleService-Info.plist" -o -name "google-services.json" -o -name "*service-account*.json" \) -print -quit)"'
+          docker run --rm chusennote:ci test -f /app/chusennote/auth.py
+          docker run --rm chusennote:ci python3 -c "import chusennote.auth, chusennote.pipeline, chusennote.preflight, chusennote.smoke, chusennote.web; print('imports OK')"
+          docker run --rm --ipc=host chusennote:ci python3 -c "from playwright.sync_api import sync_playwright; manager = sync_playwright().start(); browser = manager.chromium.launch(); browser.close(); manager.stop(); print('Chromium OK')"
+      - name: Smoke test running web/API container
+        run: |
+          container_id="$(docker run --detach --publish 8877:8877 chusennote:ci)"
+          trap 'docker logs "$container_id"; docker rm --force "$container_id" >/dev/null' EXIT
+          test "$(docker exec "$container_id" id -u)" != "0"
+          for _attempt in {1..30}; do
+            if health="$(curl --fail --silent --show-error http://127.0.0.1:8877/api/health)"; then
+              break
+            fi
+            sleep 1
+          done
+          python3 -c 'import json, sys; from chusennote.models import APP_BUILD, APP_VERSION, DB_SCHEMA_VERSION; payload = json.load(sys.stdin); assert payload["app"] == "chusennote" and payload["status"] == "ok" and payload["version"] == APP_VERSION and payload["build"] == APP_BUILD and payload["schema_version"] >= DB_SCHEMA_VERSION' <<<"${health:-}"
+          test "$(docker inspect --format '{{.Config.Healthcheck.Test}}' "$container_id")" != "<nil>"
+          for _attempt in {1..45}; do
+            container_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_id")"
+            test "$container_health" != "unhealthy"
+            test "$container_health" = "healthy" && break
+            sleep 1
+          done
+          test "$container_health" = "healthy"
+          docker exec "$container_id" python3 lottery_monitor.py smoke \
+            --base-url http://127.0.0.1:8877 --timeout 5

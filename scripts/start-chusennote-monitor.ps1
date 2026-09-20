@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Db = "chusennote.sqlite3",
+    [string]$Database = "chusennote.sqlite3",
     [int]$IntervalMinutes = 60,
     [ValidateSet("event", "artist")]
     [string]$Kind = "event",
@@ -17,7 +17,7 @@ $Args = @(
     "lottery_monitor.py",
     "watch",
     "loop",
-    "--db", $Db,
+    "--db", $Database,
     "--interval-minutes", $IntervalMinutes,
     "--kind", $Kind
 )

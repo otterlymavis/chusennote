@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -18,10 +20,60 @@ jobs:
       # Gradle version so CI matches the verified local build exactly.
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-      - name: Build debug APK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-35;google_apis;x86_64"
+      - name: Validate Android variants
         working-directory: android
-        run: ./gradlew :app:assembleDebug --no-daemon
+        run: >-
+          ./gradlew
+          :app:testDebugUnitTest
+          :app:assembleDebug
+          :app:assembleDebugAndroidTest
+          :app:lintDebug
+          :app:assembleRelease
+          :app:lintRelease
+          --no-daemon
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start Android 15 emulator
+        run: |
+          printf 'no\n' | avdmanager create avd \
+            --force \
+            --name chusennote_ci \
+            --package 'system-images;android-35;google_apis;x86_64' \
+            --device pixel_6
+          nohup emulator @chusennote_ci \
+            -no-window \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            > "$RUNNER_TEMP/chusennote-emulator.log" 2>&1 &
+          adb wait-for-device
+          # The command substitution must run inside the timeout-controlled shell.
+          # shellcheck disable=SC2016
+          timeout 180 bash -c \
+            'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 2; done'
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+      - name: Run Android device tests
+        working-directory: android
+        run: ./gradlew :app:connectedDebugAndroidTest --no-daemon
+      - name: Upload Android validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chusennote-android-validation-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/outputs/androidTest-results/
+            android/app/build/outputs/connected_android_test_additional_output/
+            ${{ runner.temp }}/chusennote-emulator.log
+          if-no-files-found: warn
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:

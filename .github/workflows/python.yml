@@ -7,12 +7,59 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
       - name: Install test tooling
-        run: python -m pip install pytest pytest-asyncio
+        run: python -m pip install -r requirements.txt pytest pytest-asyncio
       - name: Run tests
         run: python -m pytest
+      - name: Exercise Windows server and monitor helpers
+        shell: pwsh
+        run: |
+          $database = Join-Path $env:RUNNER_TEMP "chusennote-smoke.sqlite3"
+          $stdout = Join-Path $env:RUNNER_TEMP "chusennote-server.out.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "chusennote-server.err.log"
+          $server = Start-Process -FilePath python `
+            -ArgumentList @("lottery_monitor.py", "web", "--db", $database, "--host", "127.0.0.1", "--port", "18877") `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:18877/api/health" -TimeoutSec 2
+                if ($health.status -eq "ok") {
+                  $ready = $true
+                  break
+                }
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) {
+              throw "chusennote server did not become ready"
+            }
+            & pwsh -NoLogo -NoProfile -File ./scripts/check-chusennote.ps1 `
+              -BaseUrl "http://127.0.0.1:18877" -TimeoutSec 5
+            if ($LASTEXITCODE -ne 0) {
+              throw "PowerShell endpoint smoke check failed"
+            }
+            python lottery_monitor.py smoke --base-url "http://127.0.0.1:18877" --timeout 5
+            if ($LASTEXITCODE -ne 0) {
+              throw "Cross-platform endpoint smoke check failed"
+            }
+          } finally {
+            if (-not $server.HasExited) {
+              Stop-Process -Id $server.Id -Force
+              $server.WaitForExit()
+            }
+            Get-Content $stdout, $stderr -ErrorAction SilentlyContinue
+          }
+          & ./scripts/start-chusennote-monitor.ps1 -Database $database -Kind event -MaxRuns 1
+          if ($LASTEXITCODE -ne 0) {
+            throw "PowerShell monitor helper failed"
+          }

@@ -1,0 +1,62 @@
+name: Hosted monitor
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chusennote-hosted-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Require hosted credentials
+        shell: bash
+        env:
+          CHUSENNOTE_DATABASE_URL: ${{ secrets.CHUSENNOTE_DATABASE_URL }}
+          CHUSENNOTE_SEARCH_API_KEY: ${{ secrets.CHUSENNOTE_SEARCH_API_KEY }}
+          CHUSENNOTE_FIREBASE_PROJECT_ID: ${{ secrets.CHUSENNOTE_FIREBASE_PROJECT_ID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [[ "$CHUSENNOTE_DATABASE_URL" != postgresql://* && "$CHUSENNOTE_DATABASE_URL" != postgres://* ]]; then
+            echo "Missing PostgreSQL repository secret" >&2
+            exit 1
+          fi
+          for value in "$CHUSENNOTE_SEARCH_API_KEY" "$CHUSENNOTE_FIREBASE_PROJECT_ID" "$FIREBASE_SERVICE_ACCOUNT_JSON"; do
+            if [[ -z "$value" ]]; then
+              echo "Missing hosted monitor repository secret" >&2
+              exit 1
+            fi
+          done
+      - name: Install runtime
+        run: |
+          python -m pip install -r requirements.txt "psycopg[binary]==3.2.3" "playwright==1.62.0"
+          python -m playwright install --with-deps chromium
+      - name: Prepare Firebase credentials
+        shell: bash
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          credentials_path="$RUNNER_TEMP/chusennote-firebase.json"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$credentials_path"
+          chmod 600 "$credentials_path"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$credentials_path" >> "$GITHUB_ENV"
+      - name: Run saved watches and reminders
+        env:
+          CHUSENNOTE_DATABASE_URL: ${{ secrets.CHUSENNOTE_DATABASE_URL }}
+          CHUSENNOTE_SEARCH_PROVIDER: tavily
+          CHUSENNOTE_SEARCH_API_KEY: ${{ secrets.CHUSENNOTE_SEARCH_API_KEY }}
+          CHUSENNOTE_FIREBASE_PROJECT_ID: ${{ secrets.CHUSENNOTE_FIREBASE_PROJECT_ID }}
+          CHUSENNOTE_BROWSER_FETCH: fallback
+        run: python scripts/run-hosted-monitor.py

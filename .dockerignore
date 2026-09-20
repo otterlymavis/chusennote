@@ -2,8 +2,15 @@
 .git
 .github
 __pycache__/
+**/__pycache__/
 *.pyc
+**/*.pyc
 .pytest_cache/
+**/.pytest_cache/
+tests
+build
+dist
+history_logs
 # Never ship a local database into the image; it mounts at /data at runtime.
 *.sqlite3
 *.sqlite3.*
@@ -12,9 +19,39 @@ android
 ios
 # Docs and dev-only bits.
 docs
+scripts
+render.yaml
 *.md
 .gitattributes
 .gitignore
 .venv
 venv
 env
+.env*
+**/.env*
+AGENT.md
+AGENTS.md
+CLAUDE.md
+.agents
+# Provider credentials must be mounted or injected by the runtime, never baked
+# into the backend image or its build context.
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+google-services.json
+**/google-services.json
+firebase-service-account*.json
+**/firebase-service-account*.json
+*service-account*.json
+**/*service-account*.json
+*.p8
+**/*.p8
+*.keystore
+**/*.keystore
+*.jks
+**/*.jks
+*.p12
+**/*.p12
+*.mobileprovision
+**/*.mobileprovision
+*.provisionprofile
+**/*.provisionprofile

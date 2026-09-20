@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$TaskName = "chusennote-monitor",
-    [string]$Db = "chusennote.sqlite3",
+    [string]$Database = "chusennote.sqlite3",
     [int]$IntervalMinutes = 60,
     [ValidateSet("event", "artist")]
     [string]$Kind = "event",
@@ -15,7 +15,7 @@ if ($IntervalMinutes -lt 1) {
 }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$DbPath = $Db
+$DbPath = $Database
 if (-not [System.IO.Path]::IsPathRooted($DbPath)) {
     $DbPath = Join-Path $RepoRoot $DbPath
 }

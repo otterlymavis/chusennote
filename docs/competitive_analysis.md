@@ -44,6 +44,50 @@ chusennote should therefore avoid being only a concert calendar. The core object
 
 ## Recommended implementation roadmap
 
+### Current implementation status
+
+The six roadmap stages below are implemented in the local product:
+
+- event/artist watchlists, per-account preferences, source registry, confidence,
+  reversible muting, and match reasons;
+- structured ticket timelines including application, result, payment, general
+  sale, and official-resale dates;
+- persisted snapshots, change detection, lifecycle alerts, notification claims,
+  and local/remote delivery adapters;
+- generic, Schema.org, declared same-site RSS/Atom/sitemap, major Japanese
+  ticket-provider, and common stage-site extraction adapters, while
+  private/login-only facts remain manual notes;
+- web, JSON/CLI, iCalendar, iOS, and Android user-facing views over the same
+  stored event/ticket data; and
+- event identity, timeline de-duplication, venue/region filtering, source
+  muting, visible match explanations, and conservative related-event
+  recommendations from reliable saved public events only.
+
+Local verification covers the full SQLite and real-PostgreSQL Python suite,
+the iOS simulator build, analyzer, XCTest target, and unsigned generic Release
+archive (with all four enforced in CI), web runtime/API behavior and
+Mobile Safari rendering, and desktop
+scheduler dry runs. The Windows PowerShell helpers parse under PowerShell 7 and
+their server wrapper, monitor loop, and cross-platform smoke checker pass against
+live temporary state and every web/API/calendar endpoint.
+Android JVM tests, debug/release APK assembly, test-APK assembly, and
+debug/release lint pass in the local Android SDK; all ten instrumentation
+tests also pass on an Android 15 Google APIs emulator. The backend container
+also builds from a secret-sentinel context, imports the packaged application,
+launches bundled Chromium, serves schema-v16 health as a non-root user, and
+reaches Docker's healthy state. Firebase/APNs, SMTP, chat-provider,
+physical-device delivery, production signing, and deployed-service acceptance
+remain environment-specific release gates rather than unfinished roadmap code.
+Live public-source acceptance also covers manually attached Shiki, Horipro, and
+Toho official pages plus Rakuten Ticket, Ticket Board, and CN Playguide pages.
+The observed evidence includes image-alt schedules, regional dates and venues,
+organizers, lineup, ticket rounds, the current Toho Naviserve domain, Rakuten
+result/payment dates, distinct Ticket Board cards with a shared deadline, CN's
+separate general-sale phases, and persisted change alerts. Credential-free search returned only portal
+fallbacks in the latest check, so a managed search provider remains required
+for reliable automatic discovery rather than being represented as locally
+proven.
+
 ### 1. Event watchlist and source registry
 
 Implement a persistent watchlist with these entities:
@@ -121,9 +165,9 @@ Borrow Songkick/Bandsintown discovery ideas carefully:
 - show why an event matched a user keyword
 - allow users to mute noisy sources or broad keywords
 
-## What to implement next in this repository
+## Persistence and alert core delivered
 
-The highest-value next patch is not another broad scraper. It is a persistence and alert core:
+The roadmap's original highest-value patch was the persistence and alert core:
 
 1. Add SQLite tables for watched keywords, events, sources, ticket rounds, and snapshots.
 2. Save the output of `build_blocks()` into those tables.
@@ -142,7 +186,10 @@ The highest-value next patch is not another broad scraper. It is a persistence a
 ]
 ```
 
-That turns chusennote from a one-off search command into a real monitoring app.
+Those pieces are now present and turn chusennote from a one-off search command
+into a monitoring app. Future parser work should be driven by new public-page
+fixtures or observed regressions, rather than broadening scraping without
+evidence.
 
 
 ## Legal and data-use notes

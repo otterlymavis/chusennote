@@ -9,7 +9,22 @@ history_logs/
 .venv/
 venv/
 env/
-.env
+.env*
+!.env.example
+# Local/provider configuration and signing credentials. Keep generated client
+# config and private server keys out of source control unless repository policy
+# is deliberately changed.
+android/app/google-services.json
+android/local.properties
+ios/Chusennote/GoogleService-Info.plist
+firebase-service-account*.json
+*service-account*.json
+*.p8
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+*.provisionprofile
 dist/
 build/
 *.egg-info/
