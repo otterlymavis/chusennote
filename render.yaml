@@ -3,7 +3,7 @@ services:
     name: chusennote
     runtime: docker
     plan: free
-    region: frankfurt
+    region: ohio
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
