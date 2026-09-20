@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="refresh">Refresh</string>
+    <string name="open_calendar_feed">Open Calendar Feed</string>
+    <string name="register">Register</string>
+    <string name="log_in">Log In</string>
+    <string name="log_out">Log Out</string>
+    <string name="add_artist">Add Artist</string>
+    <string name="run_artist_watches">Run Artist Watches</string>
+    <string name="add_event">Add Event</string>
+    <string name="run_event_watches">Run Event Watches</string>
+    <string name="search_events">Search Events</string>
+    <string name="private_note">Private note</string>
+    <string name="add_source">Add Source</string>
+    <string name="run_due_reminders">Run Due Reminders</string>
+
+    <string name="push_disabled">Push disabled: add google-services.json to enable notifications.</string>
+    <string name="loading">Loading…</string>
+    <string name="could_not_load">Could not load chusennote: %1$s</string>
+    <string name="enter_api_base_url">Enter the API base URL first.</string>
+    <string name="could_not_open_calendar">Could not open calendar feed: %1$s</string>
+    <string name="no_web_url">No web URL available.</string>
+    <string name="could_not_open_link">Could not open link: %1$s</string>
+    <string name="enter_keyword">Enter a keyword first.</string>
+    <string name="adding_watch">Adding %1$s…</string>
+    <string name="could_not_add_watch">Could not add watch: %1$s</string>
+    <string name="running_watches">Running tracked %1$s watches…</string>
+    <string name="could_not_run_watches">Could not run watches: %1$s</string>
+    <string name="sending_due_reminders">Sending due reminders…</string>
+    <string name="could_not_send_reminders">Could not send due reminders: %1$s</string>
+    <string name="adding_subscription">Adding notification subscription…</string>
+    <string name="could_not_add_subscription">Could not add notification subscription: %1$s</string>
+    <string name="removing_subscription">Removing notification subscription…</string>
+    <string name="could_not_remove_subscription">Could not remove notification subscription: %1$s</string>
+    <string name="enter_event_name">Enter an event name first.</string>
+    <string name="wait_for_event_action">Wait for the current event action to finish.</string>
+    <string name="searching_exact_events">Searching for exact events…</string>
+    <string name="no_matching_event_pages">No matching event pages found.</string>
+    <string name="could_not_search_events">Could not search events: %1$s</string>
+    <string name="pick_valid_event_page">Search again and pick a valid event page.</string>
+    <string name="adding_exact_event">Adding exact event…</string>
+    <string name="could_not_add_exact_event">Could not add exact event: %1$s</string>
+    <string name="enter_watch_and_source">Enter a watch id/keyword and source URL first.</string>
+    <string name="adding_source">Adding source…</string>
+    <string name="could_not_add_source">Could not add source: %1$s</string>
+    <string name="removing_watch">Removing watch…</string>
+    <string name="could_not_remove_watch">Could not remove watch: %1$s</string>
+    <string name="restoring_watch">Restoring watch…</string>
+    <string name="could_not_restore_watch">Could not restore watch: %1$s</string>
+    <string name="removing_source">Removing source…</string>
+    <string name="could_not_remove_source">Could not remove source: %1$s</string>
+    <string name="restoring_source">Restoring source…</string>
+    <string name="could_not_restore_source">Could not restore source: %1$s</string>
+
+    <string name="registering">Registering…</string>
+    <string name="logging_in">Logging in…</string>
+    <string name="could_not_register">Could not register: %1$s</string>
+    <string name="could_not_log_in">Could not log in: %1$s</string>
+    <string name="log_out_before_changing_account">Log out before changing accounts or servers.</string>
+    <string name="enter_email_and_password">Enter an email and password first.</string>
+    <string name="signed_in_as">Signed in as %1$s</string>
+    <string name="not_signed_in">Not signed in.</string>
+    <string name="signing_out">Signing out…</string>
+    <string name="could_not_finish_signing_out">Could not finish signing out. Reconnect and retry: %1$s</string>
+    <string name="could_not_verify_account">Could not verify account. Login saved; try again when the server is available.</string>
+
+    <string name="server_status">Server %1$s%2$s%3$s - %4$s, %5$s, %6$s.</string>
+
+    <plurals name="run_complete_alerts">
+        <item quantity="one">Run complete: %1$d alert.</item>
+        <item quantity="other">Run complete: %1$d alerts.</item>
+    </plurals>
+    <plurals name="reminders_delivered">
+        <item quantity="one">Reminder run complete: %1$d delivered.</item>
+        <item quantity="other">Reminder run complete: %1$d delivered.</item>
+    </plurals>
+    <plurals name="found_event_pages">
+        <item quantity="one">Found %1$d event page.</item>
+        <item quantity="other">Found %1$d event pages.</item>
+    </plurals>
+    <plurals name="artist_count">
+        <item quantity="one">%1$d artist</item>
+        <item quantity="other">%1$d artists</item>
+    </plurals>
+    <plurals name="event_count">
+        <item quantity="one">%1$d event</item>
+        <item quantity="other">%1$d events</item>
+    </plurals>
+    <plurals name="alert_count">
+        <item quantity="one">%1$d alert</item>
+        <item quantity="other">%1$d alerts</item>
+    </plurals>
+</resources>

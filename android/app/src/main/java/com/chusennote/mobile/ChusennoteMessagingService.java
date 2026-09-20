@@ -1,10 +1,16 @@
 package com.chusennote.mobile;
 
 import android.app.Notification;
+import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+
+import androidx.annotation.RequiresApi;
+import androidx.core.app.NotificationCompat;
 
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
@@ -25,14 +31,23 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
     static final String CHANNEL_ID = "chusennote_reminders";
     private static final String PREFS_NAME = "chusennote";
     private static final String PREF_BASE_URL = "base_url";
-    private static final String PREF_PUSH_TOKEN = "push_token";
+    private static final String LEGACY_PREF_PUSH_TOKEN = "push_token";
     // Registration must finish before logout detaches the device, and queued
     // registrations must read the cleared credential after logout completes.
     static final Object REGISTRATION_LOCK = new Object();
 
     static String savedToken(Context context) {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getString(PREF_PUSH_TOKEN, "");
+        String token = SecureTokenStore.pushToken(context.getApplicationContext());
+        SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String legacyToken = preferences.getString(LEGACY_PREF_PUSH_TOKEN, "");
+        if (token.isEmpty() && !legacyToken.isEmpty()) {
+            token = legacyToken;
+            SecureTokenStore.setPushToken(context.getApplicationContext(), token);
+        }
+        if (preferences.contains(LEGACY_PREF_PUSH_TOKEN)) {
+            preferences.edit().remove(LEGACY_PREF_PUSH_TOKEN).apply();
+        }
+        return token;
     }
 
     @Override
@@ -52,21 +67,47 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
                 body = message.getNotification().getBody();
             }
         }
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        // The channel constructor is API 26+. On older devices a notification
-        // payload is shown automatically by the system, so only the foreground
-        // path here needs to run on O and above.
-        if (manager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            return;
+        showNotification(getApplicationContext(), title, body);
+    }
+
+    /** Builds and posts the same notification used by foreground FCM delivery. */
+    static Notification showNotification(Context context, String title, String body) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) {
+            return null;
         }
-        Notification notification = new Notification.Builder(this, CHANNEL_ID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ensureNotificationChannel(manager);
+        }
+        // Foreground FCM messages are delivered to this callback rather than
+        // displayed by the system, including on our API 24/25 floor.
+        Intent launchIntent = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent contentIntent = PendingIntent.getActivity(
+                context,
+                0,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle(title)
                 .setContentText(body)
-                .setStyle(new Notification.BigTextStyle().bigText(body))
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                .setContentIntent(contentIntent)
                 .setAutoCancel(true)
                 .build();
         manager.notify((int) (System.currentTimeMillis() % Integer.MAX_VALUE), notification);
+        return notification;
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private static void ensureNotificationChannel(NotificationManager manager) {
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Ticket reminders",
+                NotificationManager.IMPORTANCE_HIGH);
+        channel.setDescription("Lottery application, results, payment, and sale reminders.");
+        manager.createNotificationChannel(channel);
     }
 
     /** POST the device token to the backend using the saved base URL. */
@@ -83,12 +124,19 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
 
     private static void registerTokenLocked(Context context, String token) {
         SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        preferences.edit().putString(PREF_PUSH_TOKEN, token).apply();
+        SecureTokenStore.setPushToken(context.getApplicationContext(), token);
+        preferences.edit().remove(LEGACY_PREF_PUSH_TOKEN).apply();
         String baseUrl = preferences.getString(PREF_BASE_URL, "").trim().replaceAll("/+$", "");
         if (baseUrl.isEmpty()) {
             return;
         }
         String apiToken = SecureTokenStore.apiToken(context.getApplicationContext());
+        // An FCM registration token can address this specific device even in
+        // anonymous mode, so protect it with the same transport policy as an
+        // account bearer token.
+        if (!BackendUrlPolicy.permitsCredentialTransport(baseUrl)) {
+            return;
+        }
         HttpURLConnection connection = null;
         try {
             String body = "token=" + URLEncoder.encode(token, "UTF-8")
@@ -97,6 +145,7 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
             URL url = new URL(baseUrl + "/api/devices");
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
+            connection.setInstanceFollowRedirects(false);
             connection.setDoOutput(true);
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(10000);
@@ -107,7 +156,10 @@ public class ChusennoteMessagingService extends FirebaseMessagingService {
             try (OutputStream stream = connection.getOutputStream()) {
                 stream.write(body.getBytes(StandardCharsets.UTF_8));
             }
-            connection.getResponseCode();
+            int responseCode = connection.getResponseCode();
+            if (responseCode < 200 || responseCode >= 300) {
+                return;
+            }
         } catch (Exception ignored) {
             // Best effort: a failed registration is retried on the next launch.
         } finally {

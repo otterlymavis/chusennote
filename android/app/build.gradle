@@ -2,6 +2,15 @@ plugins {
     id "com.android.application"
 }
 
+def releaseSigningValues = [
+    storeFile: System.getenv("CHUSENNOTE_ANDROID_KEYSTORE"),
+    storePassword: System.getenv("CHUSENNOTE_ANDROID_STORE_PASSWORD"),
+    keyAlias: System.getenv("CHUSENNOTE_ANDROID_KEY_ALIAS"),
+    keyPassword: System.getenv("CHUSENNOTE_ANDROID_KEY_PASSWORD"),
+]
+def hasAnyReleaseSigning = releaseSigningValues.values().any { value -> value != null && !value.isEmpty() }
+def hasReleaseSigning = releaseSigningValues.values().every { value -> value != null && !value.isEmpty() }
+
 android {
     namespace "com.chusennote.mobile"
     compileSdk 35
@@ -12,16 +21,54 @@ android {
         targetSdk 35
         versionCode 1
         versionName "0.1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseSigningValues.storeFile)
+                storePassword releaseSigningValues.storePassword
+                keyAlias releaseSigningValues.keyAlias
+                keyPassword releaseSigningValues.keyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+if (hasAnyReleaseSigning && !hasReleaseSigning) {
+    throw new GradleException(
+        "Release signing is incomplete. Set all CHUSENNOTE_ANDROID_KEYSTORE, "
+            + "CHUSENNOTE_ANDROID_STORE_PASSWORD, CHUSENNOTE_ANDROID_KEY_ALIAS, and "
+            + "CHUSENNOTE_ANDROID_KEY_PASSWORD variables, or unset all four."
+    )
 }
 
 dependencies {
     implementation platform("com.google.firebase:firebase-bom:33.5.1")
     implementation "com.google.firebase:firebase-messaging"
+    implementation "androidx.core:core:1.13.1"
     // Keystore-backed encrypted storage for the account's bearer token (a
     // full-access credential that plain SharedPreferences' unencrypted XML
     // file isn't a safe place for).
-    implementation "androidx.security:security-crypto:1.1.0-alpha06"
+    implementation "androidx.security:security-crypto:1.1.0"
+
+    testImplementation "junit:junit:4.13.2"
+    androidTestImplementation "junit:junit:4.13.2"
+    androidTestImplementation "androidx.test:core:1.6.1"
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test:rules:1.6.1"
+    androidTestImplementation "androidx.test.ext:junit:1.2.1"
+    androidTestImplementation "androidx.test.espresso:espresso-core:3.6.1"
+    androidTestImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
 }
 
 // Apply Firebase's google-services plugin only once you have added
