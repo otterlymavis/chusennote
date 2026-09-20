@@ -3,6 +3,11 @@ import XCTest
 @testable import Chusennote
 
 final class BackendURLPolicyTests: XCTestCase {
+    func testDefaultBaseURLUsesProductionHTTPS() {
+        XCTAssertEqual(ChusennoteSettings.defaultBaseURL, "https://chusennote.onrender.com")
+        XCTAssertTrue(BackendURLPolicy.permitsCredentialTransport(ChusennoteSettings.defaultBaseURL))
+    }
+
     func testFirebaseMessagingMatchesBundledConfiguration() {
         let configuration = Bundle.main.url(forResource: "GoogleService-Info", withExtension: "plist")
         XCTAssertEqual(DeviceRegistration.firebaseMessagingConfigured, configuration != nil)

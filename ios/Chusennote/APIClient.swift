@@ -5,7 +5,7 @@ enum ChusennoteSettings {
     static let apiTokenKey = "apiToken"
     static let calendarTokenKey = "calendarToken"
     static let pushTokenKey = "iosPushToken"
-    static let defaultBaseURL = "http://127.0.0.1:8877"
+    static let defaultBaseURL = "https://chusennote.onrender.com"
 
     static var baseURL: String {
         get {

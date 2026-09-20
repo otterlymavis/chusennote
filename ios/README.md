@@ -15,19 +15,24 @@ companies from unlabeled prose.
 ## Run in Xcode
 
 1. Open `ios/Chusennote.xcodeproj` in Xcode.
-2. Run the Python server:
+The app defaults to the hosted production API at
+`https://chusennote.onrender.com`. To develop against a local server, run:
 
 ```bash
 python lottery_monitor.py web --db chusennote.sqlite3 --port 8877
 ```
 
-3. In the iOS simulator, use the default base URL `http://127.0.0.1:8877`.
+Then set the Base URL in the app's Settings screen to
+`http://127.0.0.1:8877` in the iOS simulator. On a physical device, use the
+computer's private LAN address instead.
 
 The shared `Chusennote` scheme includes the `ChusennoteTests` unit-test target.
 Run the scheme's Test action in Xcode, or use `xcodebuild test`, to verify the
 credential transport and redirect-rejection policy on an iOS simulator.
 
-For a physical device, set the base URL to your computer's LAN IP, for example `http://192.168.1.20:8877`, and make sure both devices are on the same network.
+For local development on a physical device, set the base URL to your
+computer's LAN IP, for example `http://192.168.1.20:8877`, and make sure both
+devices are on the same network.
 
 Account credentials, API/calendar tokens, and FCM device tokens are sent only
 to HTTPS, localhost, or literal private-network IP endpoints. API, calendar,
