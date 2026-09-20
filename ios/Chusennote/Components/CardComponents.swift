@@ -63,7 +63,8 @@ struct NotificationHero: View {
             return "Server needs attention"
         }
         if let health = store.health {
-            return "Server \(health.status)"
+            let version = health.version.map { " · v\($0)" } ?? ""
+            return "Server \(health.status)\(version)"
         }
         return "Checking server"
     }
@@ -220,7 +221,7 @@ struct EventSummaryPanel<Actions: View>: View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             RowContent(
                 title: event.title ?? "Untitled event",
-                subtitle: event.status ?? "watching",
+                subtitle: eventStatusText(event),
                 systemImage: "ticket"
             )
 

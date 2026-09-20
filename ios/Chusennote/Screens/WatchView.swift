@@ -13,6 +13,7 @@ struct WatchView: View {
     @State private var showsAddWatch = false
     @State private var showsExactSearch = false
     @State private var showsReminderOptions = false
+    @State private var editingWatchID: Int?
 
     var body: some View {
         ScrollView {
@@ -52,9 +53,15 @@ struct WatchView: View {
                         EmptyStateRow(title: "No active ticket watches", detail: "Add a watch below.")
                     } else {
                         ForEach(store.trackedEvents) { watch in
-                            WatchRow(watch: watch, actionTitle: "Remove", actionIcon: "trash") {
-                                Task { await store.removeWatch(id: watch.id) }
-                            }
+                            WatchRow(
+                                watch: watch,
+                                actionTitle: "Remove",
+                                actionIcon: "trash",
+                                action: { Task { await store.removeWatch(id: watch.id) } },
+                                secondaryActionTitle: "Edit",
+                                secondaryActionIcon: "slider.horizontal.3",
+                                secondaryAction: { editEventWatch(watch) }
+                            )
                         }
                     }
                 }
@@ -63,24 +70,14 @@ struct WatchView: View {
                     DisclosureGroup(isExpanded: $showsAddWatch) {
                         VStack(alignment: .leading, spacing: Spacing.md) {
                             AppTextField("Event keyword", text: $eventKeyword)
+                                .disabled(editingWatchID != nil)
                             AppTextField("Tags", text: $eventTags)
                             AppTextField("Preferred regions", text: $eventRegions)
                             AppTextField("Preferred venues", text: $eventVenues)
 
                             DisclosureGroup(isExpanded: $showsReminderOptions) {
-                                VStack(alignment: .leading, spacing: Spacing.sm) {
-                                    AlertPresetToggle(title: "Official page found", key: "new_official_page", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Ticket link found", key: "new_ticket_link", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "New lottery rounds", key: "new_lottery_round", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Ticket details changed", key: "ticket_field_changed", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Lottery opened", key: "lottery_opened", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Closing soon", key: "lottery_closing_soon", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Results today", key: "results_today", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Payment due soon", key: "payment_due_soon", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "General sale soon", key: "general_sale_soon", alerts: $eventAlerts)
-                                    AlertPresetToggle(title: "Watch failed", key: "watch_failed", alerts: $eventAlerts)
-                                }
-                                .padding(.top, Spacing.xs)
+                                AlertPreferenceToggles(alerts: $eventAlerts)
+                                    .padding(.top, Spacing.xs)
                             } label: {
                                 Label("\(alertCount(eventAlerts)) reminders", systemImage: "bell.badge")
                                     .font(Typography.sectionHeader)
@@ -90,18 +87,31 @@ struct WatchView: View {
                                 Button {
                                     addEventWatch()
                                 } label: {
-                                    Label("Add Watch", systemImage: "plus.circle.fill")
+                                    Label(
+                                        editingWatchID == nil ? "Add Watch" : "Save Changes",
+                                        systemImage: editingWatchID == nil ? "plus.circle.fill" : "checkmark.circle.fill"
+                                    )
                                         .frame(maxWidth: .infinity)
                                 }
                                 .buttonStyle(.borderedProminent)
 
-                                Button {
-                                    addRandomEventWatch()
-                                } label: {
-                                    Label("Random", systemImage: "shuffle")
-                                        .frame(maxWidth: .infinity)
+                                if editingWatchID == nil {
+                                    Button {
+                                        addRandomEventWatch()
+                                    } label: {
+                                        Label("Random", systemImage: "shuffle")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
+                                } else {
+                                    Button {
+                                        clearEventEditor()
+                                    } label: {
+                                        Label("Cancel", systemImage: "xmark.circle")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
                                 }
-                                .buttonStyle(.bordered)
                             }
                         }
                         .padding(.top, Spacing.sm)
@@ -181,12 +191,27 @@ struct WatchView: View {
         let regions = trimmed(eventRegions)
         let venues = trimmed(eventVenues)
         let alerts = trimmed(eventAlerts)
+        clearEventEditor()
+        Task { await store.addWatch(keyword: keyword, kind: "event", tags: tags, regions: regions, venues: venues, alerts: alerts) }
+    }
+
+    private func editEventWatch(_ watch: Watch) {
+        editingWatchID = watch.id
+        eventKeyword = watch.keyword
+        eventTags = watch.tags ?? ""
+        eventRegions = watch.preferredRegions ?? ""
+        eventVenues = watch.preferredVenues ?? ""
+        eventAlerts = watch.alertPreferences ?? defaultAlertPreferenceText()
+        showsAddWatch = true
+    }
+
+    private func clearEventEditor() {
+        editingWatchID = nil
         eventKeyword = ""
         eventTags = ""
         eventRegions = ""
         eventVenues = ""
         eventAlerts = defaultAlertPreferenceText()
-        Task { await store.addWatch(keyword: keyword, kind: "event", tags: tags, regions: regions, venues: venues, alerts: alerts) }
     }
 
     private func addRandomEventWatch() {

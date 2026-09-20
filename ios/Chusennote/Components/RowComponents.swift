@@ -68,6 +68,9 @@ struct WatchRow: View {
     var secondaryActionTitle: String? = nil
     var secondaryActionIcon: String = "bell.badge"
     var secondaryAction: (() -> Void)? = nil
+    var tertiaryActionTitle: String? = nil
+    var tertiaryActionIcon: String = "slider.horizontal.3"
+    var tertiaryAction: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.md) {
@@ -83,6 +86,13 @@ struct WatchRow: View {
                         systemImage: secondaryActionIcon,
                         prominent: true,
                         action: secondaryAction
+                    )
+                }
+                if let tertiaryActionTitle, let tertiaryAction {
+                    IconActionButton(
+                        title: tertiaryActionTitle,
+                        systemImage: tertiaryActionIcon,
+                        action: tertiaryAction
                     )
                 }
                 IconActionButton(title: actionTitle, systemImage: actionIcon, action: action)
@@ -227,7 +237,7 @@ struct ArtistEventRow: View {
         HStack(alignment: .top, spacing: Spacing.md) {
             RowContent(
                 title: event.title ?? "Untitled event",
-                subtitle: [event.status, event.eventDates?.prefix(2).joined(separator: "; "), event.venueLabel].compactMap { $0 }.joined(separator: " - "),
+                subtitle: [eventStatusText(event), event.eventDates?.prefix(2).joined(separator: "; "), event.venueLabel].compactMap { $0 }.joined(separator: " - "),
                 systemImage: "music.mic"
             )
             Image(systemName: "chevron.right")
@@ -275,7 +285,7 @@ struct EventTimelineRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                Text("\(event.status ?? "watching") - \(event.rounds.count) rounds")
+                Text("\(eventStatusText(event)) - \(event.rounds.count) rounds")
                     .font(Typography.rowSubtitle)
                     .foregroundStyle(.secondary)
 

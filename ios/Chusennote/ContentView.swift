@@ -63,6 +63,7 @@ struct ContentView: View {
             .tag(AppTab.settings)
         }
         .task {
+            await store.refreshAccountStatus()
             await store.refresh()
             notificationPermission.refresh()
         }

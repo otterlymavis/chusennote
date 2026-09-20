@@ -4,6 +4,7 @@ enum ChusennoteSettings {
     static let baseURLKey = "baseURL"
     static let apiTokenKey = "apiToken"
     static let calendarTokenKey = "calendarToken"
+    static let pushTokenKey = "iosPushToken"
     static let defaultBaseURL = "http://127.0.0.1:8877"
 
     static var baseURL: String {
@@ -25,6 +26,11 @@ enum ChusennoteSettings {
         set { KeychainStore.set(newValue, forKey: calendarTokenKey) }
     }
 
+    static var pushToken: String {
+        get { migratedPushToken() }
+        set { KeychainStore.set(newValue, forKey: pushTokenKey) }
+    }
+
     /// One-time migration off the old UserDefaults-backed token (a full-access
     /// credential that plist storage isn't a safe place for) into the Keychain.
     private static func migratedAPIToken() -> String {
@@ -37,6 +43,45 @@ enum ChusennoteSettings {
             return legacy
         }
         return ""
+    }
+
+    /// Earlier builds stored the device-addressing token in UserDefaults.
+    /// Preserve it long enough to detach/re-register the device, but remove
+    /// the plaintext copy immediately after migrating it to the Keychain.
+    private static func migratedPushToken() -> String {
+        if let existing = KeychainStore.string(forKey: pushTokenKey) {
+            UserDefaults.standard.removeObject(forKey: pushTokenKey)
+            return existing
+        }
+        if let legacy = UserDefaults.standard.string(forKey: pushTokenKey), !legacy.isEmpty {
+            KeychainStore.set(legacy, forKey: pushTokenKey)
+            UserDefaults.standard.removeObject(forKey: pushTokenKey)
+            return legacy
+        }
+        UserDefaults.standard.removeObject(forKey: pushTokenKey)
+        return ""
+    }
+}
+
+enum APIClientError: LocalizedError {
+    case invalidBaseURL
+    case insecureCredentialTransport
+    case http(status: Int, message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidBaseURL:
+            return "Enter a valid backend URL."
+        case .insecureCredentialTransport:
+            return BackendURLPolicy.credentialTransportMessage
+        case let .http(status, message):
+            return message.isEmpty ? "Server returned HTTP \(status)." : message
+        }
+    }
+
+    var statusCode: Int? {
+        if case let .http(status, _) = self { return status }
+        return nil
     }
 }
 
@@ -57,7 +102,6 @@ final class ChusennoteStore: ObservableObject {
             // signed in when it was minted; drop it so a stale one from a
             // previous account/server is never reused after switching.
             calendarToken = ""
-            DeviceRegistration.registerSavedTokenIfPossible()
         }
     }
     @Published var calendarToken = ChusennoteSettings.calendarToken {
@@ -75,9 +119,15 @@ final class ChusennoteStore: ObservableObject {
     @Published var sources: [WatchSource] = []
     @Published var health: HealthSummary?
     @Published var errorMessage: String?
+    @Published var signedInEmail = ""
     @Published var isRefreshing = false
     @Published var isRunningChecks = false
     @Published var isRunningNotifications = false
+    @Published var isAccountTransitioning = false
+
+    var isSignedIn: Bool {
+        !apiToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var trackedArtists: [Watch] {
         watches.filter { !$0.muted && ($0.kind ?? "event") == "artist" }
@@ -157,11 +207,112 @@ final class ChusennoteStore: ObservableObject {
             devices = try await fetchedDevices
             sources = try await fetchedSources
             health = try await fetchedHealth
-            DeviceRegistration.registerSavedTokenIfPossible()
+            await DeviceRegistration.shared.registerSavedTokenIfPossible()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func refreshAccountStatus() async {
+        guard isSignedIn else {
+            signedInEmail = ""
+            return
+        }
+        do {
+            let user: UserAccount = try await fetch("/api/auth/me")
+            signedInEmail = user.email
+        } catch let error as APIClientError where error.statusCode == 401 {
+            apiToken = ""
+            signedInEmail = ""
+            await DeviceRegistration.shared.registerSavedTokenIfPossible()
+        } catch {
+            // A temporary server failure must not destroy a valid login.
+            errorMessage = "Could not verify account. Login saved; try again when the server is available."
+        }
+    }
+
+    func registerAccount(email: String, password: String) async {
+        await submitAccount(path: "/api/auth/register", email: email, password: password, action: "register")
+    }
+
+    func loginAccount(email: String, password: String) async {
+        await submitAccount(path: "/api/auth/login", email: email, password: password, action: "log in")
+    }
+
+    private func submitAccount(path: String, email: String, password: String, action: String) async {
+        guard !isSignedIn else {
+            errorMessage = "Log out before changing accounts or servers."
+            return
+        }
+        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanEmail.isEmpty, !password.isEmpty else {
+            errorMessage = "Enter an email and password first."
+            return
+        }
+        guard BackendURLPolicy.permitsCredentialTransport(baseURL) else {
+            errorMessage = BackendURLPolicy.credentialTransportMessage
+            return
+        }
+
+        isAccountTransitioning = true
+        await DeviceRegistration.shared.pauseForAccountTransition()
+        do {
+            let response: AuthResponse = try await post(
+                path,
+                body: formBody([
+                    URLQueryItem(name: "email", value: cleanEmail),
+                    URLQueryItem(name: "password", value: password)
+                ]),
+                requiresCredentialTransport: true
+            )
+            apiToken = response.token
+            signedInEmail = response.user.email
+            errorMessage = nil
+            await DeviceRegistration.shared.resumeAfterAccountTransition()
+            await refresh()
+        } catch {
+            await DeviceRegistration.shared.resumeAfterAccountTransition()
+            errorMessage = "Could not \(action): \(error.localizedDescription)"
+        }
+        isAccountTransitioning = false
+    }
+
+    func logoutAccount() async {
+        guard isSignedIn else {
+            errorMessage = "Not signed in."
+            return
+        }
+        guard BackendURLPolicy.permitsCredentialTransport(baseURL) else {
+            errorMessage = BackendURLPolicy.credentialTransportMessage
+            return
+        }
+
+        isAccountTransitioning = true
+        await DeviceRegistration.shared.pauseForAccountTransition()
+        let pushToken = ChusennoteSettings.pushToken
+        do {
+            let response: LogoutResponse = try await post(
+                "/api/auth/logout",
+                body: formBody([URLQueryItem(name: "device_token", value: pushToken)]),
+                requiresCredentialTransport: true
+            )
+            guard response.revoked, pushToken.isEmpty || response.deviceDetached else {
+                throw APIClientError.http(
+                    status: 409,
+                    message: "Update the server to detach this push device before signing out."
+                )
+            }
+            apiToken = ""
+            signedInEmail = ""
+            errorMessage = nil
+            await DeviceRegistration.shared.resumeAfterAccountTransition()
+            await refresh()
+        } catch {
+            await DeviceRegistration.shared.resumeAfterAccountTransition()
+            errorMessage = "Could not finish signing out. Reconnect and retry: \(error.localizedDescription)"
+        }
+        isAccountTransitioning = false
     }
 
     func addWatch(
@@ -339,28 +490,31 @@ final class ChusennoteStore: ObservableObject {
 
     private func fetch<T: Decodable>(_ path: String) async throws -> T {
         guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
-            throw URLError(.badURL)
+            throw APIClientError.invalidBaseURL
         }
-        let (data, response) = try await URLSession.shared.data(for: request(url: url))
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            throw URLError(.badServerResponse)
-        }
+        let (data, response) = try await BackendSession.shared.data(for: try request(url: url))
+        try validate(response: response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func post<T: Decodable>(_ path: String, body: String) async throws -> T {
+    private func post<T: Decodable>(
+        _ path: String,
+        body: String,
+        requiresCredentialTransport: Bool = false
+    ) async throws -> T {
         guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
-            throw URLError(.badURL)
+            throw APIClientError.invalidBaseURL
+        }
+        if requiresCredentialTransport && !BackendURLPolicy.permitsCredentialTransport(baseURL) {
+            throw APIClientError.insecureCredentialTransport
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        applyAuthorization(to: &request)
+        try applyAuthorization(to: &request)
         request.httpBody = body.data(using: .utf8)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            throw URLError(.badServerResponse)
-        }
+        let (data, response) = try await BackendSession.shared.data(for: request)
+        try validate(response: response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
@@ -374,15 +528,28 @@ final class ChusennoteStore: ObservableObject {
         fields.percentEncodedQuery ?? ""
     }
 
-    private func request(url: URL) -> URLRequest {
+    private func request(url: URL) throws -> URLRequest {
         var request = URLRequest(url: url)
-        applyAuthorization(to: &request)
+        try applyAuthorization(to: &request)
         return request
     }
 
-    private func applyAuthorization(to request: inout URLRequest) {
+    private func applyAuthorization(to request: inout URLRequest) throws {
         let token = apiToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return }
+        guard BackendURLPolicy.permitsCredentialTransport(baseURL) else {
+            throw APIClientError.insecureCredentialTransport
+        }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
+
+    private func validate(response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw APIClientError.http(status: 0, message: "The backend returned an invalid response.")
+        }
+        guard 200..<300 ~= http.statusCode else {
+            let serverMessage = (try? JSONDecoder().decode(APIErrorResponse.self, from: data).error) ?? ""
+            throw APIClientError.http(status: http.statusCode, message: serverMessage)
+        }
     }
 }

@@ -31,6 +31,7 @@ struct EventSummary: Codable, Identifiable {
     let watchKind: String?
     let title: String?
     let status: String?
+    let statusLabel: String?
     let officialUrl: String?
     let summary: String?
     let eventDates: [String]?
@@ -38,11 +39,14 @@ struct EventSummary: Codable, Identifiable {
     let eventLocations: [EventLocation]?
     let ticketRules: [String]?
     let ticketPrices: [String]?
+    let organizers: [String]?
+    let lineup: [String]?
     let updatedAt: String?
     // Honest venue text from the backend: real venues, "Multiple cities" for a
     // tour, or a dash. Prefer this over `venues`, which is empty for tours.
     let venueLabel: String?
     let matchReasons: [String]?
+    let relatedEvents: [RelatedEventSummary]?
     let ticketLinks: [TicketLink]?
     let manualSources: [WatchSource]?
     let rounds: [TicketRound]
@@ -54,6 +58,7 @@ struct EventSummary: Codable, Identifiable {
         case watchKind = "watch_kind"
         case title
         case status
+        case statusLabel = "status_label"
         case officialUrl = "official_url"
         case summary
         case eventDates = "event_dates"
@@ -61,12 +66,35 @@ struct EventSummary: Codable, Identifiable {
         case eventLocations = "event_locations"
         case ticketRules = "ticket_rules"
         case ticketPrices = "ticket_prices"
+        case organizers
+        case lineup
         case updatedAt = "updated_at"
         case venueLabel = "venue_label"
         case matchReasons = "match_reasons"
+        case relatedEvents = "related_events"
         case ticketLinks = "ticket_links"
         case manualSources = "manual_sources"
         case rounds
+    }
+}
+
+struct RelatedEventSummary: Codable, Identifiable {
+    let id: Int
+    let title: String?
+    let officialUrl: String?
+    let eventDate: String?
+    let venueLabel: String?
+    let statusLabel: String?
+    let recommendationReasons: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case officialUrl = "official_url"
+        case eventDate = "event_date"
+        case venueLabel = "venue_label"
+        case statusLabel = "status_label"
+        case recommendationReasons = "recommendation_reasons"
     }
 }
 
@@ -128,6 +156,8 @@ struct TicketRound: Codable, Identifiable {
     let resultsDate: String?
     let generalSaleDate: String?
     let paymentEndAt: String?
+    let tradeStartAt: String?
+    let tradeEndAt: String?
     // Compact "when do I act" line from the backend (apply window, results,
     // payment, sale), so the app shows the dates that matter for a lottery.
     let scheduleLabel: String?
@@ -150,6 +180,8 @@ struct TicketRound: Codable, Identifiable {
         case resultsDate = "results_date"
         case generalSaleDate = "general_sale_date"
         case paymentEndAt = "payment_end_at"
+        case tradeStartAt = "trade_start_at"
+        case tradeEndAt = "trade_end_at"
         case scheduleLabel = "schedule_label"
         case confidence
         case roundType = "round_type"
@@ -171,6 +203,7 @@ struct AlertPayload: Codable, Identifiable {
     let watchKind: String?
     let watchMuted: Bool?
     let type: String
+    let typeLabel: String?
     let event: String?
     let keyword: String?
     let round: String?
@@ -185,6 +218,7 @@ struct AlertPayload: Codable, Identifiable {
         case watchKind = "watch_kind"
         case watchMuted = "watch_muted"
         case type
+        case typeLabel = "type_label"
         case event
         case keyword
         case round
@@ -291,6 +325,37 @@ struct CalendarTokenResponse: Codable {
     let token: String
 }
 
+struct UserAccount: Codable {
+    let id: Int
+    let email: String
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case email
+        case createdAt = "created_at"
+    }
+}
+
+struct AuthResponse: Codable {
+    let token: String
+    let user: UserAccount
+}
+
+struct LogoutResponse: Codable {
+    let revoked: Bool
+    let deviceDetached: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case revoked
+        case deviceDetached = "device_detached"
+    }
+}
+
+struct APIErrorResponse: Codable {
+    let error: String
+}
+
 struct SearchResult: Codable, Identifiable {
     var id: String { url }
     let title: String
@@ -300,6 +365,8 @@ struct SearchResult: Codable, Identifiable {
 
 struct HealthSummary: Codable {
     let app: String
+    let version: String?
+    let build: Int?
     let status: String
     let schemaVersion: Int
     let trackedArtists: Int
@@ -310,6 +377,8 @@ struct HealthSummary: Codable {
 
     enum CodingKeys: String, CodingKey {
         case app
+        case version
+        case build
         case status
         case schemaVersion = "schema_version"
         case trackedArtists = "tracked_artists"
@@ -317,5 +386,12 @@ struct HealthSummary: Codable {
         case savedEvents = "saved_events"
         case manualSources = "manual_sources"
         case alerts
+    }
+
+    var releaseLabel: String {
+        guard let version, !version.isEmpty, let build else {
+            return "release unavailable"
+        }
+        return "v\(version) (\(build))"
     }
 }

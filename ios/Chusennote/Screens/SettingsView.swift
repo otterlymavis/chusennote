@@ -5,6 +5,13 @@ struct SettingsView: View {
     @ObservedObject var notificationPermission: NotificationPermission
     @Environment(\.openURL) private var openURL
     @State private var artistKeyword = ""
+    @State private var artistTags = ""
+    @State private var artistRegions = ""
+    @State private var artistVenues = ""
+    @State private var artistAlerts = defaultAlertPreferenceText()
+    @State private var editingArtistWatchID: Int?
+    @State private var accountEmail = ""
+    @State private var accountPassword = ""
     @State private var showsNotificationFeed = false
     @State private var showsSubscriptions = false
     @State private var showsManualSources = false
@@ -12,6 +19,7 @@ struct SettingsView: View {
     @State private var showsOtherWatches = false
     @State private var showsArtistEvents = false
     @State private var showsMutedSources = false
+    @State private var showsArtistReminderOptions = false
     @Binding var sourceWatch: String
     @Binding var sourceURL: String
     @Binding var sourceLabel: String
@@ -22,7 +30,66 @@ struct SettingsView: View {
             LazyVStack(alignment: .leading, spacing: Spacing.lg) {
                 NotificationSection(title: "Server", icon: "server.rack", accent: .info) {
                     AppTextField("Base URL", text: $store.baseURL)
-                    AppTextField("API token", text: $store.apiToken, isSecure: true)
+                        .disabled(store.isSignedIn || store.isAccountTransitioning)
+
+                    if store.isSignedIn {
+                        Label(
+                            store.signedInEmail.isEmpty ? "Signed in" : "Signed in as \(store.signedInEmail)",
+                            systemImage: "person.crop.circle.badge.checkmark"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(SemanticColor.success.color)
+
+                        Button(role: .destructive) {
+                            Task { await store.logoutAccount() }
+                        } label: {
+                            ProgressLabel(
+                                title: store.isAccountTransitioning ? "Signing Out" : "Log Out",
+                                systemImage: "rectangle.portrait.and.arrow.right",
+                                isLoading: store.isAccountTransitioning
+                            )
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(store.isAccountTransitioning)
+                    } else {
+                        AppTextField("Email", text: $accountEmail)
+                            .textContentType(.username)
+                            .disabled(store.isAccountTransitioning)
+                        AppTextField("Password", text: $accountPassword, isSecure: true)
+                            .textContentType(.password)
+                            .disabled(store.isAccountTransitioning)
+
+                        HStack(spacing: Spacing.sm) {
+                            Button {
+                                Task {
+                                    await store.registerAccount(email: accountEmail, password: accountPassword)
+                                    if store.isSignedIn { accountPassword = "" }
+                                }
+                            } label: {
+                                Label("Register", systemImage: "person.badge.plus")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                Task {
+                                    await store.loginAccount(email: accountEmail, password: accountPassword)
+                                    if store.isSignedIn { accountPassword = "" }
+                                }
+                            } label: {
+                                ProgressLabel(
+                                    title: store.isAccountTransitioning ? "Signing In" : "Log In",
+                                    systemImage: "person.crop.circle.badge.checkmark",
+                                    isLoading: store.isAccountTransitioning
+                                )
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        .disabled(store.isAccountTransitioning)
+                    }
+
                     Button {
                         Task { await store.refresh() }
                     } label: {
@@ -34,7 +101,7 @@ struct SettingsView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.isRefreshing)
+                    .disabled(store.isRefreshing || store.isAccountTransitioning)
 
                     if let error = store.errorMessage {
                         Label(error, systemImage: "exclamationmark.triangle")
@@ -43,7 +110,7 @@ struct SettingsView: View {
                     }
 
                     if let health = store.health {
-                        Text("Server \(health.status): \(health.trackedEvents) watched events, \(health.alerts) alerts")
+                        Text("Server \(health.status) · \(health.releaseLabel) · schema \(health.schemaVersion) · \(health.trackedEvents) watched events, \(health.alerts) alerts")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -165,28 +232,54 @@ struct SettingsView: View {
                     DisclosureGroup(isExpanded: $showsArtists) {
                         VStack(alignment: .leading, spacing: Spacing.md) {
                             AppTextField("Artist", text: $artistKeyword)
+                                .disabled(editingArtistWatchID != nil)
+                            AppTextField("Tags", text: $artistTags)
+                            AppTextField("Preferred regions", text: $artistRegions)
+                            AppTextField("Preferred venues", text: $artistVenues)
+
+                            DisclosureGroup(isExpanded: $showsArtistReminderOptions) {
+                                AlertPreferenceToggles(alerts: $artistAlerts)
+                                    .padding(.top, Spacing.xs)
+                            } label: {
+                                Label("\(alertCount(artistAlerts)) alerts", systemImage: "bell.badge")
+                                    .font(Typography.sectionHeader)
+                            }
+
                             HStack(spacing: Spacing.sm) {
                                 Button {
                                     addArtistWatch()
                                 } label: {
-                                    Label("Add Artist", systemImage: "plus.circle.fill")
+                                    Label(
+                                        editingArtistWatchID == nil ? "Add Artist" : "Save Changes",
+                                        systemImage: editingArtistWatchID == nil ? "plus.circle.fill" : "checkmark.circle.fill"
+                                    )
                                         .frame(maxWidth: .infinity)
                                 }
                                 .buttonStyle(.borderedProminent)
 
-                                Button {
-                                    Task { await store.runArtistWatches() }
-                                } label: {
-                                    ProgressLabel(
-                                        title: store.isRunningChecks ? "Checking" : "Run Artists",
-                                        systemImage: "play.circle.fill",
-                                        isLoading: store.isRunningChecks
-                                    )
-                                        .frame(maxWidth: .infinity)
+                                if editingArtistWatchID != nil {
+                                    Button {
+                                        clearArtistEditor()
+                                    } label: {
+                                        Label("Cancel", systemImage: "xmark.circle")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(store.isRunningChecks)
                             }
+
+                            Button {
+                                Task { await store.runArtistWatches() }
+                            } label: {
+                                ProgressLabel(
+                                    title: store.isRunningChecks ? "Checking" : "Run Artists",
+                                    systemImage: "play.circle.fill",
+                                    isLoading: store.isRunningChecks
+                                )
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(store.isRunningChecks)
 
                             if store.trackedArtists.isEmpty {
                                 EmptyStateRow(title: "No tracked artists", detail: "Artist watches discover shows.")
@@ -203,7 +296,10 @@ struct SettingsView: View {
                                         secondaryActionIcon: "bell.badge",
                                         secondaryAction: {
                                             Task { await store.addSubscription(watch: "\(watch.id)", scope: "artist_all") }
-                                        }
+                                        },
+                                        tertiaryActionTitle: "Edit",
+                                        tertiaryActionIcon: "slider.horizontal.3",
+                                        tertiaryAction: { editArtistWatch(watch) }
                                     )
                                 }
                             }
@@ -304,7 +400,39 @@ struct SettingsView: View {
     private func addArtistWatch() {
         let keyword = trimmed(artistKeyword)
         guard !keyword.isEmpty else { return }
+        let tags = trimmed(artistTags)
+        let regions = trimmed(artistRegions)
+        let venues = trimmed(artistVenues)
+        let alerts = trimmed(artistAlerts)
+        clearArtistEditor()
+        Task {
+            await store.addWatch(
+                keyword: keyword,
+                kind: "artist",
+                tags: tags,
+                regions: regions,
+                venues: venues,
+                alerts: alerts
+            )
+        }
+    }
+
+    private func editArtistWatch(_ watch: Watch) {
+        editingArtistWatchID = watch.id
+        artistKeyword = watch.keyword
+        artistTags = watch.tags ?? ""
+        artistRegions = watch.preferredRegions ?? ""
+        artistVenues = watch.preferredVenues ?? ""
+        artistAlerts = watch.alertPreferences ?? defaultAlertPreferenceText()
+        showsArtists = true
+    }
+
+    private func clearArtistEditor() {
+        editingArtistWatchID = nil
         artistKeyword = ""
-        Task { await store.addWatch(keyword: keyword, kind: "artist") }
+        artistTags = ""
+        artistRegions = ""
+        artistVenues = ""
+        artistAlerts = defaultAlertPreferenceText()
     }
 }

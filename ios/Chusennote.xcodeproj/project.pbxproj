@@ -13,6 +13,7 @@
 		4DBF9419CE49F3D6474E881B /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB733E650514DA824AE0EBE1 /* NotificationsView.swift */; };
 		6F214C42B99981A365703EB0 /* NotificationPermission.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCF68DDA9C3D5F5DF380734 /* NotificationPermission.swift */; };
 		1A2B3C4D5E6F7089A1B2C3D4 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E6F7089A1B2C3D41A2B3C4D /* KeychainStore.swift */; };
+		1A2B3C4D5E6F7089A1B2C3D5 /* BackendURLPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E6F7089A1B2C3D41A2B3C4E /* BackendURLPolicy.swift */; };
 		74BDC6159BFBE9D493CCCCE0 /* EventDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D250AEFE2184D33F628256DF /* EventDetailView.swift */; };
 		9CBC56681498CD73DCA0BD97 /* ControlComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2506980B6584C9C168A81495 /* ControlComponents.swift */; };
 		A10000000000000000000001 /* ChusennoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* ChusennoteApp.swift */; };
@@ -24,7 +25,21 @@
 		D91FB95D6A0B1A99B8878806 /* CardComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D28690642AE73142E42BD4 /* CardComponents.swift */; };
 		E059F3641A554ACFEC062E5B /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A2C30AD03B680C2D1751AD4 /* DesignTokens.swift */; };
 		F06ECBBCB56B9997E5EB04B9 /* WatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6708F5B7F71DA636F9B778 /* WatchView.swift */; };
+		F20000000000000000000001 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000003 /* FirebaseMessaging */; };
+		F20000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* Assets.xcassets */; };
+		B10000000000000000000001 /* BackendURLPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* BackendURLPolicyTests.swift */; };
+		B1000000000000000000000E /* EventModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* EventModelTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B10000000000000000000009 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000040;
+			remoteInfo = Chusennote;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		1E22908DA5B901B620003349 /* Formatting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Formatting.swift; sourceTree = "<group>"; };
@@ -44,12 +59,26 @@
 		D250AEFE2184D33F628256DF /* EventDetailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventDetailView.swift; sourceTree = "<group>"; };
 		DCCF68DDA9C3D5F5DF380734 /* NotificationPermission.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationPermission.swift; sourceTree = "<group>"; };
 		5E6F7089A1B2C3D41A2B3C4D /* KeychainStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		5E6F7089A1B2C3D41A2B3C4E /* BackendURLPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackendURLPolicy.swift; sourceTree = "<group>"; };
 		F1CAC33B19250E21B5E6A7D0 /* RowComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RowComponents.swift; sourceTree = "<group>"; };
 		FB733E650514DA824AE0EBE1 /* NotificationsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
+		F20000000000000000000004 /* Chusennote.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Chusennote.entitlements; sourceTree = "<group>"; };
+		F20000000000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B10000000000000000000002 /* BackendURLPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendURLPolicyTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* ChusennoteTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChusennoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000000000000000000000F /* EventModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A10000000000000000000020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F20000000000000000000001 /* FirebaseMessaging in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000004 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -99,6 +128,7 @@
 				DCCF68DDA9C3D5F5DF380734 /* NotificationPermission.swift */,
 				1E22908DA5B901B620003349 /* Formatting.swift */,
 				5E6F7089A1B2C3D41A2B3C4D /* KeychainStore.swift */,
+				5E6F7089A1B2C3D41A2B3C4E /* BackendURLPolicy.swift */,
 			);
 			name = Support;
 			path = Support;
@@ -108,6 +138,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000031 /* Chusennote */,
+				B10000000000000000000005 /* Tests */,
 				A10000000000000000000032 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -120,6 +151,8 @@
 				A10000000000000000000013 /* Models.swift */,
 				A10000000000000000000014 /* APIClient.swift */,
 				A10000000000000000000015 /* Info.plist */,
+				F20000000000000000000004 /* Chusennote.entitlements */,
+				F20000000000000000000006 /* Assets.xcassets */,
 				326DBD494F0986691C914795 /* Theme */,
 				6BDB1855E8F900CAC2E9FA38 /* Components */,
 				4D2534BAF5E53A7B735C4BC2 /* Screens */,
@@ -132,8 +165,18 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000010 /* Chusennote.app */,
+				B10000000000000000000003 /* ChusennoteTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000005 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000002 /* BackendURLPolicyTests.swift */,
+				B1000000000000000000000F /* EventModelTests.swift */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -145,15 +188,38 @@
 			buildPhases = (
 				A10000000000000000000050 /* Sources */,
 				A10000000000000000000020 /* Frameworks */,
+				F20000000000000000000007 /* Resources */,
+				F20000000000000000000008 /* Copy optional Firebase configuration */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			name = Chusennote;
+			packageProductDependencies = (
+				F20000000000000000000003 /* FirebaseMessaging */,
+			);
 			productName = Chusennote;
 			productReference = A10000000000000000000010 /* Chusennote.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B10000000000000000000006 /* ChusennoteTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000000000000000000007 /* Build configuration list for PBXNativeTarget "ChusennoteTests" */;
+			buildPhases = (
+				B10000000000000000000008 /* Sources */,
+				B10000000000000000000004 /* Frameworks */,
+				B1000000000000000000000A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B1000000000000000000000B /* PBXTargetDependency */,
+			);
+			name = ChusennoteTests;
+			productName = ChusennoteTests;
+			productReference = B10000000000000000000003 /* ChusennoteTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -168,6 +234,10 @@
 					A10000000000000000000040 = {
 						CreatedOnToolsVersion = 16.0;
 					};
+					B10000000000000000000006 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = A10000000000000000000040;
+					};
 				};
 			};
 			buildConfigurationList = A10000000000000000000061 /* Build configuration list for PBXProject "Chusennote" */;
@@ -180,13 +250,55 @@
 			);
 			mainGroup = A10000000000000000000030;
 			productRefGroup = A10000000000000000000032 /* Products */;
+			packageReferences = (
+				F20000000000000000000002 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				A10000000000000000000040 /* Chusennote */,
+				B10000000000000000000006 /* ChusennoteTests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F20000000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F20000000000000000000005 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B1000000000000000000000A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F20000000000000000000008 /* Copy optional Firebase configuration */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Chusennote/GoogleService-Info.plist",
+			);
+			name = "Copy optional Firebase configuration";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nsource=\"$SRCROOT/Chusennote/GoogleService-Info.plist\"\ndestination=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GoogleService-Info.plist\"\nif [ -f \"$source\" ]; then\n  /usr/bin/plutil -lint \"$source\" >/dev/null\n  /bin/cp \"$source\" \"$destination\"\nelse\n  /bin/rm -f \"$destination\"\n  if [ \"$CONFIGURATION\" = Release ] && [ \"${CODE_SIGNING_ALLOWED:-YES}\" != NO ]; then\n    echo \"error: signed Release builds require GoogleService-Info.plist\" >&2\n    exit 1\n  fi\n  echo \"Firebase configuration absent; push registration disabled.\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A10000000000000000000050 /* Sources */ = {
@@ -210,6 +322,16 @@
 				6F214C42B99981A365703EB0 /* NotificationPermission.swift in Sources */,
 				0ACDAD71EB201EA5E41F7B3E /* Formatting.swift in Sources */,
 				1A2B3C4D5E6F7089A1B2C3D4 /* KeychainStore.swift in Sources */,
+				1A2B3C4D5E6F7089A1B2C3D5 /* BackendURLPolicy.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B10000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000001 /* BackendURLPolicyTests.swift in Sources */,
+				B1000000000000000000000E /* EventModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -336,9 +458,12 @@
 		A10000000000000000000071 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				APS_ENVIRONMENT = development;
+				CODE_SIGN_ENTITLEMENTS = Chusennote/Chusennote.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Chusennote/Info.plist;
 				MARKETING_VERSION = 0.1.0;
@@ -353,9 +478,12 @@
 		A10000000000000000000072 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				APS_ENVIRONMENT = production;
+				CODE_SIGN_ENTITLEMENTS = Chusennote/Chusennote.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Chusennote/Info.plist;
 				MARKETING_VERSION = 0.1.0;
@@ -364,6 +492,38 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B1000000000000000000000C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chusennote.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chusennote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Chusennote";
+			};
+			name = Debug;
+		};
+		B1000000000000000000000D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chusennote.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chusennote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Chusennote";
 			};
 			name = Release;
 		};
@@ -388,7 +548,43 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		B10000000000000000000007 /* Build configuration list for PBXNativeTarget "ChusennoteTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B1000000000000000000000C /* Debug */,
+				B1000000000000000000000D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
-	};
+
+/* Begin PBXTargetDependency section */
+		B1000000000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000040 /* Chusennote */;
+			targetProxy = B10000000000000000000009 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F20000000000000000000002 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.17.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F20000000000000000000003 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F20000000000000000000002 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
+		};
+/* End XCSwiftPackageProductDependency section */
+};
 	rootObject = A10000000000000000000060 /* Project object */;
 }

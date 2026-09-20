@@ -63,7 +63,7 @@ struct NotificationsView: View {
                             } else {
                                 ForEach(store.alerts.prefix(10)) { alert in
                                     RowContent(
-                                        title: alert.type,
+                                        title: alertTypeText(alert),
                                         subtitle: chusennoteAlertText(alert),
                                         systemImage: "bell.badge"
                                     )

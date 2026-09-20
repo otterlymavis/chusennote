@@ -180,4 +180,5 @@ enum TicketRoundDateKind {
     case result
     case payment
     case sale
+    case trade
 }

@@ -23,6 +23,8 @@ func defaultAlertKeyOrder() -> [String] {
         "results_today",
         "payment_due_soon",
         "general_sale_soon",
+        "trade_opened",
+        "trade_closing_soon",
         "watch_failed"
     ]
 }
@@ -55,11 +57,60 @@ func readableAlertText(_ value: String?) -> String {
         "results_today": "results today",
         "payment_due_soon": "payment due",
         "general_sale_soon": "general sale",
+        "trade_opened": "resale opened",
+        "trade_closing_soon": "resale closing",
         "watch_failed": "watch failed"
     ]
     let keys = orderedAlertKeys(alertKeys(value ?? ""))
     guard !keys.isEmpty else { return "none" }
     return keys.map { labels[$0] ?? $0 }.joined(separator: ", ")
+}
+
+func eventStatusText(statusLabel: String?, status: String?) -> String {
+    if let statusLabel, !statusLabel.isEmpty {
+        return statusLabel
+    }
+    let labels = [
+        "watching": "Watching",
+        "official_found": "Official page found",
+        "ticket_links_found": "Ticket links found",
+        "lottery_found": "Ticket rounds found",
+        "lottery_open": "Ticket window open"
+    ]
+    return labels[status ?? ""] ?? "Watching"
+}
+
+func eventStatusText(_ event: EventSummary) -> String {
+    eventStatusText(statusLabel: event.statusLabel, status: event.status)
+}
+
+func alertTypeText(typeLabel: String?, type: String) -> String {
+    if let typeLabel, !typeLabel.isEmpty {
+        return typeLabel
+    }
+    let labels = [
+        "new_official_page": "Official page found",
+        "new_ticket_link": "Ticket link found",
+        "new_lottery_round": "New ticket round",
+        "ticket_field_changed": "Ticket details changed",
+        "lottery_opened": "Lottery opened",
+        "lottery_closing_soon": "Lottery closing soon",
+        "results_today": "Results today",
+        "payment_due_soon": "Payment due soon",
+        "general_sale_soon": "General sale soon",
+        "trade_opened": "Official resale opened",
+        "trade_closing_soon": "Official resale closing soon",
+        "watch_failed": "Watch check failed",
+        "watch_filtered": "Watch filtered"
+    ]
+    if let label = labels[type] {
+        return label
+    }
+    return type.replacingOccurrences(of: "_", with: " ").capitalized
+}
+
+func alertTypeText(_ alert: AlertPayload) -> String {
+    alertTypeText(typeLabel: alert.typeLabel, type: alert.type)
 }
 
 func ticketRoundTitle(_ round: TicketRound) -> String {
@@ -127,7 +178,9 @@ func ticketRoundDateValues(_ round: TicketRound) -> [String] {
         round.applicationEndAt,
         round.resultsDate,
         round.generalSaleDate,
-        round.paymentEndAt
+        round.paymentEndAt,
+        round.tradeStartAt,
+        round.tradeEndAt
     ]
         .compactMap { $0 }
         .filter { !$0.isEmpty }
@@ -139,7 +192,9 @@ func ticketRoundDateItems(_ round: TicketRound) -> [TicketRoundDateItem] {
         ticketRoundDateItem("Apply closes", round.applicationEndAt, kind: .apply),
         ticketRoundDateItem("Results", round.resultsDate, kind: .result),
         ticketRoundDateItem("Payment due", round.paymentEndAt, kind: .payment),
-        ticketRoundDateItem("General sale", round.generalSaleDate, kind: .sale)
+        ticketRoundDateItem("General sale", round.generalSaleDate, kind: .sale),
+        ticketRoundDateItem("Resale opens", round.tradeStartAt, kind: .trade),
+        ticketRoundDateItem("Resale closes", round.tradeEndAt, kind: .trade)
     ]
         .compactMap { $0 }
 }
@@ -159,6 +214,9 @@ func ticketRoundAccent(_ round: TicketRound) -> SemanticColor {
     if round.generalSaleDate?.isEmpty == false {
         return .success
     }
+    if round.tradeStartAt?.isEmpty == false || round.tradeEndAt?.isEmpty == false {
+        return .highlight
+    }
     return .info
 }
 
@@ -172,6 +230,8 @@ func ticketDateColor(_ kind: TicketRoundDateKind) -> SemanticColor {
         return .warning
     case .sale:
         return .success
+    case .trade:
+        return .highlight
     }
 }
 

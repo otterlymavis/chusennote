@@ -97,6 +97,27 @@ struct AlertPresetToggle: View {
     }
 }
 
+struct AlertPreferenceToggles: View {
+    @Binding var alerts: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            AlertPresetToggle(title: "Official page found", key: "new_official_page", alerts: $alerts)
+            AlertPresetToggle(title: "Ticket link found", key: "new_ticket_link", alerts: $alerts)
+            AlertPresetToggle(title: "New lottery rounds", key: "new_lottery_round", alerts: $alerts)
+            AlertPresetToggle(title: "Ticket details changed", key: "ticket_field_changed", alerts: $alerts)
+            AlertPresetToggle(title: "Lottery opened", key: "lottery_opened", alerts: $alerts)
+            AlertPresetToggle(title: "Closing soon", key: "lottery_closing_soon", alerts: $alerts)
+            AlertPresetToggle(title: "Results today", key: "results_today", alerts: $alerts)
+            AlertPresetToggle(title: "Payment due soon", key: "payment_due_soon", alerts: $alerts)
+            AlertPresetToggle(title: "General sale soon", key: "general_sale_soon", alerts: $alerts)
+            AlertPresetToggle(title: "Official resale opened", key: "trade_opened", alerts: $alerts)
+            AlertPresetToggle(title: "Official resale closing soon", key: "trade_closing_soon", alerts: $alerts)
+            AlertPresetToggle(title: "Watch failed", key: "watch_failed", alerts: $alerts)
+        }
+    }
+}
+
 struct CollapsibleTextSection: View {
     let title: String
     var icon: String = "sparkle.magnifyingglass"

@@ -5,7 +5,12 @@ import UserNotifications
 final class NotificationPermission: ObservableObject {
     @Published private(set) var status: UNAuthorizationStatus = .notDetermined
 
+    private var pushIsConfigured: Bool {
+        DeviceRegistration.firebaseMessagingConfigured
+    }
+
     var isEnabled: Bool {
+        guard pushIsConfigured else { return false }
         switch status {
         case .authorized, .provisional, .ephemeral:
             return true
@@ -17,6 +22,7 @@ final class NotificationPermission: ObservableObject {
     }
 
     var title: String {
+        guard pushIsConfigured else { return "Firebase is not configured" }
         switch status {
         case .authorized:
             return "Notifications are on"
@@ -34,6 +40,9 @@ final class NotificationPermission: ObservableObject {
     }
 
     var detail: String {
+        guard pushIsConfigured else {
+            return "Add GoogleService-Info.plist to enable push registration."
+        }
         switch status {
         case .authorized, .provisional, .ephemeral:
             return "Ticket reminders can appear on this iPhone."
@@ -47,15 +56,17 @@ final class NotificationPermission: ObservableObject {
     }
 
     var actionTitle: String {
-        status == .denied ? "Open iOS Settings" : "Enable Notifications"
+        guard pushIsConfigured else { return "Firebase setup required" }
+        return status == .denied ? "Open iOS Settings" : "Enable Notifications"
     }
 
     var actionIcon: String {
-        status == .denied ? "gearshape" : "bell.badge.fill"
+        guard pushIsConfigured else { return "wrench.and.screwdriver" }
+        return status == .denied ? "gearshape" : "bell.badge.fill"
     }
 
     var canAct: Bool {
-        !isEnabled
+        pushIsConfigured && !isEnabled
     }
 
     func refresh() {
@@ -68,6 +79,7 @@ final class NotificationPermission: ObservableObject {
 
     @MainActor
     func performAction() {
+        guard pushIsConfigured else { return }
         if status == .denied {
             guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
             UIApplication.shared.open(url)
