@@ -27,6 +27,7 @@ def blocks_to_json(blocks: AppBlocks) -> str:
 
 
 def upsert_keyword(connection: sqlite3.Connection, keyword: str, now: str) -> int:
+    keyword = validated_keyword(keyword)
     connection.execute(
         """
         INSERT INTO watched_keywords(keyword, kind, alert_preferences, created_at, updated_at)
@@ -50,6 +51,9 @@ def add_watch(
     now: str | None = None,
     user_id: int | None = None,
 ) -> Watch:
+    keyword = validated_keyword(keyword)
+    if kind not in WATCH_KINDS:
+        raise ValueError(f"kind must be one of: {', '.join(WATCH_KINDS)}")
     timestamp = now or utc_now_iso()
     with connect(db_path) as connection:
         init_db(connection)
@@ -64,23 +68,40 @@ def add_watch(
             ).fetchone()
             if owner and not bool(existing[1]):
                 raise ValueError(f"Watch not found: {keyword}")
-        connection.execute(
-            """
-            INSERT INTO watched_keywords(
-                keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, created_at, updated_at
+        if user_id is not None and user_id > 0:
+            # The keyword row is the shared discovery identity. Personal lane,
+            # filtering, and alert choices live on user_watches so one account
+            # cannot overwrite another account's preferences by re-adding the
+            # same canonical keyword.
+            connection.execute(
+                """
+                INSERT INTO watched_keywords(
+                    keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences,
+                    muted, created_at, updated_at
+                )
+                VALUES (?, ?, '', '', '', ?, 0, ?, ?)
+                ON CONFLICT(keyword) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (keyword, kind, DEFAULT_ALERT_PREFERENCES, timestamp, timestamp),
             )
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(keyword) DO UPDATE SET
-                kind = excluded.kind,
-                tags = excluded.tags,
-                preferred_regions = excluded.preferred_regions,
-                preferred_venues = excluded.preferred_venues,
-                alert_preferences = excluded.alert_preferences,
-                muted = 0,
-                updated_at = excluded.updated_at
-            """,
-            (keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, timestamp, timestamp),
-        )
+        else:
+            connection.execute(
+                """
+                INSERT INTO watched_keywords(
+                    keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(keyword) DO UPDATE SET
+                    kind = excluded.kind,
+                    tags = excluded.tags,
+                    preferred_regions = excluded.preferred_regions,
+                    preferred_venues = excluded.preferred_venues,
+                    alert_preferences = excluded.alert_preferences,
+                    muted = 0,
+                    updated_at = excluded.updated_at
+                """,
+                (keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, timestamp, timestamp),
+            )
         row = connection.execute(
             """
             SELECT id, keyword, kind, tags, preferred_regions, preferred_venues, alert_preferences, muted, last_checked_at
@@ -105,11 +126,40 @@ def add_watch(
         if user_id is not None and user_id > 0:
             connection.execute(
                 """
-                INSERT INTO user_watches(user_id, watch_id, muted, created_at, updated_at)
-                VALUES (?, ?, 0, ?, ?)
-                ON CONFLICT(user_id, watch_id) DO UPDATE SET muted = 0, updated_at = excluded.updated_at
+                INSERT INTO user_watches(
+                    user_id, watch_id, kind, tags, preferred_regions, preferred_venues,
+                    alert_preferences, muted, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(user_id, watch_id) DO UPDATE SET
+                    kind = excluded.kind,
+                    tags = excluded.tags,
+                    preferred_regions = excluded.preferred_regions,
+                    preferred_venues = excluded.preferred_venues,
+                    alert_preferences = excluded.alert_preferences,
+                    muted = 0,
+                    updated_at = excluded.updated_at
                 """,
-                (user_id, watch.id, timestamp, timestamp),
+                (
+                    user_id,
+                    watch.id,
+                    kind,
+                    tags,
+                    preferred_regions,
+                    preferred_venues,
+                    alert_preferences,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            watch = dataclasses.replace(
+                watch,
+                kind=kind,
+                tags=tags,
+                preferred_regions=preferred_regions,
+                preferred_venues=preferred_venues,
+                alert_preferences=alert_preferences or DEFAULT_ALERT_PREFERENCES,
+                muted=False,
             )
         return watch
 
@@ -166,12 +216,17 @@ def list_watches(
             elif user_id is not None:
                 clauses.append("k.local_muted = 0")
         if kind:
-            clauses.append("k.kind = ?")
+            clauses.append("COALESCE(uw.kind, k.kind) = ?" if user_id is not None and user_id > 0 else "k.kind = ?")
             params.append(kind)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
             f"""
-            SELECT k.id, k.keyword, k.kind, k.tags, k.preferred_regions, k.preferred_venues, k.alert_preferences,
+            SELECT k.id, k.keyword,
+                   {"COALESCE(uw.kind, k.kind)" if user_id is not None and user_id > 0 else "k.kind"},
+                   {"COALESCE(uw.tags, k.tags)" if user_id is not None and user_id > 0 else "k.tags"},
+                   {"COALESCE(uw.preferred_regions, k.preferred_regions)" if user_id is not None and user_id > 0 else "k.preferred_regions"},
+                   {"COALESCE(uw.preferred_venues, k.preferred_venues)" if user_id is not None and user_id > 0 else "k.preferred_venues"},
+                   {"COALESCE(uw.alert_preferences, k.alert_preferences)" if user_id is not None and user_id > 0 else "k.alert_preferences"},
                    {"(k.muted != 0 OR uw.muted != 0)" if user_id is not None and user_id > 0 else "k.local_muted" if user_id is not None else "k.muted"}, k.last_checked_at
             FROM watched_keywords k
             {join}
@@ -297,7 +352,14 @@ def add_watch_source(
     timestamp = now or utc_now_iso()
     url = clean_text(url)
     if not url:
-        raise ValueError("Source URL is required")
+        raise ValueError("Source URL or private note is required")
+    if len(url) > MAX_SOURCE_VALUE_LENGTH:
+        raise ValueError(f"Source URL or private note must be {MAX_SOURCE_VALUE_LENGTH} characters or fewer")
+    if not private_note and not is_public_fetch_url(url):
+        raise ValueError("Public source must be a credential-free public HTTP(S) URL")
+    label = clean_text(label)
+    if len(label) > MAX_SOURCE_LABEL_LENGTH:
+        raise ValueError(f"Source label must be {MAX_SOURCE_LABEL_LENGTH} characters or fewer")
     with connect(db_path) as connection:
         init_db(connection)
         watch = resolve_watch(connection, watch_identifier)
@@ -479,9 +541,10 @@ def upsert_event(
         """
         INSERT INTO events(
             watch_id, canonical_title, official_url, summary, event_dates_json, venues_json,
-            ticket_rules_json, ticket_prices_json, status, event_key, created_at, updated_at
+            ticket_rules_json, ticket_prices_json, organizers_json, lineup_json,
+            status, event_key, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(watch_id, official_url) DO UPDATE SET
             canonical_title = excluded.canonical_title,
             summary = excluded.summary,
@@ -489,6 +552,8 @@ def upsert_event(
             venues_json = excluded.venues_json,
             ticket_rules_json = excluded.ticket_rules_json,
             ticket_prices_json = excluded.ticket_prices_json,
+            organizers_json = excluded.organizers_json,
+            lineup_json = excluded.lineup_json,
             status = excluded.status,
             event_key = excluded.event_key,
             updated_at = excluded.updated_at
@@ -502,6 +567,8 @@ def upsert_event(
             json.dumps(list(info.venues), ensure_ascii=False),
             json.dumps(list(info.ticket_rules), ensure_ascii=False),
             json.dumps(list(info.ticket_prices), ensure_ascii=False),
+            json.dumps(list(info.organizers), ensure_ascii=False),
+            json.dumps(list(info.lineup), ensure_ascii=False),
             compute_event_status(info, rounds, parse_iso_date(now)),
             event_identity_key(info),
             now,
@@ -686,6 +753,7 @@ def cleanup_database(db_path: str) -> dict[str, int]:
                     results_date=ticket.results_date,
                     general_sale_date=ticket.general_sale_date,
                     payment_deadline=ticket.payment_deadline,
+                    year_hint=ticket_year_hint(ticket),
                 )
                 canonical_names = {round_.name for round_ in canonical_member_rounds}
                 inserted = 0
@@ -873,6 +941,7 @@ def ticket_round_key(ticket: TicketRound) -> str:
                 normalize_round_name(normalized.name),
                 normalized.application_start_at or "",
                 normalized.general_sale_date or "",
+                normalized.trade_start_at or "",
             )
         )
     )
@@ -893,7 +962,10 @@ def ticket_round_fields(ticket: TicketRound) -> dict[str, str | None]:
 
 
 def compute_event_status(info: EventInfo, rounds: Sequence[TicketRound], today: dt.date | None = None) -> str:
-    if any(normalize_ticket_round(ticket, today).status in {"open", "closing_soon"} for ticket in rounds):
+    if any(
+        normalize_ticket_round(ticket, today).status in {"open", "closing_soon", "trade_open", "trade_closing_soon"}
+        for ticket in rounds
+    ):
         return "lottery_open"
     if rounds:
         return "lottery_found"
@@ -933,6 +1005,8 @@ def lifecycle_alerts_for_round(event_title: str, ticket: TicketRound, today: dt.
     results_date = parse_iso_date(ticket.results_date)
     general_sale_date = parse_iso_date(ticket.general_sale_date)
     payment_deadline = parse_iso_date(ticket.payment_end_at or ticket.payment_deadline)
+    trade_start = parse_iso_date(ticket.trade_start_at)
+    trade_end = parse_iso_date(ticket.trade_end_at)
 
     if lottery_start and lottery_start == today:
         alerts.append(date_alert("lottery_opened", event_title, ticket, "lottery_start", lottery_start, today))
@@ -944,6 +1018,10 @@ def lifecycle_alerts_for_round(event_title: str, ticket: TicketRound, today: dt.
         alerts.append(date_alert("payment_due_soon", event_title, ticket, "payment_deadline", payment_deadline, today))
     if general_sale_date and 0 <= (general_sale_date - today).days <= 2:
         alerts.append(date_alert("general_sale_soon", event_title, ticket, "general_sale_date", general_sale_date, today))
+    if trade_start and trade_start == today:
+        alerts.append(date_alert("trade_opened", event_title, ticket, "trade_start_at", trade_start, today))
+    if trade_end and 0 <= (trade_end - today).days <= 2:
+        alerts.append(date_alert("trade_closing_soon", event_title, ticket, "trade_end_at", trade_end, today))
     return alerts
 
 
@@ -970,6 +1048,31 @@ def record_lifecycle_alerts(
             if cursor.rowcount:
                 alerts.append(alert)
     return alerts
+
+
+def record_change_alerts(
+    connection: sqlite3.Connection,
+    event_id: int,
+    alerts: Sequence[dict[str, str]],
+    now: str,
+) -> None:
+    """Persist discovery/change alerts that were emitted from state transitions.
+
+    Unlike lifecycle alerts, these are already de-duplicated by the upsert that
+    produced them. Including the observation timestamp in the key preserves a
+    later, genuine repeat transition (for example a date changing back and then
+    forward again) while making a retried save at the same timestamp idempotent.
+    """
+    for alert in alerts:
+        payload = json.dumps(alert, ensure_ascii=False, sort_keys=True)
+        key = stable_hash("|".join(("change", now, payload)))
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO alert_log(event_id, alert_key, alert_type, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (event_id, key, alert["type"], payload, now),
+        )
 
 
 def upsert_ticket_rounds(
@@ -1138,6 +1241,7 @@ def save_blocks(db_path: str, blocks: AppBlocks, now: str | None = None, watch_i
             alerts.append({"type": "new_official_page", "event": event_title, "url": info.official_page})
         alerts.extend(upsert_sources(connection, event_id, info.ticket_links, timestamp))
         alerts.extend(upsert_ticket_rounds(connection, event_id, event_title, normalized_rounds, timestamp))
+        record_change_alerts(connection, event_id, alerts, timestamp)
         alerts.extend(record_lifecycle_alerts(connection, event_id, event_title, normalized_rounds, timestamp))
         save_snapshot(connection, event_id, dataclasses.replace(blocks, ticket_info=normalized_rounds), timestamp)
         return alerts
@@ -1173,6 +1277,23 @@ def add_subscription(
 ) -> NotificationSubscription:
     if scope not in NOTIFY_SCOPES:
         raise ValueError(f"Unknown notification scope: {scope}")
+    requested_channels = [clean_text(channel).lower() for channel in str(channels or "").split(",")]
+    requested_channels = list(dict.fromkeys(channel for channel in requested_channels if channel))
+    unknown_channels = [channel for channel in requested_channels if channel not in NOTIFY_CHANNELS]
+    if unknown_channels:
+        raise ValueError(f"Unknown notification channel: {unknown_channels[0]}")
+    if user_id is not None and user_id > 0:
+        global_channels = [channel for channel in requested_channels if channel in {"slack", "discord", "line"}]
+        if global_channels:
+            raise ValueError(
+                f"Account subscriptions cannot use global {global_channels[0]} delivery; use feed or push"
+            )
+    channels = ",".join(requested_channels) or DEFAULT_NOTIFY_CHANNELS
+    requested_leads = [clean_text(value) for value in str(lead_days or "").split(",")]
+    if any(value and not value.isdigit() for value in requested_leads):
+        raise ValueError("Reminder lead days must be comma-separated non-negative integers")
+    normalized_leads = list(dict.fromkeys(str(int(value)) for value in requested_leads if value))
+    lead_days = ",".join(normalized_leads) or ",".join(str(value) for value in DEFAULT_LEAD_DAYS)
     timestamp = now or utc_now_iso()
     with connect(db_path) as connection:
         init_db(connection)
@@ -1292,6 +1413,14 @@ def register_device(
     token = clean_text(token)
     if not token:
         raise ValueError("Device token is required")
+    if len(token) > MAX_DEVICE_TOKEN_LENGTH:
+        raise ValueError(f"Device token must be {MAX_DEVICE_TOKEN_LENGTH} characters or fewer")
+    platform = clean_text(platform).lower()
+    if platform not in DEVICE_PLATFORMS:
+        raise ValueError(f"Device platform must be one of: {', '.join(DEVICE_PLATFORMS)}")
+    label = clean_text(label)
+    if len(label) > MAX_DEVICE_LABEL_LENGTH:
+        raise ValueError(f"Device label must be {MAX_DEVICE_LABEL_LENGTH} characters or fewer")
     timestamp = now or utc_now_iso()
     with connect(db_path) as connection:
         init_db(connection)
@@ -1362,6 +1491,84 @@ def notification_already_sent(connection: sqlite3.Connection, notification_key: 
     ).fetchone() is not None
 
 
+def notification_delivery_status(
+    connection: sqlite3.Connection,
+    notification_key: str,
+) -> tuple[bool, dict[str, bool]]:
+    """Return whether a reminder exists and its per-channel delivery state.
+
+    Rows written before per-channel results were recorded stay complete so an
+    upgrade never replays historical notifications.
+    """
+    row = connection.execute(
+        "SELECT payload_json FROM notification_log WHERE notification_key = ?",
+        (notification_key,),
+    ).fetchone()
+    if row is None:
+        return False, {}
+    try:
+        payload = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return True, {"_legacy_complete": True}
+    delivered = payload.get("delivered") if isinstance(payload, dict) else None
+    if not isinstance(delivered, dict):
+        return True, {"_legacy_complete": True}
+    return True, {str(channel): value is True for channel, value in delivered.items()}
+
+
+def notification_delivery_claim_state(
+    connection: sqlite3.Connection,
+    notification_key: str,
+) -> tuple[bool, dict[str, bool], str | None, int]:
+    row = connection.execute(
+        "SELECT payload_json, processing_at, attempt_count FROM notification_log WHERE notification_key = ?",
+        (notification_key,),
+    ).fetchone()
+    if row is None:
+        return False, {}, None, 0
+    _, delivery = notification_delivery_status(connection, notification_key)
+    return True, delivery, str(row[1]) if row[1] else None, int(row[2] or 0)
+
+
+def claim_notification_delivery(
+    connection: sqlite3.Connection,
+    notification_key: str,
+    subscription_id: int | None,
+    event_id: int | None,
+    channel: str,
+    previous_delivery: dict[str, bool],
+    now: str,
+    stale_before: str,
+    *,
+    existed: bool,
+    expected_attempt_count: int,
+) -> bool:
+    payload = json.dumps({"delivered": previous_delivery}, ensure_ascii=False, sort_keys=True)
+    if not existed:
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO notification_log(
+                notification_key, subscription_id, event_id, channel, payload_json,
+                created_at, processing_at, updated_at, attempt_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (notification_key, subscription_id, event_id, channel, payload, now, now, now),
+        )
+        return cursor.rowcount > 0
+    cursor = connection.execute(
+        """
+        UPDATE notification_log
+        SET processing_at = ?, updated_at = ?, attempt_count = attempt_count + 1
+        WHERE notification_key = ?
+          AND attempt_count = ?
+          AND (processing_at IS NULL OR processing_at <= ?)
+        """,
+        (now, now, notification_key, expected_attempt_count, stale_before),
+    )
+    return cursor.rowcount > 0
+
+
 def record_notification(
     connection: sqlite3.Connection,
     notification_key: str,
@@ -1373,9 +1580,19 @@ def record_notification(
 ) -> bool:
     cursor = connection.execute(
         """
-        INSERT OR IGNORE INTO notification_log(notification_key, subscription_id, event_id, channel, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO notification_log(
+            notification_key, subscription_id, event_id, channel, payload_json,
+            created_at, processing_at, updated_at, attempt_count
+        )
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 1)
+        ON CONFLICT(notification_key) DO UPDATE SET
+            subscription_id = excluded.subscription_id,
+            event_id = excluded.event_id,
+            channel = excluded.channel,
+            payload_json = excluded.payload_json,
+            processing_at = NULL,
+            updated_at = excluded.updated_at
         """,
-        (notification_key, subscription_id, event_id, channel, json.dumps(payload, ensure_ascii=False, sort_keys=True), now),
+        (notification_key, subscription_id, event_id, channel, json.dumps(payload, ensure_ascii=False, sort_keys=True), now, now),
     )
     return cursor.rowcount > 0

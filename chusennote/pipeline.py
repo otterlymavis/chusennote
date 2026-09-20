@@ -13,6 +13,7 @@ import dataclasses
 import json
 import sqlite3
 import time
+import urllib.parse
 from collections.abc import Sequence
 
 from .models import *  # noqa: F401,F403
@@ -25,6 +26,87 @@ from .crud import *  # noqa: F401,F403
 from .read_models import *  # noqa: F401,F403
 
 
+SITE_DISCOVERY_HINTS = (
+    "ticket", "live", "tour", "schedule", "event", "news", "information",
+    "チケット", "公演", "ライブ", "ツアー", "スケジュール", "先行", "抽選", "発売",
+)
+
+
+def same_public_site(base_url: str, candidate_url: str) -> bool:
+    try:
+        return (
+            len(candidate_url) <= MAX_SOURCE_VALUE_LENGTH
+            and is_public_fetch_url(candidate_url)
+            and urllib.parse.urlparse(base_url).hostname == urllib.parse.urlparse(candidate_url).hostname
+        )
+    except ValueError:
+        return False
+
+
+def site_discovery_manifests(page: Page, limit: int = 4) -> list[str]:
+    links = list(page.discovery_links)
+    links.extend(
+        link
+        for link in page.links
+        if any(marker in f"{link.label} {link.url}".lower() for marker in ("sitemap", "rss", "atom", "/feed"))
+    )
+    manifests: list[str] = []
+    for link in links:
+        if link.url not in manifests and same_public_site(page.url, link.url):
+            manifests.append(link.url)
+        if len(manifests) >= limit:
+            break
+    return manifests
+
+
+def fetch_site_discovery_pages(page: Page, keyword: str, limit: int = 4) -> list[Page]:
+    """Follow bounded, declared same-site RSS/Atom/sitemap links from an official page."""
+    manifest_queue = site_discovery_manifests(page)
+    seen_manifests: set[str] = set()
+    candidates: list[Link] = []
+    while manifest_queue and len(seen_manifests) < 6:
+        manifest_url = manifest_queue.pop(0)
+        if manifest_url in seen_manifests:
+            continue
+        seen_manifests.add(manifest_url)
+        try:
+            xml_text = request_html(manifest_url)
+        except (OSError, ValueError):
+            continue
+        pages, nested_manifests = parse_discovery_document(manifest_url, xml_text)
+        candidates.extend(link for link in pages if same_public_site(page.url, link.url))
+        manifest_queue.extend(
+            url
+            for url in nested_manifests
+            if url not in seen_manifests and same_public_site(page.url, url)
+        )
+
+    ranked: list[tuple[int, int, Link]] = []
+    seen_urls: set[str] = {page.url}
+    for index, link in enumerate(candidates):
+        if link.url in seen_urls:
+            continue
+        seen_urls.add(link.url)
+        haystack = f"{link.label} {urllib.parse.unquote(link.url)}"
+        score = (10 if keyword_matches_text(keyword, haystack) else 0) + sum(
+            1 for hint in SITE_DISCOVERY_HINTS if hint in haystack.lower()
+        )
+        if score:
+            ranked.append((score, -index, link))
+
+    discovered: list[Page] = []
+    for _, _, link in sorted(ranked, reverse=True):
+        try:
+            candidate_page = fetch_page(link.url)
+        except (OSError, ValueError):
+            continue
+        if page_matches_keyword(keyword, candidate_page):
+            discovered.append(candidate_page)
+        if len(discovered) >= limit:
+            break
+    return discovered
+
+
 def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = None) -> AppBlocks:
     results = list(search_results) if search_results is not None else search_web(keyword)
     official_pages: list[Page] = []
@@ -35,6 +117,9 @@ def build_blocks(keyword: str, search_results: Sequence[SearchResult] | None = N
             continue
         if page_matches_keyword(keyword, page):
             official_pages.append(page)
+
+    for page in tuple(official_pages):
+        official_pages.extend(fetch_site_discovery_pages(page, keyword))
 
     event_info = build_event_info(keyword, official_pages)
     rounds: list[TicketRound] = []
@@ -61,10 +146,14 @@ def fetch_ticket_link_rounds(links: Sequence[Link]) -> list[TicketRound]:
 
 def build_exact_event_blocks(keyword: str, title: str, url: str, snippet: str = "") -> AppBlocks:
     page = fetch_page(url)
-    event_info = build_event_info(keyword or title or page.title, (page,))
+    event_keyword = keyword or title or page.title
+    pages = (page, *fetch_site_discovery_pages(page, event_keyword))
+    event_info = build_event_info(event_keyword, pages)
     if not event_info.title:
         event_info = dataclasses.replace(event_info, title=title or page.title)
-    rounds: list[TicketRound] = list(extract_ticket_rounds_for_page(page))
+    rounds: list[TicketRound] = []
+    for candidate_page in pages:
+        rounds.extend(extract_ticket_rounds_for_page(candidate_page))
     rounds.extend(fetch_ticket_link_rounds(event_info.ticket_links))
     if snippet and not event_info.summary:
         event_info = dataclasses.replace(event_info, summary=snippet)
@@ -82,6 +171,8 @@ def build_artist_blocks(keyword: str, search_results: Sequence[SearchResult] | N
             continue
         if page_matches_keyword(keyword, page):
             official_pages.append(page)
+    for page in tuple(official_pages):
+        official_pages.extend(fetch_site_discovery_pages(page, keyword))
     info = build_event_info(keyword, official_pages)
     return AppBlocks(general_info=dataclasses.replace(info, ticket_links=()), ticket_info=())
 
@@ -183,7 +274,7 @@ def build_artist_event_blocks(keyword: str, limit: int = 8) -> list[AppBlocks]:
         # Prefer a dedicated live/tour page; the landing page mixes news dates
         # that are not shows. Fall back to the landing page only if there is no
         # schedule sub-page.
-        schedule_pages = fetch_schedule_pages(page)
+        schedule_pages = fetch_schedule_pages(page) or fetch_site_discovery_pages(page, keyword)
         for schedule_page in (schedule_pages or [page]):
             for entry in extract_tour_dates(schedule_page):
                 if entry.get("ended"):
@@ -233,6 +324,9 @@ def build_blocks_for_watch(db_path: str, watch: Watch) -> AppBlocks:
             continue
         source_pages.append(page)
         extra_rounds.extend(extract_ticket_rounds_for_page(page))
+        for discovered_page in fetch_site_discovery_pages(page, watch.keyword):
+            source_pages.append(discovered_page)
+            extra_rounds.extend(extract_ticket_rounds_for_page(discovered_page))
         for link in page.links:
             if not is_shiki_stage_schedule_url(link.url):
                 continue
@@ -356,14 +450,26 @@ def run_watch_loop(
                 run_count += 1
                 error_count = 0
                 reminders = notify_func(db_path) if notify_func else []
+                failed_reminders = sum(
+                    isinstance(item.get("delivered"), dict)
+                    and any(value is False for value in item["delivered"].values())
+                    for item in reminders
+                )
                 if alerts_json:
                     payload = {"run": run_count, "alerts": alerts}
                     if notify_func:
                         payload["reminders"] = len(reminders)
+                        payload["reminder_delivery_failures"] = failed_reminders
                     print(json.dumps(payload, ensure_ascii=False))
                 else:
                     scope = kind or "all"
-                    reminder_note = f" {len(reminders)} reminders sent." if notify_func else ""
+                    if notify_func and failed_reminders:
+                        reminder_note = (
+                            f" {len(reminders)} reminders processed; "
+                            f"{failed_reminders} awaiting external delivery retry."
+                        )
+                    else:
+                        reminder_note = f" {len(reminders)} reminders sent." if notify_func else ""
                     print(f"Run {run_count}: checked {scope} watches; {len(alerts)} alerts.{reminder_note}")
             except (OSError, ValueError, sqlite3.Error) as error:
                 run_count += 1

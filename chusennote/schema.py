@@ -55,6 +55,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             venues_json TEXT NOT NULL DEFAULT '[]',
             ticket_rules_json TEXT NOT NULL DEFAULT '[]',
             ticket_prices_json TEXT NOT NULL DEFAULT '[]',
+            organizers_json TEXT NOT NULL DEFAULT '[]',
+            lineup_json TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL DEFAULT 'watching',
             event_key TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -343,6 +345,8 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "events", "venues_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column_if_missing(connection, "events", "ticket_rules_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column_if_missing(connection, "events", "ticket_prices_json", "TEXT NOT NULL DEFAULT '[]'")
+    add_column_if_missing(connection, "events", "organizers_json", "TEXT NOT NULL DEFAULT '[]'")
+    add_column_if_missing(connection, "events", "lineup_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column_if_missing(connection, "sources", "provenance", "TEXT NOT NULL DEFAULT 'low_confidence'")
 
     add_column_if_missing(connection, "ticket_rounds", "round_number", "INTEGER")
@@ -398,7 +402,10 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             event_id INTEGER,
             channel TEXT NOT NULL,
             payload_json TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            processing_at TEXT,
+            updated_at TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS device_tokens (
@@ -448,6 +455,11 @@ def migrate_db(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             user_id INTEGER NOT NULL,
             watch_id INTEGER NOT NULL,
+            kind TEXT,
+            tags TEXT,
+            preferred_regions TEXT,
+            preferred_venues TEXT,
+            alert_preferences TEXT,
             muted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT,
@@ -459,6 +471,11 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     )
     add_column_if_missing(connection, "user_watches", "muted", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(connection, "user_watches", "updated_at", "TEXT")
+    add_column_if_missing(connection, "user_watches", "kind", "TEXT")
+    add_column_if_missing(connection, "user_watches", "tags", "TEXT")
+    add_column_if_missing(connection, "user_watches", "preferred_regions", "TEXT")
+    add_column_if_missing(connection, "user_watches", "preferred_venues", "TEXT")
+    add_column_if_missing(connection, "user_watches", "alert_preferences", "TEXT")
     connection.execute(
         """
         UPDATE watched_keywords
@@ -474,6 +491,12 @@ def migrate_db(connection: sqlite3.Connection) -> None:
     migrate_watch_sources_for_user_scope(connection)
     migrate_calendar_tokens_for_multiple_devices(connection)
     add_column_if_missing(connection, "device_tokens", "user_id", "INTEGER")
+    add_column_if_missing(connection, "notification_log", "processing_at", "TEXT")
+    add_column_if_missing(connection, "notification_log", "updated_at", "TEXT")
+    add_column_if_missing(connection, "notification_log", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    connection.execute(
+        "UPDATE notification_log SET updated_at = created_at WHERE updated_at IS NULL"
+    )
     # PRAGMA user_version is SQLite-only; Postgres reports the constant directly.
     if connection_dialect(connection) == "sqlite":
         connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")

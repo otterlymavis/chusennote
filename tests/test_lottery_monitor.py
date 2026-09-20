@@ -1,12 +1,19 @@
 import datetime as dt
+import http.cookiejar
+import http.client
+import io
 import json
 import os
 import pathlib
+import plistlib
 import sqlite3
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 import pytest
 
@@ -14,6 +21,567 @@ import lottery_monitor as lm
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def test_outbound_user_agent_uses_release_version():
+    assert lm.USER_AGENT.startswith(f"chusennote/{lm.APP_VERSION} ")
+
+
+def test_cli_version_uses_release_identity(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        lm.parse_args(["--version"])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out == f"lottery_monitor.py {lm.APP_VERSION} ({lm.APP_BUILD})\n"
+
+
+def test_release_signing_keys_are_excluded_from_git_and_docker_contexts():
+    gitignore = (ROOT / ".gitignore").read_text().splitlines()
+    dockerignore = (ROOT / ".dockerignore").read_text().splitlines()
+
+    for pattern in ("*.keystore", "*.jks", "*.p12", "*.mobileprovision", "*.provisionprofile"):
+        assert pattern in gitignore
+        assert pattern in dockerignore
+        assert f"**/{pattern}" in dockerignore
+    assert ".env*" in gitignore
+    assert "!.env.example" in gitignore
+    assert "**/.env*" in dockerignore
+    assert "**/__pycache__/" in dockerignore
+    assert "**/*.pyc" in dockerignore
+
+
+def test_deployment_smoke_checks_every_read_surface(tmp_path):
+    server = lm.create_web_server(str(tmp_path / "smoke.sqlite3"), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = lm.smoke_deployment(f"http://127.0.0.1:{server.server_port}")
+        postgres_required = lm.smoke_deployment(
+            f"http://127.0.0.1:{server.server_port}", require_postgres=True
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result["ok"]
+    assert result["errors"] == []
+    assert len(result["checks"]) == len(lm.SMOKE_ENDPOINTS)
+    assert all(check["ok"] for check in result["checks"])
+    assert not postgres_required["ok"]
+    assert postgres_required["errors"] == ["health: expected PostgreSQL backend"]
+    assert len(postgres_required["checks"]) == len(lm.SMOKE_ENDPOINTS)
+
+
+def test_deployment_smoke_rejects_invalid_base_url_without_requests():
+    result = lm.smoke_deployment("file:///tmp/chusennote")
+
+    assert not result["ok"]
+    assert result["base_url"] is None
+    assert result["checks"] == []
+    assert result["errors"] == ["base URL must be credential-free http or https without a query or fragment"]
+
+
+def test_deployment_smoke_does_not_echo_embedded_credentials():
+    result = lm.smoke_deployment("https://user:password@example.com/")
+
+    assert not result["ok"]
+    assert "user" not in json.dumps(result)
+    assert "password" not in json.dumps(result)
+
+
+def test_deployment_smoke_rejects_token_over_public_http_without_requests():
+    requested = False
+
+    def unexpected_request(request, timeout):
+        nonlocal requested
+        requested = True
+        raise AssertionError("request must not be sent")
+
+    result = lm.smoke_deployment(
+        "http://example.com",
+        api_token="smoke-secret",
+        opener=unexpected_request,
+    )
+
+    assert not requested
+    assert result == {
+        "ok": False,
+        "base_url": None,
+        "checks": [],
+        "errors": [
+            "API tokens require HTTPS, localhost, or a literal private-network IP"
+        ],
+    }
+    assert "smoke-secret" not in json.dumps(result)
+
+
+def test_deployment_smoke_allows_token_for_local_http(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self, limit):
+            return b"<html><title>chusennote</title></html>"
+
+    requests = []
+    monkeypatch.setattr(lm.smoke, "SMOKE_ENDPOINTS", (("home", "/", "html"),))
+    result = lm.smoke.smoke_deployment(
+        "http://127.0.0.1:8877",
+        api_token="local-token",
+        opener=lambda request, timeout: requests.append(request) or FakeResponse(),
+    )
+
+    assert result["ok"]
+    assert requests[0].get_header("Authorization") == "Bearer local-token"
+
+
+def test_smoke_cli_validates_positive_timeout():
+    for value in ("0", "nan", "inf"):
+        with pytest.raises(SystemExit):
+            lm.parse_args(["smoke", "--timeout", value])
+    direct = lm.smoke_deployment("https://example.com", timeout=float("nan"))
+    assert direct["errors"] == ["timeout must be finite and greater than zero"]
+
+
+def test_deployment_smoke_rejects_oversized_and_wrong_shape_responses(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self, limit):
+            return self.payload
+
+    monkeypatch.setattr(lm.smoke, "SMOKE_ENDPOINTS", (("home", "/", "html"),))
+    oversized = lm.smoke.smoke_deployment(
+        "https://example.com",
+        opener=lambda request, timeout: FakeResponse(b"x" * (lm.SMOKE_RESPONSE_LIMIT + 1)),
+    )
+    assert not oversized["ok"]
+    assert oversized["errors"] == ["home: response exceeds 1 MB"]
+
+    monkeypatch.setattr(lm.smoke, "SMOKE_ENDPOINTS", (("events", "/api/events", "list"),))
+    wrong_shape = lm.smoke.smoke_deployment(
+        "https://example.com",
+        opener=lambda request, timeout: FakeResponse(b"{}"),
+    )
+    assert not wrong_shape["ok"]
+    assert wrong_shape["errors"] == ["events: expected a JSON list"]
+
+
+def test_deployment_smoke_rejects_another_application_release(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self, limit):
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "version": "9.9.9",
+                    "build": 999,
+                    "schema_version": lm.DB_SCHEMA_VERSION,
+                }
+            ).encode()
+
+    monkeypatch.setattr(lm.smoke, "SMOKE_ENDPOINTS", (("health", "/api/health", "health"),))
+    result = lm.smoke.smoke_deployment(
+        "https://example.com",
+        opener=lambda request, timeout: FakeResponse(),
+    )
+
+    assert not result["ok"]
+    assert result["errors"] == [
+        f"health: release metadata does not match {lm.APP_VERSION} build {lm.APP_BUILD}"
+    ]
+
+
+def test_deployment_smoke_accepts_required_postgres_health(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self, limit):
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "version": lm.APP_VERSION,
+                    "build": lm.APP_BUILD,
+                    "schema_version": lm.DB_SCHEMA_VERSION,
+                    "db_path": "postgresql",
+                }
+            ).encode()
+
+    monkeypatch.setattr(lm.smoke, "SMOKE_ENDPOINTS", (("health", "/api/health", "health"),))
+    result = lm.smoke.smoke_deployment(
+        "https://example.com",
+        opener=lambda request, timeout: FakeResponse(),
+        require_postgres=True,
+    )
+
+    assert result["ok"]
+    assert result["errors"] == []
+
+
+def test_release_preflight_reports_configured_components_without_secrets(tmp_path):
+    for relative_path in (
+        "Dockerfile",
+        ".dockerignore",
+        "render.yaml",
+        ".env.example",
+        "lottery_monitor.py",
+        "requirements.txt",
+        "chusennote/models.py",
+        "chusennote/notifications.py",
+        "chusennote/preflight.py",
+        "chusennote/schema.py",
+        "chusennote/smoke.py",
+        "chusennote/web.py",
+        ".github/workflows/android.yml",
+        ".github/workflows/docker.yml",
+        ".github/workflows/hosted-monitor.yml",
+        ".github/workflows/ios.yml",
+        ".github/workflows/postgres.yml",
+        ".github/workflows/python.yml",
+        "ios/Chusennote.xcodeproj/project.pbxproj",
+        "ios/Chusennote.xcodeproj/xcshareddata/xcschemes/Chusennote.xcscheme",
+        "ios/Chusennote/Assets.xcassets/AppIcon.appiconset/Contents.json",
+        "ios/Chusennote/Chusennote.entitlements",
+        "ios/Chusennote/Info.plist",
+        "android/gradlew",
+        "android/app/build.gradle",
+        "android/app/src/main/AndroidManifest.xml",
+        "android/app/src/main/res/drawable/ic_launcher.xml",
+        "scripts/run-chusennote-once.sh",
+        "scripts/run-hosted-monitor.py",
+        "scripts/check-chusennote.ps1",
+        "scripts/start-chusennote.ps1",
+        "ios/Chusennote/GoogleService-Info.plist",
+        "android/app/google-services.json",
+        "release.keystore",
+        "adc.json",
+    ):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture")
+    (tmp_path / "ios/Chusennote/GoogleService-Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "BUNDLE_ID": "com.chusennote.mobile",
+                "PROJECT_ID": "example-project",
+                "GOOGLE_APP_ID": "example-app",
+                "GCM_SENDER_ID": "123456",
+            }
+        )
+    )
+    (tmp_path / "android/app/google-services.json").write_text(
+        json.dumps(
+            {
+                "project_info": {"project_id": "example-project", "project_number": "123456"},
+                "client": [
+                    {
+                        "client_info": {
+                            "mobilesdk_app_id": "example-app",
+                            "android_client_info": {"package_name": "com.chusennote.mobile"},
+                        }
+                    }
+                ],
+            }
+        )
+    )
+    (tmp_path / "adc.json").write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "example-project",
+                "client_email": "service@example.invalid",
+                "private_key": "fixture-key",
+            }
+        )
+    )
+    (tmp_path / "android/app/build.gradle").write_text(
+        f'versionCode {lm.APP_BUILD}\nversionName "{lm.APP_VERSION}"\n'
+    )
+    (tmp_path / "ios/Chusennote.xcodeproj/project.pbxproj").write_text(
+        "buildSettings = {\n"
+        f"CURRENT_PROJECT_VERSION = {lm.APP_BUILD};\nMARKETING_VERSION = {lm.APP_VERSION};\n"
+        "PRODUCT_BUNDLE_IDENTIFIER = com.chusennote.mobile;\n"
+        "DEVELOPMENT_TEAM = ABC1234567;\nAPS_ENVIRONMENT = production;\n"
+        "};\nname = Release;\n"
+    )
+    environment = {
+        "CHUSENNOTE_DATABASE_URL": "postgresql://user:secret@db.example/chusennote",
+        "CHUSENNOTE_SEARCH_PROVIDER": "brave",
+        "CHUSENNOTE_SEARCH_API_KEY": "search-secret",
+        "CHUSENNOTE_FIREBASE_PROJECT_ID": "example-project",
+        "GOOGLE_APPLICATION_CREDENTIALS": str(tmp_path / "adc.json"),
+        "CHUSENNOTE_ANDROID_KEYSTORE": str(tmp_path / "release.keystore"),
+        "CHUSENNOTE_ANDROID_STORE_PASSWORD": "store-secret",
+        "CHUSENNOTE_ANDROID_KEY_ALIAS": "key-secret",
+        "CHUSENNOTE_ANDROID_KEY_PASSWORD": "password-secret",
+        "CHUSENNOTE_SMTP_HOST": "smtp.example.com",
+        "CHUSENNOTE_NOTIFY_EMAIL": "local@example.com",
+        "CHUSENNOTE_SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/secret",
+        "CHUSENNOTE_DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/secret",
+        "CHUSENNOTE_LINE_CHANNEL_ACCESS_TOKEN": "line-secret",
+        "CHUSENNOTE_LINE_TARGET_ID": "target-secret",
+    }
+
+    status = lm.release_configuration_status(tmp_path, environment)
+    rendered = json.dumps(status)
+
+    assert status["release_files_ready"]
+    assert status["release_metadata"] == {
+        "ready": True,
+        "version": lm.APP_VERSION,
+        "build": lm.APP_BUILD,
+        "detail": "backend, iOS, and Android metadata match",
+    }
+    assert all(component["configured"] for component in status["components"].values())
+    assert status["unconfigured"] == []
+    assert status["production_configuration_ready"] is True
+    assert status["production_configuration_unconfigured"] == []
+    assert status["external_acceptance_verified"] is False
+    assert status["release_ready"] is False
+    assert status["external_acceptance_required"] == [
+        "deployed-service-smoke",
+        "ios-physical-device-push",
+        "android-physical-device-push",
+    ]
+    assert "secret" not in rendered
+
+
+def test_release_preflight_marks_partial_android_signing_incomplete(tmp_path):
+    status = lm.release_configuration_status(
+        tmp_path,
+        {"CHUSENNOTE_ANDROID_KEYSTORE": str(tmp_path / "missing.keystore")},
+    )
+
+    assert not status["components"]["android-signing"]["configured"]
+    assert status["components"]["android-signing"]["detail"] == "partially configured"
+
+
+def test_release_preflight_reports_missing_ios_signing_configuration(tmp_path):
+    project = tmp_path / "ios/Chusennote.xcodeproj/project.pbxproj"
+    project.parent.mkdir(parents=True)
+    project.write_text(
+        "buildSettings = {\nPRODUCT_BUNDLE_IDENTIFIER = com.chusennote.mobile;\n"
+        "APS_ENVIRONMENT = production;\nCODE_SIGN_STYLE = Automatic;\n};\nname = Release;\n"
+    )
+
+    status = lm.release_configuration_status(tmp_path, {})
+
+    assert not status["components"]["ios-signing"]["configured"]
+    assert status["components"]["ios-signing"]["detail"] == "missing Apple development team"
+
+
+def test_release_preflight_rejects_mobile_version_drift(tmp_path):
+    (tmp_path / "android/app").mkdir(parents=True)
+    (tmp_path / "ios/Chusennote.xcodeproj").mkdir(parents=True)
+    (tmp_path / "android/app/build.gradle").write_text('versionCode 8\nversionName "1.2.4"\n')
+    (tmp_path / "ios/Chusennote.xcodeproj/project.pbxproj").write_text(
+        "CURRENT_PROJECT_VERSION = 7;\nMARKETING_VERSION = 1.2.3;\n"
+    )
+
+    status = lm.release_configuration_status(tmp_path, {})
+
+    assert not status["release_metadata"]["ready"]
+    assert not status["release_files_ready"]
+
+
+def test_release_preflight_rejects_matching_mobile_metadata_from_another_release(tmp_path):
+    (tmp_path / "android/app").mkdir(parents=True)
+    (tmp_path / "ios/Chusennote.xcodeproj").mkdir(parents=True)
+    (tmp_path / "android/app/build.gradle").write_text(
+        'versionCode 999\nversionName "9.9.9"\n'
+    )
+    (tmp_path / "ios/Chusennote.xcodeproj/project.pbxproj").write_text(
+        "CURRENT_PROJECT_VERSION = 999;\nMARKETING_VERSION = 9.9.9;\n"
+    )
+
+    status = lm.release_configuration_status(tmp_path, {})
+
+    assert status["release_metadata"] == {
+        "ready": False,
+        "version": "9.9.9",
+        "build": 999,
+        "detail": "backend, iOS, and Android version/build metadata are missing or inconsistent",
+    }
+    assert not status["release_files_ready"]
+
+
+def test_release_preflight_rejects_malformed_or_wrong_target_configuration(tmp_path):
+    (tmp_path / "ios/Chusennote").mkdir(parents=True)
+    (tmp_path / "android/app").mkdir(parents=True)
+    (tmp_path / "ios/Chusennote/GoogleService-Info.plist").write_bytes(
+        plistlib.dumps({"BUNDLE_ID": "com.example.wrong"})
+    )
+    (tmp_path / "android/app/google-services.json").write_text(
+        json.dumps(
+            {
+                "project_info": {"project_id": "wrong-project"},
+                "client": [
+                    {"client_info": {"android_client_info": {"package_name": "com.example.wrong"}}}
+                ],
+            }
+        )
+    )
+    (tmp_path / "adc.json").write_text("not json")
+
+    status = lm.release_configuration_status(
+        tmp_path,
+        {
+            "CHUSENNOTE_DATABASE_URL": "sqlite:///not-production.sqlite3",
+            "CHUSENNOTE_FIREBASE_PROJECT_ID": "example-project",
+            "GOOGLE_APPLICATION_CREDENTIALS": str(tmp_path / "adc.json"),
+        },
+    )
+
+    assert not status["components"]["database"]["configured"]
+    assert not status["components"]["fcm-backend"]["configured"]
+    assert not status["components"]["ios-firebase"]["configured"]
+    assert not status["components"]["android-firebase"]["configured"]
+
+
+def test_release_preflight_rejects_mismatched_mobile_firebase_projects(tmp_path):
+    (tmp_path / "ios/Chusennote").mkdir(parents=True)
+    (tmp_path / "android/app").mkdir(parents=True)
+    (tmp_path / "ios/Chusennote/GoogleService-Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "BUNDLE_ID": "com.chusennote.mobile",
+                "PROJECT_ID": "ios-project",
+                "GOOGLE_APP_ID": "ios-app",
+                "GCM_SENDER_ID": "111111",
+            }
+        )
+    )
+    (tmp_path / "android/app/google-services.json").write_text(
+        json.dumps(
+            {
+                "project_info": {
+                    "project_id": "android-project",
+                    "project_number": "222222",
+                },
+                "client": [
+                    {
+                        "client_info": {
+                            "mobilesdk_app_id": "android-app",
+                            "android_client_info": {"package_name": "com.chusennote.mobile"},
+                        }
+                    }
+                ],
+            }
+        )
+    )
+
+    status = lm.release_configuration_status(
+        tmp_path,
+        {"CHUSENNOTE_FIREBASE_PROJECT_ID": "backend-project"},
+    )
+
+    assert not status["components"]["ios-firebase"]["configured"]
+    assert status["components"]["ios-firebase"]["detail"] == (
+        "iOS Firebase client targets another backend Firebase project"
+    )
+    assert not status["components"]["android-firebase"]["configured"]
+    assert status["components"]["android-firebase"]["detail"] == (
+        "Android Firebase client targets another backend Firebase project"
+    )
+
+
+def test_release_preflight_rejects_mismatched_mobile_firebase_senders(tmp_path):
+    (tmp_path / "ios/Chusennote").mkdir(parents=True)
+    (tmp_path / "android/app").mkdir(parents=True)
+    (tmp_path / "ios/Chusennote/GoogleService-Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "BUNDLE_ID": "com.chusennote.mobile",
+                "PROJECT_ID": "shared-project",
+                "GOOGLE_APP_ID": "ios-app",
+                "GCM_SENDER_ID": "111111",
+            }
+        )
+    )
+    (tmp_path / "android/app/google-services.json").write_text(
+        json.dumps(
+            {
+                "project_info": {
+                    "project_id": "shared-project",
+                    "project_number": "222222",
+                },
+                "client": [
+                    {
+                        "client_info": {
+                            "mobilesdk_app_id": "android-app",
+                            "android_client_info": {"package_name": "com.chusennote.mobile"},
+                        }
+                    }
+                ],
+            }
+        )
+    )
+
+    status = lm.release_configuration_status(
+        tmp_path,
+        {"CHUSENNOTE_FIREBASE_PROJECT_ID": "shared-project"},
+    )
+
+    assert not status["components"]["ios-firebase"]["configured"]
+    assert not status["components"]["android-firebase"]["configured"]
+    assert status["components"]["ios-firebase"]["detail"] == (
+        "iOS and Android Firebase clients use different sender projects"
+    )
+    assert status["components"]["android-firebase"]["detail"] == (
+        "iOS and Android Firebase clients use different sender projects"
+    )
+
+
+def test_release_preflight_cli_only_fails_for_explicit_requirements(monkeypatch, capsys):
+    monkeypatch.delenv("CHUSENNOTE_DATABASE_URL", raising=False)
+
+    assert lm.run_command(lm.parse_args(["preflight"])) == 0
+    assert lm.run_command(lm.parse_args(["preflight", "--require", "database"])) == 1
+    assert lm.run_command(lm.parse_args(["preflight", "--production"])) == 1
+
+    output = capsys.readouterr().out
+    assert "Local release files: ready." in output
+    assert "database: not configured" in output
+
+
+def test_ios_plist_declares_all_ipad_orientations():
+    with (ROOT / "ios" / "Chusennote" / "Info.plist").open("rb") as plist_file:
+        info = plistlib.load(plist_file)
+
+    assert set(info["UISupportedInterfaceOrientations~ipad"]) == {
+        "UIInterfaceOrientationPortrait",
+        "UIInterfaceOrientationPortraitUpsideDown",
+        "UIInterfaceOrientationLandscapeLeft",
+        "UIInterfaceOrientationLandscapeRight",
+    }
 
 
 def test_windows_task_scheduler_helpers_keep_expected_contract():
@@ -28,6 +596,147 @@ def test_windows_task_scheduler_helpers_keep_expected_contract():
     assert '"run"' in install_script
     assert "Get-ScheduledTaskInfo" in show_script
     assert "Unregister-ScheduledTask" in uninstall_script
+
+
+def test_windows_smoke_helper_delegates_to_canonical_checker():
+    script = (ROOT / "scripts" / "check-chusennote.ps1").read_text()
+
+    assert '"lottery_monitor.py", "smoke"' in script
+    assert '"--base-url", $BaseUrl' in script
+    assert '"--timeout", $TimeoutSec' in script
+    assert '"--json"' in script
+    assert '"--require-postgres"' in script
+    assert "exit $SmokeExitCode" in script
+    assert "Invoke-RestMethod" not in script
+    assert "Invoke-WebRequest" not in script
+
+
+def test_linux_systemd_helpers_render_safe_user_units_without_installing(tmp_path):
+    install_script = ROOT / "scripts" / "install-chusennote-systemd.sh"
+    show_script = (ROOT / "scripts" / "show-chusennote-systemd.sh").read_text()
+    uninstall_script = (ROOT / "scripts" / "uninstall-chusennote-systemd.sh").read_text()
+    env_file = tmp_path / "private monitor.env"
+    env_file.write_text("CHUSENNOTE_SEARCH_PROVIDER=brave\n")
+    db_path = tmp_path / "database folder" / "monitor.sqlite3"
+    environment = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config root")}
+
+    rendered = subprocess.run(
+        [
+            str(install_script),
+            "--kind", "artist",
+            "--interval-minutes", "45",
+            "--db", str(db_path),
+            "--python", sys.executable,
+            "--env-file", str(env_file),
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "Description=chusennote artist watch check" in rendered
+    assert "OnUnitActiveSec=45min" in rendered
+    assert f'WorkingDirectory="{ROOT}"' in rendered
+    assert f'EnvironmentFile=-"{env_file}"' in rendered
+    assert f'--db "{db_path}"' in rendered
+    assert "NoNewPrivileges=true" in rendered
+    assert "ProtectSystem=strict" in rendered
+    assert not (tmp_path / "config root").exists()
+    assert "journalctl --user -u chusennote-monitor.service" in show_script
+    assert "disable --now chusennote-monitor.timer" in uninstall_script
+
+    invalid = subprocess.run(
+        [str(install_script), "--interval-minutes", "0", "--dry-run"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert invalid.returncode == 2
+    assert "at least 1 minute" in invalid.stderr
+
+
+def test_macos_launchd_helpers_render_valid_plist_without_installing(tmp_path):
+    install_script = ROOT / "scripts" / "install-chusennote-launchd.sh"
+    show_script = (ROOT / "scripts" / "show-chusennote-launchd.sh").read_text()
+    uninstall_script = (ROOT / "scripts" / "uninstall-chusennote-launchd.sh").read_text()
+    env_file = tmp_path / "private & monitor.env"
+    env_file.write_text("CHUSENNOTE_SEARCH_PROVIDER=brave\n")
+    db_path = tmp_path / "database folder" / "monitor.sqlite3"
+    fake_home = tmp_path / "home folder"
+    environment = {**os.environ, "HOME": str(fake_home)}
+
+    output = subprocess.run(
+        [
+            str(install_script),
+            "--kind", "artist",
+            "--interval-minutes", "30",
+            "--db", str(db_path),
+            "--python", sys.executable,
+            "--env-file", str(env_file),
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    plist = plistlib.loads(output.partition("\n")[2].encode("utf-8"))
+
+    assert plist["Label"] == "com.chusennote.monitor"
+    assert plist["StartInterval"] == 1800
+    assert plist["RunAtLoad"] is True
+    assert plist["WorkingDirectory"] == str(ROOT)
+    assert plist["ProgramArguments"] == [
+        str(ROOT / "scripts" / "run-chusennote-once.sh"),
+        "--kind", "artist",
+        "--db", str(db_path),
+        "--python", sys.executable,
+        "--env-file", str(env_file),
+    ]
+    assert not fake_home.exists()
+    assert 'launchctl print "gui/$(id -u)/$label"' in show_script
+    assert 'launchctl bootout "gui/$(id -u)/$label"' in uninstall_script
+
+
+def test_service_runner_loads_env_as_data_without_executing_it(tmp_path):
+    runner = ROOT / "scripts" / "run-chusennote-once.sh"
+    capture_path = tmp_path / "captured.txt"
+    marker_path = tmp_path / "must-not-exist"
+    fake_python = tmp_path / "fake-python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$CHUSENNOTE_TEST_VALUE\" \"$DANGEROUS_VALUE\" \"$@\" > \"$CAPTURE_PATH\"\n"
+    )
+    fake_python.chmod(0o700)
+    env_file = tmp_path / "monitor.env"
+    env_file.write_text(
+        f"CAPTURE_PATH={capture_path}\n"
+        "CHUSENNOTE_TEST_VALUE=value with spaces\n"
+        f"DANGEROUS_VALUE=$(touch {marker_path})\n"
+    )
+
+    subprocess.run(
+        [
+            str(runner),
+            "--kind", "artist",
+            "--db", str(tmp_path / "monitor.sqlite3"),
+            "--python", str(fake_python),
+            "--env-file", str(env_file),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+    captured = capture_path.read_text().splitlines()
+    assert captured[0] == "value with spaces"
+    assert captured[1] == f"$(touch {marker_path})"
+    assert captured[2:5] == ["lottery_monitor.py", "artist", "run"]
+    assert not marker_path.exists()
 
 
 def test_extract_ticket_links_from_official_page():
@@ -49,6 +758,130 @@ def test_extract_ticket_links_from_official_page():
     assert info.ticket_links[0].url == "https://eplus.jp/example-musical/"
     assert "公演日" in info.event_dates[0]
     assert "Example Hall" in info.venues[0]
+
+
+def test_current_toho_naviserve_domain_is_an_actionable_primary_ticket_link():
+    url = "https://tohostage.toho-navi.com/naviserve/pt/"
+
+    assert lm.source_name_for_url(url) == "toho-navi"
+    assert lm.source_provenance(url, "東宝ナビザーブ") == "ticket_primary"
+    assert lm.is_actionable_ticket_link(url, "東宝ナビザーブ") is True
+
+
+def test_parse_page_retains_nonempty_image_alt_as_public_evidence():
+    page = lm.parse_page(
+        "https://official.example/stage",
+        """
+        <html><body>
+          <img src="schedule.svg" alt="公演期間：2026年8月9日(日)～9月13日(日)">
+          <a href="/venue"><img src="venue.svg" alt="東京建物 Brillia HALL"></a>
+          <img src="decoration.svg" alt="">
+        </body></html>
+        """,
+    )
+
+    assert "公演期間：2026年8月9日(日)～9月13日(日)" in page.text
+    assert "東京建物 Brillia HALL" in page.text
+    assert page.links[0].label == "東京建物 Brillia HALL"
+
+
+def test_parse_page_and_xml_support_declared_feed_and_sitemap_discovery():
+    page = lm.parse_page(
+        "https://official.example/stage",
+        """
+        <html><head>
+          <link rel="alternate" type="application/rss+xml" href="/news/feed.xml">
+          <link rel="sitemap" href="/sitemap.xml">
+        </head><body>Example Stage</body></html>
+        """,
+    )
+    assert [link.url for link in page.discovery_links] == [
+        "https://official.example/news/feed.xml",
+        "https://official.example/sitemap.xml",
+    ]
+
+    sitemap_pages, sitemap_manifests = lm.parse_discovery_document(
+        "https://official.example/sitemap.xml",
+        """<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <sitemap><loc>/events.xml</loc></sitemap></sitemapindex>""",
+    )
+    assert sitemap_pages == ()
+    assert sitemap_manifests == ("https://official.example/events.xml",)
+    event_pages, nested = lm.parse_discovery_document(
+        sitemap_manifests[0],
+        """<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc>https://official.example/news/example-stage</loc></url></urlset>""",
+    )
+    assert nested == ()
+    assert event_pages[0].url == "https://official.example/news/example-stage"
+    atom_pages, _ = lm.parse_discovery_document(
+        "https://official.example/feed.atom",
+        """<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Example Stage</title>
+        <link rel="self" href="/feed.atom"/><link rel="alternate" href="/news/example-stage"/>
+        </entry></feed>""",
+    )
+    assert atom_pages[0].url == "https://official.example/news/example-stage"
+
+
+def test_official_event_json_ld_enriches_event_info_and_ticket_link():
+    html = """
+    <html><head>
+      <title>Generic page title</title>
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {"@type": "WebSite", "name": "Example Site"},
+          {
+            "@type": "MusicEvent",
+            "name": "Example Live 2026",
+            "description": "One-night official performance.",
+            "startDate": "2026-10-24T18:00:00+09:00",
+            "endDate": "2026-10-24T21:00:00+09:00",
+            "location": {"@type": "Place", "name": "Example Arena"},
+            "organizer": {"@type": "Organization", "name": "Example Productions"},
+            "performer": [
+              {"@type": "MusicGroup", "name": "Example Band"},
+              {"@type": "Person", "name": "Example Guest"}
+            ],
+            "offers": {
+              "@type": "Offer",
+              "name": "Official tickets",
+              "url": "https://eplus.jp/example-live/"
+            }
+          }
+        ]
+      }
+      </script>
+    </head><body><p>Event details</p></body></html>
+    """
+    page = lm.parse_page("https://official.example/live", html)
+
+    info = lm.build_event_info("Example Live", [page])
+
+    assert len(page.structured_data) == 1
+    assert lm.page_matches_keyword("Example Live", page) is True
+    assert info.title == "Example Live 2026"
+    assert info.summary == "One-night official performance."
+    assert info.event_dates == ("2026-10-24T18:00:00+09:00 – 2026-10-24T21:00:00+09:00",)
+    assert info.venues == ("Example Arena",)
+    assert info.organizers == ("Example Productions",)
+    assert info.lineup == ("Example Band", "Example Guest")
+    assert info.ticket_links == (lm.Link("Official tickets", "https://eplus.jp/example-live/"),)
+
+
+def test_invalid_json_ld_is_ignored_without_losing_visible_page_content():
+    page = lm.parse_page(
+        "https://official.example/live",
+        '<html><head><title>Visible title</title><script type="application/ld+json">{bad</script></head>'
+        '<body><p>公演日 2026年7月10日 会場 Example Hall</p></body></html>',
+    )
+
+    info = lm.build_event_info("Example", [page])
+
+    assert page.structured_data == ()
+    assert info.title == "Visible title"
+    assert "公演日" in info.event_dates[0]
 
 
 def test_extract_ticket_links_ignores_social_share_and_info_urls():
@@ -140,6 +973,15 @@ def test_event_dates_and_venues_ignore_ticket_sales_noise():
     assert lm.extract_venues(text)[0] == "高崎芸術劇場 大劇場"
 
 
+def test_event_dates_ignore_performance_day_deadline_prose():
+    text = (
+        "当日券は事前販売いたします。各公演日の前日18:00から受付いたします。 "
+        "News 2026.05.08 新作ミュージカルのお知らせ"
+    )
+
+    assert lm.extract_event_dates(text) == ()
+
+
 def test_extract_venues_stops_at_organizer_and_contact_noise():
     text = (
         "出演（柿澤勇人、石井一孝） 会場 梅田芸術劇場メインホール 主催 梅田芸術劇場 "
@@ -147,6 +989,61 @@ def test_extract_venues_stops_at_organizer_and_contact_noise():
     )
 
     assert lm.extract_venues(text) == ("梅田芸術劇場メインホール",)
+
+
+def test_extract_event_organizers_and_lineup_from_explicit_labels():
+    text = (
+        "公演概要 主催：梅田芸術劇場／関西テレビ "
+        "企画・制作：ホリプロ 出演：山田太郎、佐藤花子 会場：例ホール"
+    )
+
+    assert lm.extract_organizers(text) == ("梅田芸術劇場", "関西テレビ", "ホリプロ")
+    assert lm.extract_lineup(text) == ("山田太郎", "佐藤花子")
+
+
+def test_extract_event_facts_from_colonless_stage_page_sections():
+    text = (
+        "舞台監督 加藤 高 主催・企画制作 ホリプロ Tickets & Schedule "
+        "Cast 海宝直人 （トラック1）：ニコラ・テスラ コメント "
+        "成河 （トラック3）：父／教授 コメント 濱田めぐみ （トラック2）：母 コメント "
+        "昆 夏美 （トラック4）：ナース Staff 音楽・歌詞 ニック・ブッチャー "
+        "Tour 大阪公演 会場 梅田芸術劇場 主催 梅田芸術劇場 お問い合わせ 0570-000-000"
+    )
+
+    assert lm.extract_organizers(text) == ("ホリプロ", "梅田芸術劇場")
+    assert lm.extract_lineup(text) == ("海宝直人", "成河", "濱田めぐみ", "昆 夏美")
+
+
+def test_event_fact_extraction_requires_labels_and_avoids_summary_names():
+    text = (
+        "山田太郎と佐藤花子が梅田芸術劇場の新作を紹介します。 "
+        "本公演はホリプロが主催 する予定です。"
+    )
+
+    assert lm.extract_organizers(text) == ()
+    assert lm.extract_lineup(text) == ()
+
+
+def test_build_event_info_merges_organizer_and_lineup_facts_across_pages():
+    pages = (
+        lm.Page(
+            "https://official.example/overview",
+            "Example Event",
+            "主催：Example Productions 出演：Example Lead、Example Guest 会場：Example Hall",
+            (),
+        ),
+        lm.Page(
+            "https://official.example/cast",
+            "Cast",
+            "企画・制作：Example Productions CAST: Example Guest / Example Ensemble",
+            (),
+        ),
+    )
+
+    info = lm.build_event_info("Example", pages)
+
+    assert info.organizers == ("Example Productions",)
+    assert info.lineup == ("Example Lead", "Example Guest", "Example Ensemble")
 
 
 def test_extract_venues_handles_spaced_label_and_suffixless_venue():
@@ -171,6 +1068,59 @@ def test_extract_event_dates_captures_shiki_slash_performance_periods():
     text = "劇団四季自動予約 2026/1/2～2026/6/30 公演 No. 3016 2026/7/1～2026/12/31 公演 No. 6118"
 
     assert lm.extract_event_dates(text) == ("2026/1/2～2026/6/30", "2026/7/1～2026/12/31")
+
+
+def test_extract_event_dates_canonicalizes_labeled_slash_range_with_page_year():
+    text = "奥華子 CONCERT TOUR 2026 公演日： 11/26 ～ 11/26 会場：めぐろパーシモンホール 大ホール"
+
+    assert lm.extract_event_dates(text) == ("2026/11/26～2026/11/26",)
+
+
+def test_extract_venues_ignores_schedule_labels_and_captures_uppercase_dome():
+    text = "2026 CONCERT Special Edition in TOKYO DOME 会場 開場 16:00 開演 18:00"
+
+    assert lm.extract_venues(text) == ("TOKYO DOME",)
+
+
+def test_toho_image_and_tour_evidence_produces_dates_venues_and_lineup():
+    text = (
+        "CAST 信 しん 三浦宏規 龐煖 ほうけん 東 啓介 COMMENT "
+        "河了貂 かりょうてん 華 優希 COMMENT CREATIVES TICKETS & SCHEDULE "
+        "公演期間：2026年8月9日(日)～9月13日(日) 東京建物 Brillia HALL "
+        "会場のご案内 〒170-0013 東京都豊島区東池袋1-19-1 座席表 "
+        "TOUR 大阪公演 9月21日(月)～29日(火) 新歌舞伎座 詳細 "
+        "福岡公演 10月6日(火)～13日(火) 博多座 詳細"
+    )
+
+    assert lm.extract_event_dates(text) == (
+        "2026年8月9日(日)～9月13日(日)",
+        "大阪公演 2026年9月21日(月)～29日(火)",
+        "福岡公演 2026年10月6日(火)～13日(火)",
+    )
+    assert lm.extract_venues(text) == ("新歌舞伎座", "博多座", "東京建物 Brillia HALL")
+    assert lm.extract_lineup(text) == ("東 啓介", "華 優希")
+
+
+def test_toho_lottery_prose_does_not_borrow_later_general_sale_date():
+    page = lm.Page(
+        "https://www.tohostage.com/example/",
+        "Ticket",
+        (
+            "2026年 先行抽選エントリーおよび先行先着販売はプレミアム会員限定です。 "
+            "先行抽選エントリー 6月9日(火)～6月15日(月) "
+            "一般前売日より購入できます。 豊島区民先行抽選エントリー "
+            "6月19日(金)～6月24日(水) 一般前売 7月13日(月)販売開始"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds(page)
+    lottery_rounds = [round_ for round_ in rounds if "抽選" in round_.name]
+
+    assert [(round_.lottery_start, round_.lottery_end) for round_ in lottery_rounds] == [
+        ("2026-06-09", "2026-06-15"),
+    ]
+    assert all(round_.lottery_start or round_.lottery_end for round_ in lottery_rounds)
 
 
 def test_extract_venues_prefers_concise_shiki_theater_name():
@@ -344,7 +1294,7 @@ def test_dominant_year_only_resolves_unambiguous_pages():
 
 def test_extract_ticket_rounds_reads_member_presale_ranges_from_evidence():
     text = (
-        "ホリプロステージで購入 【先着先行】 "
+        "2026年公演 ホリプロステージで購入 【先着先行】 "
         "ゴールド会員：2月28日(土)12:00～3月15日(日)23:59 "
         "レギュラー会員：2月28日(土)13:00～3月15日(日)23:59 "
         "【一般発売】 3月18日(水)11:00～"
@@ -396,7 +1346,7 @@ def test_extract_ticket_rounds_keeps_adjacent_round_dates_separate():
 
 def test_extract_ticket_rounds_reads_shiki_dates_before_labels():
     text = (
-        "東京公演はこちら 1月10日（火）～8月26日（土）長期保守点検 "
+        "2026年 東京公演はこちら 1月10日（火）～8月26日（土）長期保守点検 "
         "8月27日（日）～12月31日（日）公演分 "
         "2月19日（日）「四季の会」会員先行予約／2月26日（日）一般発売開始"
     )
@@ -415,16 +1365,84 @@ def test_past_general_sale_round_is_closed():
     assert lm.compute_ticket_status(ticket, today=dt.date(2026, 6, 13)) == "closed"
 
 
+def test_extract_ticket_rounds_creates_standalone_official_resale_round():
+    page = lm.parse_page(
+        "https://official.example/tickets",
+        """
+        <html><body>
+          <h2>公式リセールのお知らせ</h2>
+          <p>公式トレード期間：2026年7月1日 ～ 2026年7月3日</p>
+        </body></html>
+        """,
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "公式トレード"
+    assert rounds[0].round_type == "trade"
+    assert rounds[0].trade_start_at == "2026-07-01"
+    assert rounds[0].trade_end_at == "2026-07-03"
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_name"),
+    (
+        ("リセール受付期間", "リセール"),
+        ("リセール申込期間", "リセール"),
+        ("定価リセール受付期間", "定価リセール"),
+        ("公式リセール期間", "公式リセール"),
+        ("トレード受付期間", "トレード"),
+    ),
+)
+def test_extract_ticket_rounds_accepts_official_resale_label_variants(label, expected_name):
+    page = lm.Page(
+        "https://official.example/resale",
+        "Resale",
+        f"{label}：2026年8月10日 10:00 ～ 2026年8月12日 23:59",
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == expected_name
+    assert (rounds[0].trade_start_at, rounds[0].trade_end_at) == ("2026-08-10", "2026-08-12")
+
+
+def test_official_resale_round_status_tracks_open_and_closing_window():
+    ticket = lm.TicketRound(
+        source="official",
+        url="https://official.example/tickets",
+        name="公式トレード",
+        trade_start_at="2026-07-01",
+        trade_end_at="2026-07-05",
+    )
+
+    assert lm.compute_ticket_status(ticket, today=dt.date(2026, 6, 30)) == "upcoming"
+    assert lm.compute_ticket_status(ticket, today=dt.date(2026, 7, 1)) == "trade_open"
+    assert lm.compute_ticket_status(ticket, today=dt.date(2026, 7, 3)) == "trade_closing_soon"
+    assert lm.compute_ticket_status(ticket, today=dt.date(2026, 7, 6)) == "closed"
+
+
 def test_ticket_round_key_distinguishes_same_name_rounds_by_dates():
     first = lm.TicketRound(source="official", url="https://example.test", name="抽選", lottery_start="2026-01-24")
     second = lm.TicketRound(source="official", url="https://example.test", name="抽選", lottery_start="2026-03-24")
 
     assert lm.ticket_round_key(first) != lm.ticket_round_key(second)
 
+    first_trade = lm.TicketRound(
+        source="official", url="https://example.test", name="公式トレード", trade_start_at="2026-07-01"
+    )
+    second_trade = lm.TicketRound(
+        source="official", url="https://example.test", name="公式トレード", trade_start_at="2026-08-01"
+    )
+    assert lm.ticket_round_key(first_trade) != lm.ticket_round_key(second_trade)
+
 
 def test_extract_ticket_rounds_reads_toho_advance_sale_labels():
     text = (
-        "東宝ナビザーブ 先行抽選エントリー 3月18日(火)～3月21日(金)まで "
+        "2026年 東宝ナビザーブ 先行抽選エントリー 3月18日(火)～3月21日(金)まで "
         "先行先着販売 3月30日(日)11:00より販売開始 "
         "一般前売 4月5日(土) 11:00販売開始"
     )
@@ -435,6 +1453,61 @@ def test_extract_ticket_rounds_reads_toho_advance_sale_labels():
     assert any(round_.lottery_start == "2026-03-18" and round_.lottery_end == "2026-03-21" for round_ in rounds)
     assert any(round_.lottery_start == "2026-03-30" for round_ in rounds)
     assert any(round_.general_sale_date == "2026-04-05" for round_ in rounds)
+
+
+def test_toho_adapter_preserves_branded_advance_round_name():
+    page = lm.Page(
+        "https://www.tohostage.com/example/ticket.html",
+        "Ticket",
+        (
+            "2026年 東宝ナビザーブ 先行抽選エントリー "
+            "3月18日(火)10:00～3月21日(金)23:59 結果発表 3月25日(水)"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "東宝ナビザーブ 先行抽選エントリー"
+    assert (rounds[0].application_start_at, rounds[0].application_end_at) == ("2026-03-18", "2026-03-21")
+    assert rounds[0].results_date == "2026-03-25"
+
+
+def test_horipro_adapter_preserves_fastest_round_and_result_date():
+    page = lm.Page(
+        "https://horipro-stage.jp/stage/example/",
+        "Ticket",
+        "2026年【最速抽選先行】5月2日(土)10:00～5月10日(日)23:59 結果発表日：5月14日(木)",
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "最速抽選先行"
+    assert (rounds[0].application_start_at, rounds[0].application_end_at) == ("2026-05-02", "2026-05-10")
+    assert rounds[0].results_date == "2026-05-14"
+
+
+def test_shiki_adapter_reads_dates_before_quoted_membership_and_general_sale_labels():
+    page = lm.Page(
+        "https://www.shiki.jp/applause/example/ticket_schedule/",
+        "Ticket",
+        (
+            "2026年 発売日程 7月18日（土）午前10時 「四季の会」会員先行予約開始 "
+            "7月25日（土）午前10時 一般発売開始"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+    member = next(round_ for round_ in rounds if "会員先行予約" in round_.name)
+
+    assert member.name == "「四季の会」会員先行予約"
+    assert member.application_start_at == "2026-07-18"
+    assert member.general_sale_date == "2026-07-25"
+    assert member.membership_required == "yes"
 
 
 def test_round_name_uses_label_governing_the_date_not_global_priority():
@@ -637,6 +1710,52 @@ def test_events_api_exposes_honest_venue_label(tmp_path):
     ]
 
 
+def test_related_events_require_reliable_exact_source_and_stay_account_scoped(tmp_path):
+    db_path = str(tmp_path / "related-events.sqlite3")
+    alice = lm.create_user(db_path, "alice-related@example.com", "correct horse battery")
+    bob = lm.create_user(db_path, "bob-related@example.com", "correct horse battery")
+
+    def save_for(user_id, keyword, title, url, dates):
+        watch = lm.add_watch(db_path, keyword, kind=lm.WATCH_KIND_EVENT, user_id=user_id)
+        lm.save_blocks(
+            db_path,
+            lm.AppBlocks(
+                general_info=lm.EventInfo(
+                    keyword=keyword,
+                    official_page=url,
+                    title=title,
+                    summary="",
+                    event_dates=dates,
+                    venues=("Example Hall",),
+                    ticket_links=(),
+                    organizers=("Example Productions",),
+                ),
+                ticket_info=(),
+            ),
+            watch_id=watch.id,
+        )
+
+    save_for(alice.id, "Alice One", "Alice One Live", "https://official.example/alice-one", ("2026-10-01",))
+    save_for(alice.id, "Alice Two", "Alice Two Live", "https://official.example/alice-two", ("2026-11-01",))
+    save_for(alice.id, "Unscheduled", "Unscheduled Live", "https://official.example/unscheduled", ())
+    save_for(bob.id, "Bob Only", "Bob Only Live", "https://official.example/bob-only", ("2026-12-01",))
+
+    alice_events = {event["title"]: event for event in lm.recent_events(db_path, user_id=alice.id)}
+    related = alice_events["Alice One Live"]["related_events"]
+    assert [item["title"] for item in related] == ["Alice Two Live"]
+    assert related[0]["recommendation_reasons"][:2] == [
+        "Shared organizer: Example Productions",
+        "Shared venue: Example Hall",
+    ]
+    assert alice_events["Unscheduled Live"]["related_events"] == []
+    assert all(item["title"] != "Bob Only Live" for item in related)
+
+    page = lm.render_event_detail_page(db_path, int(alice_events["Alice One Live"]["id"]), alice.id)
+    assert "Related Saved Events" in page
+    assert "Shared organizer: Example Productions" in page
+    assert "Bob Only Live" not in page
+
+
 def test_auth_account_and_token_lifecycle(tmp_path):
     db_path = str(tmp_path / "auth.sqlite3")
     user = lm.create_user(db_path, "User@Example.com", "correct horse battery")
@@ -665,6 +1784,27 @@ def test_auth_account_and_token_lifecycle(tmp_path):
     assert lm.user_for_token(db_path, token) is None
 
 
+def test_account_credentials_and_tokens_have_canonical_size_limits(tmp_path):
+    db_path = str(tmp_path / "auth-limits.sqlite3")
+    with pytest.raises(ValueError, match="valid email"):
+        lm.create_user(db_path, f"{'x' * lm.MAX_EMAIL_LENGTH}@example.com", "correct horse battery")
+    with pytest.raises(ValueError, match="valid email"):
+        lm.create_user(db_path, "space inside@example.com", "correct horse battery")
+    with pytest.raises(ValueError, match="1024 characters or fewer"):
+        lm.create_user(db_path, "user@example.com", "x" * (lm.MAX_PASSWORD_LENGTH + 1))
+
+    user = lm.create_user(db_path, "user@example.com", "correct horse battery")
+    token = lm.issue_token(db_path, user.id)
+    calendar_token = lm.issue_calendar_token(db_path, user.id)
+    oversized = "x" * (lm.MAX_AUTH_TOKEN_LENGTH + 1)
+    assert lm.verify_user(db_path, "user@example.com", "x" * (lm.MAX_PASSWORD_LENGTH + 1)) is None
+    assert lm.user_for_token(db_path, oversized) is None
+    assert lm.user_id_for_calendar_token(db_path, oversized) is None
+    assert lm.revoke_token(db_path, oversized) is False
+    assert lm.user_for_token(db_path, token).id == user.id
+    assert lm.user_id_for_calendar_token(db_path, calendar_token) == user.id
+
+
 def test_per_user_watch_subscription_scoping(tmp_path):
     db_path = str(tmp_path / "scope.sqlite3")
     alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
@@ -682,6 +1822,105 @@ def test_per_user_watch_subscription_scoping(tmp_path):
     assert sum(1 for w in all_watches if w.keyword == "YOASOBI") == 1
     # Unscoped (CLI/anonymous) still sees the whole shared workspace.
     assert {"YOASOBI", "Lion King"} <= {w.keyword for w in all_watches}
+
+
+def test_per_user_watch_preferences_do_not_overwrite_shared_keyword(tmp_path):
+    db_path = str(tmp_path / "watch-preferences.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+
+    alice_watch = lm.add_watch(
+        db_path,
+        "Shared Tour",
+        kind=lm.WATCH_KIND_EVENT,
+        tags="musical,alice",
+        preferred_regions="Tokyo",
+        preferred_venues="Imperial Theatre",
+        alert_preferences="lottery_closing_soon",
+        user_id=alice.id,
+    )
+    bob_watch = lm.add_watch(
+        db_path,
+        "Shared Tour",
+        kind=lm.WATCH_KIND_ARTIST,
+        tags="concert,bob",
+        preferred_regions="Osaka",
+        preferred_venues="Festival Hall",
+        alert_preferences="payment_due_soon",
+        user_id=bob.id,
+    )
+
+    assert alice_watch.id == bob_watch.id
+    listed_alice = lm.list_watches(db_path, user_id=alice.id)[0]
+    listed_bob = lm.list_watches(db_path, user_id=bob.id)[0]
+    assert (listed_alice.tags, listed_alice.preferred_regions, listed_alice.preferred_venues) == (
+        "musical,alice",
+        "Tokyo",
+        "Imperial Theatre",
+    )
+    assert listed_alice.alert_preferences == "lottery_closing_soon"
+    assert (listed_bob.tags, listed_bob.preferred_regions, listed_bob.preferred_venues) == (
+        "concert,bob",
+        "Osaka",
+        "Festival Hall",
+    )
+    assert listed_bob.alert_preferences == "payment_due_soon"
+    assert listed_alice.kind == lm.WATCH_KIND_EVENT
+    assert listed_bob.kind == lm.WATCH_KIND_ARTIST
+    assert lm.list_watches(db_path, kind=lm.WATCH_KIND_ARTIST, user_id=alice.id) == []
+    assert [watch.id for watch in lm.list_watches(db_path, kind=lm.WATCH_KIND_ARTIST, user_id=bob.id)] == [bob_watch.id]
+
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Shared Tour",
+            official_page="https://official.example/shared-tour",
+            title="Shared Tour 2026",
+            summary="",
+            event_dates=("2026年10月1日",),
+            venues=("Tokyo Imperial Theatre",),
+            ticket_links=(),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official",
+                url="https://official.example/shared-tour",
+                name="第1次抽選先行",
+                application_start_at="2026-05-20",
+                application_end_at="2026-06-02",
+            ),
+        ),
+    )
+    lm.save_blocks(db_path, blocks, now="2026-06-01T00:00:00+00:00", watch_id=alice_watch.id)
+    assert lm.recent_events(db_path, user_id=alice.id)[0]["watch_kind"] == lm.WATCH_KIND_EVENT
+    assert lm.recent_events(db_path, user_id=bob.id)[0]["watch_kind"] == lm.WATCH_KIND_ARTIST
+    assert {alert["type"] for alert in lm.recent_alerts(db_path, user_id=alice.id)} == {"lottery_closing_soon"}
+    assert lm.recent_alerts(db_path, user_id=bob.id) == []
+
+    # Re-adding is also the preference-edit operation used by web and native
+    # clients. Updating Alice must not change Bob or leak personal filters into
+    # the canonical discovery row used by the local CLI.
+    lm.add_watch(
+        db_path,
+        "Shared Tour",
+        kind=lm.WATCH_KIND_EVENT,
+        tags="musical,updated",
+        preferred_regions="Kanagawa",
+        preferred_venues="KAAT",
+        alert_preferences="results_today",
+        user_id=alice.id,
+    )
+    assert lm.list_watches(db_path, user_id=alice.id)[0].tags == "musical,updated"
+    assert lm.list_watches(db_path, user_id=alice.id)[0].alert_preferences == "results_today"
+    assert lm.list_watches(db_path, user_id=bob.id)[0] == listed_bob
+    canonical = lm.list_watches(db_path)[0]
+    assert canonical.tags == ""
+    assert canonical.preferred_regions == ""
+    assert canonical.preferred_venues == ""
+    assert canonical.alert_preferences == lm.DEFAULT_ALERT_PREFERENCES
+
+    with lm.connect(db_path) as connection:
+        columns = lm.table_columns(connection, "user_watches")
+    assert {"kind", "tags", "preferred_regions", "preferred_venues", "alert_preferences"} <= columns
 
 
 def test_per_user_watch_muting_keeps_shared_canonical_watch_active(tmp_path):
@@ -828,12 +2067,16 @@ def test_password_hash_is_salted_and_verifiable():
     assert not lm.password_matches("hunter2hunter2 wrong", first_hash, first_salt)
 
 
-def test_storage_connect_seam(tmp_path):
+def test_storage_connect_seam(tmp_path, monkeypatch):
     # The seam opens SQLite exactly as before and recognises a Postgres target.
     db = tmp_path / "seam.sqlite3"
     with lm.connect(str(db)) as connection:
         lm.init_db(connection)
     assert db.exists()
+    assert lm.resolve_target("explicit.sqlite3") == "explicit.sqlite3"
+    monkeypatch.setenv("CHUSENNOTE_DATABASE_URL", "postgresql://user@host/deployed")
+    assert lm.resolve_target() == "postgresql://user@host/deployed"
+    assert lm.resolve_target(lm.DEFAULT_DB_PATH) == "postgresql://user@host/deployed"
     assert lm.resolve_target("explicit.sqlite3") == "explicit.sqlite3"
     assert lm.is_postgres_url("postgresql://user@host/db")
     assert not lm.is_postgres_url("chusennote.sqlite3")
@@ -892,7 +2135,7 @@ _POSTGRES_TABLES = (
     not os.environ.get(POSTGRES_TEST_URL_ENV),
     reason="set CHUSENNOTE_TEST_DATABASE_URL to run the Postgres backend test",
 )
-def test_postgres_backend_round_trips_core_flows():
+def test_postgres_backend_round_trips_core_flows(monkeypatch):
     """End-to-end CRUD on a real Postgres database, proving the dialect adapter:
     schema creation, an upsert with ON CONFLICT, a round insert, and the read
     models all work unchanged against Postgres."""
@@ -930,7 +2173,19 @@ def test_postgres_backend_round_trips_core_flows():
     assert event["venue_label"] == "Example Hall"
     assert event["rounds"][0]["schedule_label"] == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22"
     assert any(watch.keyword == "PG Demo" for watch in lm.list_watches(url))
-    assert lm.api_health(url)["schema_version"] == lm.DB_SCHEMA_VERSION
+    assert {alert["type"] for alert in lm.recent_alerts(url)} == {
+        "new_official_page",
+        "new_lottery_round",
+    }
+    postgres_health = lm.api_health(url)
+    assert postgres_health["schema_version"] == lm.DB_SCHEMA_VERSION
+    assert postgres_health["db_path"] == "postgresql"
+    assert url not in json.dumps(postgres_health)
+    monkeypatch.setenv("CHUSENNOTE_DATABASE_URL", url)
+    default_health = lm.api_health(lm.DEFAULT_DB_PATH)
+    assert default_health["db_path"] == "postgresql"
+    assert default_health["saved_events"] == postgres_health["saved_events"]
+    assert url not in json.dumps(default_health)
 
     # Accounts and bearer tokens round-trip through Postgres too.
     user = lm.create_user(url, "pg@example.com", "correct horse battery")
@@ -1000,6 +2255,9 @@ def test_round_schedule_label_builds_when_to_act_line():
     assert label == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22 · Pay by 2026-06-25 · Sale 2026-07-04"
     # Partial windows and empty rounds degrade gracefully.
     assert lm.round_schedule_label({"application_end_at": "2026-06-18"}) == "Apply by 2026-06-18"
+    assert lm.round_schedule_label(
+        {"trade_start_at": "2026-07-01", "trade_end_at": "2026-07-03"}
+    ) == "Resale 2026-07-01 – 2026-07-03"
     assert lm.round_schedule_label({}) == ""
 
 
@@ -1015,6 +2273,8 @@ def test_events_api_exposes_round_schedule_label(tmp_path):
             event_dates=("2026年6月20日",),
             venues=("Example Hall",),
             ticket_links=(),
+            organizers=("Example Productions",),
+            lineup=("Example Lead", "Example Guest"),
         ),
         ticket_info=(
             lm.TicketRound(
@@ -1031,15 +2291,53 @@ def test_events_api_exposes_round_schedule_label(tmp_path):
 
     event = lm.recent_events(str(db_path))[0]
     assert event["rounds"][0]["schedule_label"] == "Apply 2026-06-10 – 2026-06-18 · Results 2026-06-22"
+    assert event["organizers"] == ["Example Productions"]
+    assert event["lineup"] == ["Example Lead", "Example Guest"]
 
 
 def test_human_status_maps_codes_to_plain_wording():
     assert lm.human_status("closing_soon") == "Closing soon"
     assert lm.human_status("results_today") == "Results today"
     assert lm.human_status("open") == "Open now"
+    assert lm.human_status("trade_open") == "Resale open"
+    assert lm.human_status("trade_closing_soon") == "Resale closing soon"
     # Unknown / unrecognised render empty so the UI can hide them.
     assert lm.human_status("unknown") == ""
     assert lm.human_status(None) == ""
+
+
+def test_human_event_status_maps_lifecycle_codes_to_plain_wording():
+    assert lm.human_event_status("watching") == "Watching"
+    assert lm.human_event_status("official_found") == "Official page found"
+    assert lm.human_event_status("ticket_links_found") == "Ticket links found"
+    assert lm.human_event_status("lottery_found") == "Ticket rounds found"
+    assert lm.human_event_status("lottery_open") == "Ticket window open"
+    assert lm.human_event_status("unknown") == ""
+
+
+def test_human_alert_type_maps_stable_codes_to_plain_wording():
+    assert lm.human_alert_type("new_official_page") == "Official page found"
+    assert lm.human_alert_type("lottery_closing_soon") == "Lottery closing soon"
+    assert lm.human_alert_type("trade_opened") == "Official resale opened"
+    assert lm.human_alert_type("future_alert") == "Future alert"
+    assert lm.human_alert_type(None) == ""
+    assert lm.human_alert_preferences("new_official_page,trade_opened") == (
+        "Official page found, Official resale opened"
+    )
+    assert lm.human_alert_preferences("") == "none"
+
+
+def test_web_alert_item_prefers_readable_type_label():
+    rendered = lm.web.render_alert_item(
+        {
+            "type": "lottery_closing_soon",
+            "type_label": "Lottery closing soon",
+            "event": "Example Tour",
+        }
+    )
+
+    assert "Lottery closing soon" in rendered
+    assert "lottery_closing_soon" not in rendered
 
 
 def test_upcoming_api_exposes_status_label(tmp_path):
@@ -1147,6 +2445,225 @@ def test_notification_run_delivers_due_reminders_and_is_idempotent(tmp_path):
     assert lm.notification_feed(str(db_path))
 
 
+def test_notification_run_includes_official_resale_open_and_close_dates(tmp_path):
+    db_path = tmp_path / "resale-notifications.sqlite3"
+    watch = lm.add_watch(str(db_path), "Resale", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    rounds = (
+        lm.TicketRound(
+            source="official",
+            url="https://official.example/resale",
+            name="公式トレード",
+            trade_start_at="2026-07-01",
+            trade_end_at="2026-07-03",
+        ),
+    )
+    lm.save_blocks(
+        str(db_path),
+        _subscription_event_blocks("Resale", rounds=rounds),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(str(db_path), "Resale", lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed")
+
+    opening = lm.run_notifications(str(db_path), now="2026-06-24T00:00:00+00:00")
+    closing = lm.run_notifications(str(db_path), now="2026-06-26T00:00:00+00:00")
+
+    assert any(item["label"] == "Official resale opens" and item["lead_days"] == 7 for item in opening)
+    assert any(item["label"] == "Official resale closes" and item["lead_days"] == 7 for item in closing)
+
+
+def test_notification_run_retries_only_failed_channels_without_duplicate_feed(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notification-retry.sqlite3")
+    watch = lm.add_watch(db_path, "Retry", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Retry"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(
+        db_path,
+        "Retry",
+        lm.NOTIFY_SCOPE_EVENT_ALL,
+        channels="feed,email,push",
+    )
+    lm.register_device(db_path, "retry-device", platform="android", user_id=0)
+    email_calls = []
+    push_calls = []
+
+    def fake_email(notification):
+        email_calls.append(notification["notification_key"])
+        return True
+
+    def fake_push(notification, devices, invalid_tokens=None):
+        push_calls.append((notification["notification_key"], [device.token for device in devices]))
+        return len(push_calls) > 1
+
+    monkeypatch.setattr(lm.notifications, "send_email_notification", fake_email)
+    monkeypatch.setattr(lm.notifications, "send_push_notification", fake_push)
+
+    first = lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0)
+    assert first[0]["delivered"] == {"feed": True, "email": True, "push": False}
+
+    retried = lm.run_notifications(db_path, now="2026-06-16T01:00:00+00:00", user_id=0)
+    assert retried[0]["delivered"] == {"feed": True, "email": True, "push": True}
+    assert len(email_calls) == 1
+    assert len(push_calls) == 2
+    assert push_calls[1][1] == ["retry-device"]
+
+    assert lm.run_notifications(db_path, now="2026-06-16T02:00:00+00:00", user_id=0) == []
+    feed = lm.notification_feed(db_path, user_id=0)
+    assert len(feed) == 1
+    assert feed[0]["delivered"] == {"feed": True, "email": True, "push": True}
+
+
+def test_notification_runs_in_one_process_do_not_send_the_same_push_concurrently(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notification-concurrency.sqlite3")
+    watch = lm.add_watch(db_path, "Concurrent", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Concurrent"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(db_path, "Concurrent", lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push")
+    lm.register_device(db_path, "concurrent-device", platform="ios", user_id=0)
+    first_send_started = threading.Event()
+    release_first_send = threading.Event()
+    push_calls = []
+    results = []
+
+    def fake_push(notification, devices, invalid_tokens=None):
+        push_calls.append(notification["notification_key"])
+        first_send_started.set()
+        assert release_first_send.wait(timeout=5)
+        return True
+
+    def run_once():
+        results.append(lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0))
+
+    monkeypatch.setattr(lm.notifications, "send_push_notification", fake_push)
+    first = threading.Thread(target=run_once)
+    second = threading.Thread(target=run_once)
+    first.start()
+    assert first_send_started.wait(timeout=5)
+    second.start()
+    release_first_send.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert len(push_calls) == 1
+    assert sorted(len(result) for result in results) == [0, 1]
+    assert len(lm.notification_feed(db_path, user_id=0)) == 1
+
+
+def test_database_claim_prevents_duplicate_push_after_two_workers_read_pending(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notification-cross-process.sqlite3")
+    watch = lm.add_watch(db_path, "Two Workers", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.save_blocks(db_path, _subscription_event_blocks("Two Workers"), now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    lm.add_subscription(db_path, str(watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=0)
+    lm.register_device(db_path, "two-worker-device", platform="android", user_id=0)
+    original_pending = lm.notifications.pending_notifications
+    both_read_pending = threading.Barrier(2)
+    push_calls = []
+    results = []
+
+    def synchronized_pending(*args, **kwargs):
+        pending = original_pending(*args, **kwargs)
+        both_read_pending.wait(timeout=5)
+        return pending
+
+    def fake_push(notification, devices, invalid_tokens=None):
+        push_calls.append([device.token for device in devices])
+        return True
+
+    def run_worker():
+        results.append(
+            lm.notifications._run_notifications_unlocked(
+                db_path,
+                now="2026-06-16T00:00:00+00:00",
+                user_id=0,
+            )
+        )
+
+    monkeypatch.setattr(lm.notifications, "pending_notifications", synchronized_pending)
+    monkeypatch.setattr(lm.notifications, "send_push_notification", fake_push)
+    workers = [threading.Thread(target=run_worker) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert push_calls == [["two-worker-device"]]
+    assert sorted(len(result) for result in results) == [0, 1]
+
+
+def test_abandoned_notification_claim_is_reclaimed_after_lease(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notification-stale-claim.sqlite3")
+    watch = lm.add_watch(db_path, "Stale Claim", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.save_blocks(db_path, _subscription_event_blocks("Stale Claim"), now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    subscription = lm.add_subscription(
+        db_path,
+        str(watch.id),
+        lm.NOTIFY_SCOPE_EVENT_ALL,
+        channels="feed,push",
+        user_id=0,
+    )
+    lm.register_device(db_path, "stale-claim-device", platform="ios", user_id=0)
+    pending = lm.pending_notifications(db_path, now="2026-06-16T00:00:00Z", user_id=0)
+    notification = pending[0]
+    with lm.connect(db_path) as connection:
+        lm.init_db(connection)
+        assert lm.claim_notification_delivery(
+            connection,
+            notification["notification_key"],
+            subscription.id,
+            notification["event_id"],
+            notification["channels"],
+            {},
+            "2026-06-16T00:00:00+00:00",
+            notification["_claim_stale_before"],
+            existed=False,
+            expected_attempt_count=0,
+        )
+
+    monkeypatch.setattr(lm.notifications, "send_push_notification", lambda notification, devices, invalid_tokens=None: True)
+    assert lm.notification_feed(db_path, user_id=0) == []
+    assert lm.run_notifications(db_path, now="2026-06-16T00:14:59Z", user_id=0) == []
+    reclaimed = lm.run_notifications(db_path, now="2026-06-16T00:15:01Z", user_id=0)
+    assert len(reclaimed) == 1
+    with sqlite3.connect(db_path) as connection:
+        processing_at, attempts = connection.execute(
+            "SELECT processing_at, attempt_count FROM notification_log WHERE notification_key = ?",
+            (notification["notification_key"],),
+        ).fetchone()
+    assert processing_at is None
+    assert attempts == 2
+
+
+def test_notification_claim_is_released_when_delivery_raises(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notification-claim-error.sqlite3")
+    watch = lm.add_watch(db_path, "Claim Error", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.save_blocks(db_path, _subscription_event_blocks("Claim Error"), now="2026-06-01T00:00:00+00:00", watch_id=watch.id)
+    lm.add_subscription(db_path, str(watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=0)
+    lm.register_device(db_path, "claim-error-device", platform="android", user_id=0)
+    monkeypatch.setattr(
+        lm.notifications,
+        "send_push_notification",
+        lambda notification, devices, invalid_tokens=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0)
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT processing_at FROM notification_log").fetchone()[0] is None
+
+    monkeypatch.setattr(lm.notifications, "send_push_notification", lambda notification, devices, invalid_tokens=None: True)
+    assert len(lm.run_notifications(db_path, now="2026-06-16T00:00:01+00:00", user_id=0)) == 1
+
+
 def test_authenticated_email_notifications_do_not_use_global_recipient(tmp_path, monkeypatch):
     db_path = str(tmp_path / "email-scope.sqlite3")
     user = lm.create_user(db_path, "alice@example.com", "alice password 1")
@@ -1180,6 +2697,404 @@ def test_authenticated_email_notifications_do_not_use_global_recipient(tmp_path,
     assert emailed == ["Anon Email Tour"]
     assert anonymous[0]["delivered"]["email"] is True
     assert authenticated[0]["delivered"]["email"] is False
+
+
+def test_fcm_access_token_loads_adc_once_and_refreshes_only_when_needed(monkeypatch):
+    class Credentials:
+        valid = False
+        token = ""
+
+    credentials = Credentials()
+    loads = []
+    refreshes = []
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setattr(lm.notifications, "_fcm_credentials", None)
+    monkeypatch.setattr(lm.notifications, "_fcm_credentials_project_id", "")
+    monkeypatch.setattr(lm.notifications, "_fcm_credentials_source", "")
+
+    def fake_load():
+        loads.append(True)
+        return credentials, "adc-project"
+
+    def fake_refresh(value):
+        refreshes.append(value)
+        value.valid = True
+        value.token = "short-lived-token"
+
+    monkeypatch.setattr(lm.notifications, "_load_fcm_credentials", fake_load)
+    monkeypatch.setattr(lm.notifications, "_refresh_fcm_credentials", fake_refresh)
+
+    assert lm.notifications._fcm_access_token() == ("short-lived-token", "adc-project")
+    assert lm.notifications._fcm_access_token() == ("short-lived-token", "adc-project")
+    assert len(loads) == 1
+    assert refreshes == [credentials]
+
+
+def test_notification_subscription_validates_and_normalizes_channels(tmp_path):
+    db_path = str(tmp_path / "notification-channels.sqlite3")
+    watch = lm.add_watch(db_path, "Channels", kind=lm.WATCH_KIND_EVENT)
+
+    subscription = lm.add_subscription(
+        db_path,
+        str(watch.id),
+        lm.NOTIFY_SCOPE_EVENT_ALL,
+        channels=" Slack,feed,slack,LINE ",
+    )
+
+    assert subscription.channels == "slack,feed,line"
+    with pytest.raises(ValueError, match="Unknown notification channel: pager"):
+        lm.add_subscription(
+            db_path,
+            str(watch.id),
+            lm.NOTIFY_SCOPE_EVENT_LOCATION,
+            location="Tokyo",
+            channels="feed,pager",
+        )
+    with pytest.raises(ValueError, match="Reminder lead days"):
+        lm.add_subscription(
+            db_path,
+            str(watch.id),
+            lm.NOTIFY_SCOPE_EVENT_LOCATION,
+            location="Osaka",
+            lead_days="tomorrow,1",
+        )
+
+
+def test_slack_discord_and_line_delivery_use_provider_contracts(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    monkeypatch.setenv(lm.SLACK_WEBHOOK_URL_ENV, "https://hooks.slack.com/services/T/B/secret")
+    monkeypatch.setenv(lm.DISCORD_WEBHOOK_URL_ENV, "https://discord.com/api/webhooks/123/secret")
+    monkeypatch.setenv(lm.LINE_CHANNEL_ACCESS_TOKEN_ENV, "line-access-token")
+    monkeypatch.setenv(lm.LINE_TARGET_ID_ENV, "U123")
+    monkeypatch.setattr(
+        lm.notifications,
+        "_open_external_notification_request",
+        lambda request: requests.append(request) or Response(),
+    )
+    notification = {
+        "notification_key": "stable-reminder-key",
+        "event_title": "Example Tour",
+        "label": "Lottery application closes",
+        "subject": "First lottery",
+        "date": "2026-10-01",
+        "lead_days": 1,
+        "url": "https://official.example/tickets",
+    }
+
+    assert lm.send_slack_notification(notification) is True
+    assert lm.send_discord_notification(notification) is True
+    assert lm.send_line_notification(notification) is True
+
+    assert [request.full_url for request in requests] == [
+        "https://hooks.slack.com/services/T/B/secret",
+        "https://discord.com/api/webhooks/123/secret",
+        "https://api.line.me/v2/bot/message/push",
+    ]
+    assert "Lottery application closes in 1 day" in json.loads(requests[0].data)["text"]
+    assert "Lottery application closes in 1 day" in json.loads(requests[1].data)["content"]
+    line_payload = json.loads(requests[2].data)
+    assert line_payload["to"] == "U123"
+    assert line_payload["messages"][0]["type"] == "text"
+    assert requests[2].get_header("Authorization") == "Bearer line-access-token"
+    assert uuid.UUID(requests[2].get_header("X-line-retry-key")).version == 5
+
+
+def test_external_notification_urls_reject_redirects_and_untrusted_hosts(monkeypatch):
+    monkeypatch.setenv(lm.SLACK_WEBHOOK_URL_ENV, "https://hooks.slack.com.evil.example/services/steal")
+    monkeypatch.setenv(lm.DISCORD_WEBHOOK_URL_ENV, "https://discord.com.evil.example/api/webhooks/steal")
+    monkeypatch.setattr(
+        lm.notifications,
+        "_open_external_notification_request",
+        lambda request: pytest.fail("untrusted webhook must not be contacted"),
+    )
+
+    assert lm.send_slack_notification({}) is False
+    assert lm.send_discord_notification({}) is False
+    handler = lm.notifications._NoExternalNotificationRedirects()
+    request = urllib.request.Request("https://hooks.slack.com/services/start")
+    assert handler.redirect_request(request, None, 307, "redirect", {}, "https://evil.example/steal") is None
+
+
+def test_external_notification_failures_retry_only_failed_channels(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "external-channel-retry.sqlite3")
+    watch = lm.add_watch(db_path, "External Retry", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("External Retry"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(
+        db_path,
+        str(watch.id),
+        lm.NOTIFY_SCOPE_EVENT_ALL,
+        channels="feed,slack,discord,line",
+        user_id=0,
+    )
+    calls = {"slack": 0, "discord": 0, "line": 0}
+
+    def sender(channel, succeed_after=1):
+        def send(notification):
+            calls[channel] += 1
+            return calls[channel] >= succeed_after
+        return send
+
+    monkeypatch.setattr(lm.notifications, "send_slack_notification", sender("slack"))
+    monkeypatch.setattr(lm.notifications, "send_discord_notification", sender("discord", succeed_after=2))
+    monkeypatch.setattr(lm.notifications, "send_line_notification", sender("line"))
+
+    first = lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0)
+    second = lm.run_notifications(db_path, now="2026-06-16T00:00:01+00:00", user_id=0)
+
+    assert first[0]["delivered"] == {"feed": True, "slack": True, "discord": False, "line": True}
+    assert second[0]["delivered"] == {"feed": True, "slack": True, "discord": True, "line": True}
+    assert calls == {"slack": 1, "discord": 2, "line": 1}
+    assert len(lm.notification_feed(db_path, user_id=0)) == 1
+
+
+def test_external_notification_status_and_account_privacy_boundary(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "external-channel-status.sqlite3")
+    local_watch = lm.add_watch(db_path, "Local External", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.add_subscription(
+        db_path,
+        str(local_watch.id),
+        lm.NOTIFY_SCOPE_EVENT_ALL,
+        channels="slack,discord,line",
+        user_id=0,
+    )
+
+    missing = lm.notification_configuration_status(db_path)
+    assert missing["ok"] is False
+    assert missing["external"]["slack"] == {
+        "anonymous_subscriptions": 1,
+        "account_subscriptions": 0,
+        "configured": False,
+    }
+    assert "slack subscriptions require valid local delivery credentials" in missing["issues"]
+    assert "discord subscriptions require valid local delivery credentials" in missing["issues"]
+    assert "line subscriptions require valid local delivery credentials" in missing["issues"]
+
+    monkeypatch.setenv(lm.SLACK_WEBHOOK_URL_ENV, "https://hooks.slack.com/services/T/B/secret")
+    monkeypatch.setenv(lm.DISCORD_WEBHOOK_URL_ENV, "https://discord.com/api/webhooks/123/secret")
+    monkeypatch.setenv(lm.LINE_CHANNEL_ACCESS_TOKEN_ENV, "line-access-token")
+    monkeypatch.setenv(lm.LINE_TARGET_ID_ENV, "U123")
+    assert lm.notification_configuration_status(db_path)["ok"] is True
+
+    user = lm.create_user(db_path, "external@example.com", "external password 1")
+    account_watch = lm.add_watch(db_path, "Account External", kind=lm.WATCH_KIND_EVENT, user_id=user.id)
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Account External"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=account_watch.id,
+    )
+    with pytest.raises(ValueError, match="Account subscriptions cannot use global slack delivery"):
+        lm.add_subscription(
+            db_path,
+            str(account_watch.id),
+            lm.NOTIFY_SCOPE_EVENT_ALL,
+            channels="feed,slack",
+            user_id=user.id,
+        )
+    # Preserve a runtime defense for a legacy/manually edited database even
+    # though current writes reject this unsafe account/global combination.
+    with lm.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO notification_subscriptions(
+                user_id, watch_id, scope, location, round_key, channels,
+                lead_days, enabled, created_at, updated_at
+            ) VALUES (?, ?, ?, '', '', 'feed,slack', '7,1,0', 1, ?, ?)
+            """,
+            (
+                user.id,
+                account_watch.id,
+                lm.NOTIFY_SCOPE_EVENT_ALL,
+                "2026-06-01T00:00:00+00:00",
+                "2026-06-01T00:00:00+00:00",
+            ),
+        )
+    monkeypatch.setattr(
+        lm.notifications,
+        "send_slack_notification",
+        lambda notification: pytest.fail("global webhook must not receive account-scoped reminders"),
+    )
+
+    status = lm.notification_configuration_status(db_path)
+    assert status["ok"] is False
+    assert status["external"]["slack"]["account_subscriptions"] == 1
+    assert "account-scoped slack delivery is not configured; use feed or push" in status["issues"]
+    delivered = lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=user.id)
+    assert delivered[0]["delivered"] == {"feed": True, "slack": False}
+
+
+def test_push_notification_uses_fcm_http_v1_for_each_unique_device(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b'{"name":"projects/configured-project/messages/1"}'
+
+    def fake_open(request):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setenv(lm.FCM_PROJECT_ID_ENV, "configured-project")
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("oauth-token", "adc-project"))
+    monkeypatch.setattr(lm.notifications, "_open_fcm_request", fake_open)
+    notification = {
+        "event_id": 42,
+        "event_title": "Example Tour",
+        "label": "Lottery application opens",
+        "subject": "First lottery",
+        "location": "Tokyo",
+        "field": "application_start_at",
+        "date": "2026-10-01",
+        "url": "https://official.example/tickets",
+        "lead_days": 1,
+    }
+    devices = [
+        lm.DeviceToken(id=1, token="device-one"),
+        lm.DeviceToken(id=2, token="device-two"),
+        lm.DeviceToken(id=3, token="device-one"),
+        lm.DeviceToken(id=4, token=""),
+    ]
+
+    assert lm.send_push_notification(notification, devices) is True
+    assert len(requests) == 2
+    assert {request.full_url for request in requests} == {
+        "https://fcm.googleapis.com/v1/projects/configured-project/messages:send"
+    }
+    assert {request.get_header("Authorization") for request in requests} == {"Bearer oauth-token"}
+    payloads = [json.loads(request.data.decode("utf-8")) for request in requests]
+    assert {payload["message"]["token"] for payload in payloads} == {"device-one", "device-two"}
+    assert all(payload["message"]["data"]["event_id"] == "42" for payload in payloads)
+    assert all(isinstance(value, str) for payload in payloads for value in payload["message"]["data"].values())
+    assert "registration_ids" not in payloads[0]
+
+
+def test_push_notification_fails_closed_without_adc_or_project(monkeypatch):
+    monkeypatch.delenv(lm.FCM_PROJECT_ID_ENV, raising=False)
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("", ""))
+    monkeypatch.setattr(
+        lm.notifications,
+        "_open_fcm_request",
+        lambda request: pytest.fail("FCM must not be contacted without credentials"),
+    )
+
+    assert lm.send_push_notification({}, [lm.DeviceToken(id=1, token="device")]) is False
+
+
+def test_push_notification_attempts_all_devices_and_reports_partial_failure(monkeypatch):
+    attempted = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_open(request):
+        token = json.loads(request.data.decode("utf-8"))["message"]["token"]
+        attempted.append(token)
+        if token == "bad-device":
+            raise OSError("delivery failed")
+        return Response()
+
+    monkeypatch.setenv(lm.FCM_PROJECT_ID_ENV, "configured-project")
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("oauth-token", ""))
+    monkeypatch.setattr(lm.notifications, "_open_fcm_request", fake_open)
+
+    assert lm.send_push_notification(
+        {"event_title": "Tour", "label": "General sale", "subject": "Tickets", "date": "2026-10-01"},
+        [lm.DeviceToken(id=1, token="bad-device"), lm.DeviceToken(id=2, token="good-device")],
+    ) is False
+    assert attempted == ["bad-device", "good-device"]
+
+
+def test_unregistered_fcm_token_is_pruned_without_retrying_successful_devices(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "unregistered-device.sqlite3")
+    watch = lm.add_watch(db_path, "Stale Device", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Stale Device"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(db_path, str(watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=0)
+    lm.register_device(db_path, "stale-device", platform="android", user_id=0)
+    lm.register_device(db_path, "current-device", platform="ios", user_id=0)
+    attempted = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_open(request):
+        token = json.loads(request.data.decode("utf-8"))["message"]["token"]
+        attempted.append(token)
+        if token == "stale-device":
+            body = json.dumps(
+                {
+                    "error": {
+                        "code": 404,
+                        "status": "NOT_FOUND",
+                        "details": [
+                            {
+                                "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                                "errorCode": "UNREGISTERED",
+                            }
+                        ],
+                    }
+                }
+            ).encode("utf-8")
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(body))
+        return Response()
+
+    monkeypatch.setenv(lm.FCM_PROJECT_ID_ENV, "configured-project")
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("oauth-token", ""))
+    monkeypatch.setattr(lm.notifications, "_open_fcm_request", fake_open)
+
+    delivered = lm.run_notifications(db_path, now="2026-06-16T00:00:00+00:00", user_id=0)
+    assert delivered[0]["delivered"]["push"] is True
+    assert set(attempted) == {"stale-device", "current-device"}
+    assert [device.token for device in lm.list_devices(db_path, user_id=0)] == ["current-device"]
+    assert lm.run_notifications(db_path, now="2026-06-16T01:00:00+00:00", user_id=0) == []
+    assert attempted.count("current-device") == 1
+
+
+def test_fcm_redirects_are_rejected():
+    handler = lm.notifications._NoFcmRedirects()
+    request = urllib.request.Request("https://fcm.googleapis.com/start")
+
+    assert handler.redirect_request(request, None, 307, "redirect", {}, "https://example.com/steal") is None
 
 
 def test_anonymous_notification_run_respects_local_muted_watches(tmp_path):
@@ -1252,6 +3167,87 @@ def test_notify_cli_and_device_registration(tmp_path, capsys):
     assert '"scope": "event_all"' in capsys.readouterr().out
 
 
+def test_notify_cli_reports_retryable_external_delivery_failure(tmp_path, capsys, monkeypatch):
+    db_path = str(tmp_path / "notify-cli-failure.sqlite3")
+    watch = lm.add_watch(db_path, "CLI Failure", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
+    due_date = (dt.date.today() + dt.timedelta(days=7)).isoformat()
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks(
+            "CLI Failure",
+            rounds=(
+                lm.TicketRound(
+                    source="official",
+                    url="https://official.example/cli-failure",
+                    name="CLI failure test",
+                    lottery_start=due_date,
+                ),
+            ),
+        ),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=watch.id,
+    )
+    lm.add_subscription(db_path, "CLI Failure", lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push")
+    lm.register_device(db_path, "cli-device", platform="android", user_id=0)
+    attempts = []
+
+    def fake_push(notification, devices, invalid_tokens=None):
+        attempts.append([device.token for device in devices])
+        return len(attempts) > 1
+
+    monkeypatch.setattr(lm.notifications, "send_push_notification", fake_push)
+
+    assert lm.main(["notify", "run", "--db", db_path]) == 1
+    assert "1 external delivery failure(s) remain eligible for retry" in capsys.readouterr().out
+
+    assert lm.main(["notify", "run", "--db", db_path]) == 0
+    assert "Delivered 1 reminder(s)." in capsys.readouterr().out
+    assert attempts == [["cli-device"], ["cli-device"]]
+
+
+def test_notification_status_checks_credentials_and_per_owner_devices(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "notification-status.sqlite3")
+    monkeypatch.setattr(
+        lm.notifications,
+        "_fcm_access_token",
+        lambda: pytest.fail("ADC should not be checked without push subscriptions"),
+    )
+    assert lm.notification_configuration_status(db_path)["ok"] is True
+
+    watch = lm.add_watch(db_path, "Status", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.add_subscription(db_path, str(watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=0)
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("", ""))
+
+    missing = lm.notification_configuration_status(db_path)
+    assert missing["ok"] is False
+    assert missing["push"] == {
+        "subscriptions": 1,
+        "owner_count": 1,
+        "owners_without_devices": 1,
+        "credentials_ready": False,
+        "project_id_available": False,
+    }
+
+    lm.register_device(db_path, "status-device", platform="ios", user_id=0)
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("oauth-token", "firebase-project"))
+    ready = lm.notification_configuration_status(db_path)
+    assert ready["ok"] is True
+    assert ready["push"]["owners_without_devices"] == 0
+    assert ready["push"]["credentials_ready"] is True
+
+
+def test_notify_status_cli_returns_nonzero_for_missing_delivery_configuration(tmp_path, capsys, monkeypatch):
+    db_path = str(tmp_path / "notification-status-cli.sqlite3")
+    watch = lm.add_watch(db_path, "Status CLI", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    lm.add_subscription(db_path, str(watch.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=0)
+    monkeypatch.setattr(lm.notifications, "_fcm_access_token", lambda: ("", ""))
+
+    assert lm.main(["notify", "status", "--db", db_path, "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "FCM ADC credentials or Firebase project id are unavailable" in payload["issues"]
+
+
 def test_watch_loop_delivers_reminders_each_run(capsys):
     calls = []
 
@@ -1289,6 +3285,20 @@ def test_event_run_cli_invokes_reminder_delivery(tmp_path, monkeypatch, capsys):
 
     assert seen.get("db") == str(db_path)
     assert "1 reminders sent." in capsys.readouterr().out
+
+
+def test_event_run_cli_exits_nonzero_when_external_delivery_needs_retry(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "event-run-delivery-failure.sqlite3"
+    lm.add_watch(str(db_path), "Run Failure", kind=lm.WATCH_KIND_EVENT)
+    monkeypatch.setattr(lm, "run_watches", lambda db, kind=None: [])
+    monkeypatch.setattr(
+        lm,
+        "run_notifications",
+        lambda db: [{"delivered": {"feed": True, "push": False}}],
+    )
+
+    assert lm.main(["event", "run", "--db", str(db_path)]) == 1
+    assert "1 awaiting external delivery retry" in capsys.readouterr().out
 
 
 def test_web_api_registers_device_and_serves_notifications(tmp_path):
@@ -1346,9 +3356,57 @@ def test_web_ui_subscribe_buttons_and_notifications_page(tmp_path):
         page = urllib.request.urlopen(f"{base}/notifications", timeout=5).read().decode("utf-8")
         assert "Subscriptions" in page
         assert "Event — all locations" in page
+        assert 'name="channel_slack"' in page
+        assert 'name="channel_discord"' in page
+        assert 'name="channel_line"' in page
+        assert 'name="lead_days" value="7,1,0"' in page
+
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"{base}/subscribe",
+                data=urllib.parse.urlencode(
+                    {
+                        "channel_editor": "1",
+                        "channel_feed": "1",
+                        "channel_slack": "1",
+                        "channel_line": "1",
+                        "watch": "1",
+                        "scope": "event_all",
+                        "lead_days": "14,2",
+                        "redirect": "/notifications",
+                    }
+                ).encode("utf-8"),
+                method="POST",
+            ),
+            timeout=5,
+        )
+        edited = json.loads(urllib.request.urlopen(f"{base}/api/subscriptions", timeout=5).read().decode("utf-8"))[0]
+        assert edited["channels"] == "feed,slack,line"
+        assert edited["lead_days"] == "14,2"
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_account_notification_editor_only_offers_private_channels(tmp_path):
+    db_path = str(tmp_path / "account-notification-editor.sqlite3")
+    user = lm.create_user(db_path, "editor@example.com", "editor password 1")
+    watch = lm.add_watch(db_path, "Private Editor", kind=lm.WATCH_KIND_EVENT, user_id=user.id)
+    lm.add_subscription(
+        db_path,
+        str(watch.id),
+        lm.NOTIFY_SCOPE_EVENT_ALL,
+        channels="feed,push",
+        user_id=user.id,
+    )
+
+    page = lm.render_notifications_page(db_path, user_id=user.id)
+
+    assert 'name="channel_push"' in page
+    assert 'name="channel_slack"' not in page
+    assert 'name="channel_discord"' not in page
+    assert 'name="channel_line"' not in page
+    assert "Account subscriptions support private feed and push delivery." in page
 
 
 def test_clear_performance_window_rounds_nulls_show_run_dates():
@@ -1603,6 +3661,106 @@ def test_fetch_page_uses_plain_http_when_browser_disabled(monkeypatch):
     assert lm.fetch_page("https://example.test/").title == "Plain"
 
 
+def test_fetch_transports_reject_local_targets_and_redirects_before_network():
+    with pytest.raises(ValueError, match="public HTTP\\(S\\) URL"):
+        lm.request_html("http://127.0.0.1/private")
+    with pytest.raises(ValueError, match="public HTTP\\(S\\) URL"):
+        lm.request_json("http://169.254.169.254/latest/meta-data/")
+    with pytest.raises(ValueError, match="public HTTP\\(S\\) URL"):
+        lm.netio._browser_render("http://localhost/admin")
+
+    handler = lm.netio._PublicFetchRedirectHandler()
+    request = urllib.request.Request("https://official.example/event")
+    with pytest.raises(urllib.error.URLError, match="redirect target"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "http://127.0.0.1/admin",
+        )
+
+
+def test_fetch_redirects_never_forward_api_credentials_cross_origin():
+    handler = lm.netio._PublicFetchRedirectHandler()
+    request = urllib.request.Request(
+        "https://api.example/search",
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    with pytest.raises(urllib.error.URLError, match="credentialed redirect target changed origin"):
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://other.example/search",
+        )
+
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://api.example/next",
+    )
+    assert redirected.get_header("Authorization") == "Bearer secret"
+
+
+def test_fetch_response_body_is_bounded():
+    assert lm.netio._read_limited_response(io.BytesIO(b"ok")) == b"ok"
+    oversized = io.BytesIO(b"x" * (lm.MAX_FETCH_RESPONSE_BYTES + 1))
+    with pytest.raises(OSError, match="Fetch response exceeds"):
+        lm.netio._read_limited_response(oversized)
+
+
+def test_request_json_posts_utf8_json_body(monkeypatch):
+    captured = {}
+
+    class Headers:
+        @staticmethod
+        def get_content_charset():
+            return "utf-8"
+
+    class Response:
+        headers = Headers()
+
+        @staticmethod
+        def geturl():
+            return "https://api.example/search"
+
+        @staticmethod
+        def read(_limit):
+            return b'{"ok":true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+    def fake_open(request):
+        captured["request"] = request
+        return Response()
+
+    monkeypatch.setattr(lm.netio, "_open_public_request", fake_open)
+
+    assert lm.request_json(
+        "https://api.example/search",
+        {"Authorization": "Bearer secret"},
+        json_body={"query": "日本 公演"},
+    ) == {"ok": True}
+
+    request = captured["request"]
+    assert request.get_method() == "POST"
+    assert request.get_header("Content-type") == "application/json"
+    assert request.get_header("Authorization") == "Bearer secret"
+    assert json.loads(request.data.decode("utf-8")) == {"query": "日本 公演"}
+
+
 def test_fetch_page_falls_back_to_browser_on_fetch_error(monkeypatch):
     monkeypatch.setenv(lm.BROWSER_FETCH_ENV, "fallback")
 
@@ -1791,6 +3949,53 @@ def test_build_blocks_gathers_rounds_from_official_page_and_ticket_links(monkeyp
     names = {round_.name for round_ in blocks.ticket_info}
     assert "第1次抽選先行" in names
     assert any(round_.general_sale_date == "2026-07-04" for round_ in blocks.ticket_info)
+
+
+def test_build_blocks_discovers_matching_same_site_rss_pages(monkeypatch):
+    keyword = "Example Stage"
+    official_url = "https://official.example/stage"
+    article_url = "https://official.example/news/example-stage-ticket"
+    base_page = lm.parse_page(
+        official_url,
+        """
+        <html><head><title>Example Stage Official</title>
+        <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+        </head><body><h1>Example Stage</h1></body></html>
+        """,
+    )
+    article_page = lm.parse_page(
+        article_url,
+        """<html><head><title>Example Stage ticket update</title></head><body>
+        <h2>第2次抽選先行</h2><p>受付期間 2026年7月1日 ～ 2026年7月8日</p>
+        </body></html>""",
+    )
+    fetched = []
+
+    def fake_fetch(url):
+        fetched.append(url)
+        if url == official_url:
+            return base_page
+        if url == article_url:
+            return article_page
+        raise AssertionError(f"unexpected page fetch: {url}")
+
+    def fake_request_html(url, params=None):
+        assert url == "https://official.example/feed.xml"
+        return f"""<?xml version="1.0"?><rss><channel>
+        <item><title>Example Stage ticket update</title><link>{article_url}</link></item>
+        <item><title>Example Stage external trap</title><link>https://evil.example/private</link></item>
+        </channel></rss>"""
+
+    monkeypatch.setattr(lm.pipeline, "fetch_page", fake_fetch)
+    monkeypatch.setattr(lm.pipeline, "request_html", fake_request_html)
+    blocks = lm.build_blocks(
+        keyword,
+        search_results=[lm.SearchResult("Example Stage Official", official_url, keyword)],
+    )
+
+    assert any(round_.name == "第2次抽選先行" for round_ in blocks.ticket_info)
+    assert article_url in fetched
+    assert "https://evil.example/private" not in fetched
 
 
 def test_render_event_card_does_not_link_keyword_fallback_url():
@@ -2067,6 +4272,25 @@ def test_save_blocks_emits_alert_when_ticket_dates_change(tmp_path):
             "url": "https://t.pia.jp/example",
         }
     ]
+    persisted = [alert for alert in lm.recent_alerts(str(db_path)) if alert["type"] == "ticket_field_changed"]
+    assert len(persisted) == 1
+    assert persisted[0]["field"] == "lottery_end"
+    assert persisted[0]["old"] == "2026-06-18"
+    assert persisted[0]["new"] == "2026-06-20"
+
+
+def test_save_blocks_persists_discovery_alerts_without_repeating_unchanged_state(tmp_path):
+    db_path = tmp_path / "chusennote.sqlite3"
+    blocks = example_blocks("Example")
+
+    first_alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-03T00:00:00+00:00")
+    second_alerts = lm.save_blocks(str(db_path), blocks, now="2026-06-04T00:00:00+00:00")
+
+    expected_types = {"new_official_page", "new_ticket_link", "new_lottery_round"}
+    assert expected_types <= {alert["type"] for alert in first_alerts}
+    assert not expected_types & {alert["type"] for alert in second_alerts}
+    persisted_types = {alert["type"] for alert in lm.recent_alerts(str(db_path))}
+    assert expected_types <= persisted_types
 
 
 def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
@@ -2091,6 +4315,8 @@ def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
                 results_date="2026-06-03",
                 general_sale_date="2026-06-04",
                 payment_deadline="2026-06-04",
+                trade_start_at="2026-06-03",
+                trade_end_at="2026-06-05",
             ),
         ),
     )
@@ -2104,9 +4330,12 @@ def test_save_blocks_emits_lifecycle_alerts_for_upcoming_dates(tmp_path):
     assert "results_today" in alert_types
     assert "general_sale_soon" in alert_types
     assert "payment_due_soon" in alert_types
+    assert "trade_opened" in alert_types
+    assert "trade_closing_soon" in alert_types
     assert recent_alerts[0]["alert_id"] >= 1
     assert recent_alerts[0]["event_id"] >= 1
     assert recent_alerts[0]["alert_type"] == recent_alerts[0]["type"]
+    assert recent_alerts[0]["type_label"] == lm.human_alert_type(recent_alerts[0]["type"])
     assert recent_alerts[0]["event_title"] == "Example Tour"
     assert recent_alerts[0]["watch_id"] >= 1
     assert recent_alerts[0]["watch_keyword"] == "Example"
@@ -2182,10 +4411,98 @@ def test_init_db_migrates_existing_current_schema(tmp_path):
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
     assert {"tags", "preferred_regions", "preferred_venues", "muted", "last_checked_at"} <= watched_columns
-    assert {"event_dates_json", "venues_json", "ticket_rules_json", "ticket_prices_json"} <= event_columns
+    assert {
+        "event_dates_json",
+        "venues_json",
+        "ticket_rules_json",
+        "ticket_prices_json",
+        "organizers_json",
+        "lineup_json",
+    } <= event_columns
     assert {"platform", "application_start_at", "application_end_at", "confidence", "status"} <= round_columns
     assert {"watch_id", "url", "private_note", "muted"} <= source_columns
     assert user_version == lm.DB_SCHEMA_VERSION
+
+
+def test_notification_claim_migration_preserves_legacy_log_rows(tmp_path):
+    db_path = tmp_path / "legacy-notification-log.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE notification_log (
+                id INTEGER PRIMARY KEY,
+                notification_key TEXT NOT NULL UNIQUE,
+                subscription_id INTEGER,
+                event_id INTEGER,
+                channel TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO notification_log(notification_key, channel, payload_json, created_at) VALUES (?, ?, ?, ?)",
+            ("legacy-key", "feed", json.dumps({"title": "Legacy reminder"}), "2026-01-01T00:00:00+00:00"),
+        )
+        lm.init_db(connection)
+        columns = lm.table_columns(connection, "notification_log")
+        row = connection.execute(
+            "SELECT processing_at, updated_at, attempt_count FROM notification_log WHERE notification_key = ?",
+            ("legacy-key",),
+        ).fetchone()
+        exists, delivery = lm.notification_delivery_status(connection, "legacy-key")
+
+    assert {"processing_at", "updated_at", "attempt_count"} <= columns
+    assert row == (None, "2026-01-01T00:00:00+00:00", 0)
+    assert exists is True
+    assert delivery == {"_legacy_complete": True}
+
+
+def test_watch_preference_migration_preserves_legacy_user_memberships(tmp_path):
+    db_path = str(tmp_path / "legacy-user-watch-preferences.sqlite3")
+    user = lm.create_user(db_path, "legacy@example.com", "legacy password 1")
+    watch = lm.add_watch(
+        db_path,
+        "Legacy Tour",
+        kind=lm.WATCH_KIND_EVENT,
+        tags="legacy-tag",
+        preferred_regions="Tokyo",
+        preferred_venues="Legacy Hall",
+        alert_preferences="results_today",
+        user_id=0,
+    )
+    with lm.connect(db_path) as connection:
+        connection.execute("DROP TABLE user_watches")
+        connection.execute(
+            """
+            CREATE TABLE user_watches (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                watch_id INTEGER NOT NULL,
+                muted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                UNIQUE(user_id, watch_id)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO user_watches(user_id, watch_id, muted, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+            (user.id, watch.id, "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute("PRAGMA user_version = 14")
+
+    migrated = lm.list_watches(db_path, user_id=user.id)[0]
+    assert migrated.kind == lm.WATCH_KIND_EVENT
+    assert migrated.tags == "legacy-tag"
+    assert migrated.preferred_regions == "Tokyo"
+    assert migrated.preferred_venues == "Legacy Hall"
+    assert migrated.alert_preferences == "results_today"
+    with lm.connect(db_path) as connection:
+        assert {
+            "kind", "tags", "preferred_regions", "preferred_venues", "alert_preferences"
+        } <= lm.table_columns(connection, "user_watches")
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == lm.DB_SCHEMA_VERSION
 
 
 def test_round_number_status_and_dedupe_timeline():
@@ -2224,6 +4541,175 @@ def test_adapter_dispatch_labels_ticket_platform():
     assert rounds[0].confidence == 90
 
 
+def test_pia_adapter_separates_named_rounds_and_reads_provider_deadlines():
+    page = lm.Page(
+        "https://t.pia.jp/pia/event/example",
+        "Ticket",
+        (
+            "★いち早プレリザーブ ■申込受付期間 "
+            "2026年6月29日(月)12:00 ～ 2026年7月5日(日)23:59 "
+            "■抽選結果発表 2026年7月9日(木)20:00 "
+            "■お支払い期限 2026年7月11日(土)23:59 "
+            "★セブン-イレブンWEB抽選先行 ■申込受付期間 "
+            "2026年7月12日(日)12:00 ～ 2026年7月18日(土)23:59 "
+            "■抽選結果発表 2026年7月22日(水)20:00"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert [(round_.name, round_.application_start_at, round_.application_end_at) for round_ in rounds] == [
+        ("セブン-イレブンWEB抽選先行", "2026-07-12", "2026-07-18"),
+        ("いち早プレリザーブ", "2026-06-29", "2026-07-05"),
+    ]
+    first = next(round_ for round_ in rounds if round_.name == "いち早プレリザーブ")
+    assert first.results_date == "2026-07-09"
+    assert first.payment_end_at == "2026-07-11"
+    assert "セブン-イレブンWEB抽選先行" not in first.evidence
+
+
+def test_eplus_adapter_reads_preorder_result_confirmation_period():
+    page = lm.Page(
+        "https://eplus.jp/example/",
+        "Ticket",
+        (
+            "プレオーダー（抽選）申込期間 2026年7月25日(土)12:00 ～ 2026年8月2日(日)23:59 "
+            "抽選結果確認期間 2026年8月5日(水)13:00 ～ 2026年8月6日(木)18:00"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "プレオーダー（抽選）"
+    assert (rounds[0].application_start_at, rounds[0].application_end_at) == ("2026-07-25", "2026-08-02")
+    assert rounds[0].results_date == "2026-08-05"
+
+
+def test_lawson_adapter_reads_prerequest_result_and_store_payment_window():
+    page = lm.Page(
+        "https://l-tike.com/order/example",
+        "Ticket",
+        (
+            "抽選 プレリク先行 受付期間 2026年8月10日(月)10:00 ～ 2026年8月23日(日)23:59 "
+            "抽選結果発表日時：2026年8月26日(水)15:00頃 "
+            "店頭入金期間：2026年8月26日(水)15:00 ～ 2026年8月29日(土)23:00"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "プレリク先行"
+    assert (rounds[0].application_start_at, rounds[0].application_end_at) == ("2026-08-10", "2026-08-23")
+    assert rounds[0].results_date == "2026-08-26"
+    assert (rounds[0].payment_start_at, rounds[0].payment_end_at) == ("2026-08-26", "2026-08-29")
+
+
+def test_cnplayguide_adapter_prefers_application_window_over_performance_dates():
+    page = lm.Page(
+        "https://www.cnplayguide.com/evt/evtdtl.aspx?ecd=CNI15362",
+        "Ticket",
+        (
+            "奥華子 CONCERT TOUR 2026 2次先行抽選予約 "
+            "公演日：2026年10月8日 ～ 2026年10月8日 会場：彩の国さいたま芸術劇場 "
+            "抽選予約受付期間：2026年6月26日12:00 ～ 2026年7月12日23:59 "
+            "3次先行抽選予約 抽選予約受付期間：2026年7月15日12:00 ～ 2026年7月30日23:59"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert [(round_.name, round_.application_start_at, round_.application_end_at) for round_ in rounds] == [
+        ("3次先行抽選予約", "2026-07-15", "2026-07-30"),
+        ("2次先行抽選予約", "2026-06-26", "2026-07-12"),
+    ]
+    assert all("2026-10-08" not in (round_.application_start_at, round_.application_end_at) for round_ in rounds)
+
+
+def test_rakuten_adapter_reads_reception_and_result_schedule():
+    page = lm.Page(
+        "https://ticket.rakuten.co.jp/features/example/",
+        "Ticket",
+        (
+            "抽選先行受付 受付日程 受付期間 "
+            "2026年8月25日(火)10:00 ～ 2026年8月28日(金)18:00 "
+            "結果発表日時 2026年9月4日(金)13:00 "
+            "クレジットカードでの決済となります。支払期限：2026年9月7日(月)23:59"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "抽選先行受付"
+    assert (rounds[0].application_start_at, rounds[0].application_end_at) == ("2026-08-25", "2026-08-28")
+    assert rounds[0].results_date == "2026-09-04"
+    assert rounds[0].payment_end_at == "2026-09-07"
+
+
+def test_ticketboard_adapter_keeps_distinct_named_cards_with_shared_deadline():
+    page = lm.Page(
+        "https://ticket.tickebo.jp/top/ja/static/example/index.html",
+        "2026 CONCERT in TOKYO DOME",
+        (
+            "2026 CONCERT in TOKYO DOME "
+            "ファンクラブ2次先行（抽選）▼ 受付中～10月26日(日)23:59まで "
+            "SMTOWN OFFICIAL JAPAN先行（抽選）▼ 受付中～10月26日(日)23:59まで"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert [(round_.name, round_.application_start_at, round_.application_end_at) for round_ in rounds] == [
+        ("SMTOWN OFFICIAL JAPAN先行（抽選）", None, "2026-10-26"),
+        ("ファンクラブ2次先行（抽選）", None, "2026-10-26"),
+    ]
+
+
+def test_cnplayguide_adapter_keeps_multiple_general_sale_phases():
+    page = lm.Page(
+        "https://www.cnplayguide.com/evt/evtdtl.aspx?ecd=EXAMPLE",
+        "Ticket",
+        (
+            "CONCERT TOUR 2026 一般発売（後日発券） 8/10(月)10:00〜11/13(金)23:59 "
+            "一般発売（即時発券） 11/19(木)10:00〜公演の4日前20:00まで"
+        ),
+        (),
+    )
+
+    general_rounds = [
+        round_ for round_ in lm.extract_ticket_rounds_for_page(page) if round_.name == "一般発売"
+    ]
+
+    assert [round_.general_sale_date for round_ in general_rounds] == ["2026-11-19", "2026-08-10"]
+
+
+def test_ticketboard_adapter_reads_named_application_and_result_dates():
+    page = lm.Page(
+        "https://ticket.tickebo.jp/example",
+        "Ticket",
+        (
+            "先行抽選受付 申込期間 2026年9月1日(火)12:00 ～ 2026年9月7日(月)23:59 "
+            "当選発表日 2026年9月10日(木)18:00"
+        ),
+        (),
+    )
+
+    rounds = lm.extract_ticket_rounds_for_page(page)
+
+    assert len(rounds) == 1
+    assert rounds[0].name == "先行抽選受付"
+    assert (rounds[0].application_start_at, rounds[0].application_end_at) == ("2026-09-01", "2026-09-07")
+    assert rounds[0].results_date == "2026-09-10"
+
+
 def test_adapter_dispatch_covers_additional_ticket_platforms():
     html = """
     <html><body>
@@ -2243,6 +4729,7 @@ def test_adapter_dispatch_covers_additional_ticket_platforms():
     for url, platform in cases:
         rounds = lm.extract_ticket_rounds_for_page(lm.parse_page(url, html))
 
+        assert len(rounds) == 1
         assert rounds[0].platform == platform
         assert rounds[0].source == platform
         assert rounds[0].application_start_at == "2026-06-10"
@@ -2320,6 +4807,58 @@ def test_session_log_args_work_before_legacy_keyword():
     assert args.session_log_dir == "logs"
 
 
+def test_session_log_redacts_database_credentials_and_device_tokens(tmp_path):
+    database_url = "postgresql://private-user:private-password@db.internal/app?sslmode=require"
+    device_token = "private-device-token"
+    parsed = lm.parse_args(
+        [
+            "notify",
+            "device",
+            "add",
+            device_token,
+            "--db",
+            database_url,
+            "--session-log",
+            "--session-log-dir",
+            str(tmp_path),
+        ]
+    )
+
+    log_path = lm.append_session_log(
+        [
+            "notify",
+            "device",
+            "add",
+            device_token,
+            "--db",
+            database_url,
+            "--session-log",
+            "--session-log-dir",
+            str(tmp_path),
+        ],
+        parsed,
+        0,
+        dt.datetime(2026, 9, 14, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 9, 14, 0, 0, 1, tzinfo=dt.timezone.utc),
+    )
+    content = log_path.read_text()
+
+    assert device_token not in content
+    assert "private-user" not in content
+    assert "private-password" not in content
+    assert "sslmode" not in content
+    assert content.count("<redacted-database-url>") == 2
+    assert "<redacted-device-token>" in content
+
+
+def test_session_log_redacts_url_capabilities_but_keeps_plain_urls():
+    assert lm.redact_url_for_log("https://example.com/events") == "https://example.com/events"
+    assert lm.redact_url_for_log(
+        "https://user:password@example.com/events?token=private#section"
+    ) == "https://example.com/events?<redacted>"
+    assert lm.redact_url_for_log("https://user:password@example.com:not-a-port/") == "<redacted-url>"
+
+
 def test_watch_add_list_remove_cli(tmp_path, capsys):
     db_path = tmp_path / "chusennote.sqlite3"
 
@@ -2362,6 +4901,146 @@ def test_watch_add_list_remove_cli(tmp_path, capsys):
     export_output = capsys.readouterr().out
     assert '"keyword": "Example"' in export_output
     assert '"muted": true' in export_output
+
+
+def test_watch_identity_is_normalized_and_validated_at_persistence_boundary(tmp_path):
+    db_path = str(tmp_path / "watch-validation.sqlite3")
+
+    watch = lm.add_watch(db_path, "  Example\n  Musical  ", kind=lm.WATCH_KIND_EVENT)
+    assert watch.keyword == "Example Musical"
+
+    for keyword in ("", "   ", "x" * (lm.MAX_KEYWORD_LENGTH + 1)):
+        with pytest.raises(ValueError):
+            lm.add_watch(db_path, keyword, kind=lm.WATCH_KIND_EVENT)
+    with pytest.raises(ValueError, match="kind must be one of"):
+        lm.add_watch(db_path, "Invalid Kind", kind="unknown")
+
+    oversized_blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="x" * (lm.MAX_KEYWORD_LENGTH + 1),
+            official_page="",
+            title="",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+        ),
+        ticket_info=(),
+    )
+    with pytest.raises(ValueError, match="200 characters or fewer"):
+        lm.save_blocks(db_path, oversized_blocks)
+    assert [item.keyword for item in lm.list_watches(db_path)] == ["Example Musical"]
+
+
+def test_source_and_device_inputs_are_normalized_and_bounded_at_persistence_boundary(tmp_path):
+    db_path = str(tmp_path / "source-device-validation.sqlite3")
+    lm.add_watch(db_path, "Example")
+
+    private = lm.add_watch_source(
+        db_path,
+        "Example",
+        "  members-only lottery opens Friday  ",
+        "  Fan\n club note  ",
+        private_note=True,
+    )
+    assert private.url == "members-only lottery opens Friday"
+    assert private.label == "Fan club note"
+
+    invalid_public_urls = (
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "http://localhost/admin",
+        "http://127.0.0.1/admin",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://user:secret@example.com/ticket",
+    )
+    for url in invalid_public_urls:
+        with pytest.raises(ValueError, match="credential-free public HTTP\\(S\\) URL"):
+            lm.add_watch_source(db_path, "Example", url)
+    with pytest.raises(ValueError, match="4096 characters or fewer"):
+        lm.add_watch_source(db_path, "Example", "x" * (lm.MAX_SOURCE_VALUE_LENGTH + 1), private_note=True)
+    with pytest.raises(ValueError, match="120 characters or fewer"):
+        lm.add_watch_source(
+            db_path,
+            "Example",
+            "https://official.example/event",
+            "x" * (lm.MAX_SOURCE_LABEL_LENGTH + 1),
+        )
+    assert [source.url for source in lm.list_watch_sources(db_path)] == ["members-only lottery opens Friday"]
+
+    device = lm.register_device(db_path, "  firebase-token  ", platform=" IOS ", label="  My\n phone  ")
+    assert (device.token, device.platform, device.label) == ("firebase-token", "ios", "My phone")
+    with pytest.raises(ValueError, match="4096 characters or fewer"):
+        lm.register_device(db_path, "x" * (lm.MAX_DEVICE_TOKEN_LENGTH + 1))
+    with pytest.raises(ValueError, match="one of: android, ios"):
+        lm.register_device(db_path, "other-token", platform="web")
+    with pytest.raises(ValueError, match="120 characters or fewer"):
+        lm.register_device(db_path, "other-token", label="x" * (lm.MAX_DEVICE_LABEL_LENGTH + 1))
+    assert [item.token for item in lm.list_devices(db_path)] == ["firebase-token"]
+
+
+def test_invalid_watch_identity_returns_controlled_cli_and_http_errors(tmp_path, capsys, monkeypatch):
+    db_path = str(tmp_path / "invalid-watch-input.sqlite3")
+    assert lm.main(["watch", "add", "   ", "--db", db_path]) == 1
+    assert capsys.readouterr().out.strip() == "keyword is required"
+    assert lm.main(["search", "x" * (lm.MAX_KEYWORD_LENGTH + 1)]) == 1
+    assert "200 characters or fewer" in capsys.readouterr().out
+
+    search_called = False
+
+    def fail_search(keyword, limit=6):
+        nonlocal search_called
+        search_called = True
+        return ()
+
+    monkeypatch.setattr(lm.web, "search_web", fail_search)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as oversized_watch:
+            post_form(
+                f"{base}/api/watchlist",
+                {"keyword": "x" * (lm.MAX_KEYWORD_LENGTH + 1), "kind": "event"},
+            )
+        assert oversized_watch.value.code == 400
+
+        with pytest.raises(urllib.error.HTTPError) as invalid_kind:
+            post_form(f"{base}/api/watchlist", {"keyword": "Example", "kind": "unknown"})
+        assert invalid_kind.value.code == 400
+
+        oversized_query = urllib.parse.urlencode(
+            {"keyword": "x" * (lm.MAX_KEYWORD_LENGTH + 1)}
+        )
+        with pytest.raises(urllib.error.HTTPError) as oversized_search:
+            urllib.request.urlopen(f"{base}/api/event/search?{oversized_query}", timeout=5)
+        assert oversized_search.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as private_event_url:
+            post_form(
+                f"{base}/api/event/add",
+                {"keyword": "Internal", "url": "http://127.0.0.1/admin"},
+            )
+        assert private_event_url.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as unsafe_source:
+            post_form(
+                f"{base}/api/sources",
+                {"watch": "Example", "url": "https://user:secret@example.com/ticket"},
+            )
+        assert unsafe_source.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as invalid_device:
+            post_form(
+                f"{base}/api/devices",
+                {"token": "browser-token", "platform": "web"},
+            )
+        assert invalid_device.value.code == 400
+        assert search_called is False
+        assert lm.list_watches(db_path) == []
+        assert lm.list_devices(db_path) == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_kind_watch_mute_unmute_cli(tmp_path, capsys):
@@ -2453,6 +5132,23 @@ def test_watch_loop_outputs_json_batches(capsys):
     assert '"kind": "event"' in output
 
 
+def test_watch_loop_json_reports_external_delivery_failures(capsys):
+    assert lm.run_watch_loop(
+        "loop.sqlite3",
+        interval_minutes=0,
+        kind=lm.WATCH_KIND_EVENT,
+        max_runs=1,
+        alerts_json=True,
+        run_func=lambda db_path, kind=None: [],
+        notify_func=lambda db_path: [{"delivered": {"feed": True, "push": False}}],
+        sleep_func=lambda seconds: None,
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reminders"] == 1
+    assert payload["reminder_delivery_failures"] == 1
+
+
 def test_watch_loop_keyboard_interrupt_exits_cleanly(capsys):
     def interrupt(seconds):
         raise KeyboardInterrupt
@@ -2467,6 +5163,58 @@ def test_watch_loop_keyboard_interrupt_exits_cleanly(capsys):
     ) == 0
 
     assert "Watch loop stopped." in capsys.readouterr().out
+
+
+def test_web_server_keyboard_interrupt_exits_cleanly(monkeypatch, capsys):
+    monkeypatch.delenv("CHUSENNOTE_REQUIRE_POSTGRES", raising=False)
+    class InterruptingServer:
+        server_port = 8877
+        closed = False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            self.closed = True
+
+    server = InterruptingServer()
+    monkeypatch.setattr(lm.web, "create_web_server", lambda db_path, port, host: server)
+
+    lm.web.run_web("example.sqlite3", 8877)
+
+    output = capsys.readouterr().out
+    assert server.closed
+    assert "Serving chusennote at http://127.0.0.1:8877" in output
+    assert "Chusennote server stopped." in output
+
+
+def test_hosted_web_requires_postgres_before_listening(monkeypatch):
+    def unexpected_server(db_path, port, host):
+        pytest.fail("server must not listen without PostgreSQL")
+
+    monkeypatch.setenv("CHUSENNOTE_REQUIRE_POSTGRES", "1")
+    monkeypatch.delenv("CHUSENNOTE_DATABASE_URL", raising=False)
+    monkeypatch.setattr(lm.web, "create_web_server", unexpected_server)
+
+    with pytest.raises(ValueError, match="requires a PostgreSQL"):
+        lm.web.run_web(lm.DEFAULT_DB_PATH, 8877)
+
+    monkeypatch.setenv("CHUSENNOTE_DATABASE_URL", "sqlite:///ephemeral.sqlite3")
+    with pytest.raises(ValueError, match="requires a PostgreSQL"):
+        lm.web.run_web(lm.DEFAULT_DB_PATH, 8877)
+
+    class InterruptingServer:
+        server_port = 8877
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setenv("CHUSENNOTE_DATABASE_URL", "postgresql://user@db.example/app")
+    monkeypatch.setattr(lm.web, "create_web_server", lambda db_path, port, host: InterruptingServer())
+    lm.web.run_web(lm.DEFAULT_DB_PATH, 8877)
 
 
 def test_watch_loop_argparse_validation():
@@ -2538,6 +5286,7 @@ def test_source_provenance_and_round_metadata_are_exported(tmp_path):
     events = lm.recent_events(str(db_path))
 
     assert events[0]["status"] == "lottery_open"
+    assert events[0]["status_label"] == "Ticket window open"
     assert events[0]["event_dates"] == ["公演日 2026年7月10日"]
     assert events[0]["venues"] == ["会場 Example Hall"]
     assert any(reason.startswith("keyword match: Example") for reason in events[0]["match_reasons"])
@@ -2781,6 +5530,45 @@ def test_event_detail_groups_touring_rounds_by_city(tmp_path):
     assert "<h3>tv-asahi-ticket</h3>" in detail
 
 
+def test_event_detail_renders_official_resale_dates_and_status(tmp_path):
+    db_path = tmp_path / "resale-web.sqlite3"
+    blocks = lm.AppBlocks(
+        general_info=lm.EventInfo(
+            keyword="Resale Web",
+            official_page="https://official.example/resale",
+            title="Resale Web Event",
+            summary="",
+            event_dates=(),
+            venues=(),
+            ticket_links=(),
+            organizers=("Example Productions",),
+            lineup=("Example Lead",),
+        ),
+        ticket_info=(
+            lm.TicketRound(
+                source="official",
+                platform="official",
+                url="https://official.example/resale",
+                name="公式リセール",
+                trade_start_at="2026-07-01",
+                trade_end_at="2026-07-03",
+            ),
+        ),
+    )
+    lm.save_blocks(str(db_path), blocks, now="2026-07-01T00:00:00+00:00")
+
+    detail = lm.render_event_detail_page(str(db_path), 1)
+
+    assert "Ticket Rounds" in detail
+    assert "Resale opens" in detail
+    assert "2026-07-01" in detail
+    assert "Resale closes" in detail
+    assert "2026-07-03" in detail
+    assert "Resale open" in detail
+    assert "Example Productions" in detail
+    assert "Example Lead" in detail
+
+
 def test_tracked_event_display_key_prioritizes_official_pages():
     fallback_watch = lm.Watch(
         id=1,
@@ -2813,8 +5601,11 @@ def test_api_health_reports_database_counts(tmp_path):
     health = lm.api_health(str(db_path))
 
     assert health["app"] == "chusennote"
+    assert health["version"] == lm.APP_VERSION
+    assert health["build"] == lm.APP_BUILD
     assert health["status"] == "ok"
     assert health["schema_version"] == lm.DB_SCHEMA_VERSION
+    assert health["db_path"] == "chusennote.sqlite3"
     assert health["tracked_artists"] == 1
     assert health["tracked_events"] >= 1
     assert health["saved_events"] >= 1
@@ -2823,6 +5614,14 @@ def test_api_health_reports_database_counts(tmp_path):
     assert lm.remove_watch(str(db_path), "Event") is True
     muted_health = lm.api_health(str(db_path))
     assert muted_health["manual_sources"] == 0
+
+
+def test_database_health_label_never_exposes_connection_details():
+    assert lm.database_health_label(
+        "postgresql://private-user:private-password@db.internal:5432/app?sslmode=require"
+    ) == "postgresql"
+    assert lm.database_health_label("/Users/private/app.sqlite3") == "app.sqlite3"
+    assert lm.database_health_label(":memory:") == ":memory:"
 
 
 def test_watch_source_cli_add_list_remove(tmp_path, capsys):
@@ -3130,6 +5929,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "chusennote" in home
         assert "Tracked Artists" in home
         assert "Tracked Events" in home
+        assert f'title="Server release">v{lm.APP_VERSION} ({lm.APP_BUILD}) · schema {lm.DB_SCHEMA_VERSION}</span>' in home
         assert 'role="tablist"' in home
         assert 'data-tab-target="attention"' in home
         assert 'data-tab-target="artists"' in home
@@ -3141,8 +5941,12 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Muted Watches" not in home
         assert "Muted Sources" not in home
         assert "Needs Attention" in home
+        assert 'title="Ticket status">Closing soon</span>' in home
+        assert 'title="Ticket status">closing_soon</span>' not in home
         assert "Rounds 1" in home
         assert "Example Tour" in detail
+        assert "Ticket window open" in detail
+        assert ">lottery_open</span>" not in detail
         assert "General Info" in detail
         assert "Location" in detail
         assert "Time" in detail
@@ -3150,7 +5954,7 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "Ticket Rules" in detail
         assert "Ticket Price" in detail
         assert "Ticket Links" in detail
-        assert "Lottery Rounds" in detail
+        assert "Ticket Rounds" in detail
         # Only populated facts render: this round has application dates but no
         # payment date, so that label is omitted rather than shown blank.
         assert "Lottery opens" in detail
@@ -3166,10 +5970,14 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         assert "evidence" in events[0]["rounds"][0]
         assert upcoming[0]["event_title"] == "Example Tour"
         assert alerts
+        assert {"new_official_page", "new_ticket_link", "new_lottery_round"} <= {
+            alert["type"] for alert in alerts
+        }
         assert alerts[0]["alert_id"] >= 1
         assert alerts[0]["event_id"] >= 1
         assert alerts[0]["event_title"] == "Example Tour"
         assert alerts[0]["watch_keyword"] == "Example"
+        assert alerts[0]["type_label"] == lm.human_alert_type(alerts[0]["type"])
         assert "text/calendar" in calendar_response.headers["Content-Type"]
         assert "BEGIN:VCALENDAR" in calendar
         assert "Example Tour" in muted_calendar
@@ -3185,6 +5993,15 @@ def test_web_command_parses_explicit_host():
     assert args.db == "local.sqlite3"
     assert args.port == 0
     assert args.host == "0.0.0.0"
+
+
+def test_web_port_defaults_to_host_environment(monkeypatch):
+    monkeypatch.setenv("PORT", "10000")
+
+    args = lm.parse_args(["web"])
+
+    assert args.port == 10000
+    assert lm.parse_args(["web", "--port", "9000"]).port == 9000
 
 
 def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatch):
@@ -3358,12 +6175,13 @@ def test_api_event_add_scopes_exact_event_to_authenticated_user(tmp_path, monkey
         token_calendar = urllib.request.urlopen(
             f"{base}/calendar.ics?token={urllib.parse.quote(calendar_token)}", timeout=5
         ).read().decode("utf-8")
-        bearer_as_calendar_token = urllib.request.urlopen(
-            f"{base}/calendar.ics?token={urllib.parse.quote(alice['token'])}", timeout=5
-        ).read().decode("utf-8")
+        with pytest.raises(urllib.error.HTTPError) as bearer_as_calendar_token:
+            urllib.request.urlopen(
+                f"{base}/calendar.ics?token={urllib.parse.quote(alice['token'])}", timeout=5
+            )
         assert "Alice Musical Tour" not in anonymous_calendar
         assert "Alice Musical Tour" in token_calendar
-        assert "Alice Musical Tour" not in bearer_as_calendar_token
+        assert bearer_as_calendar_token.value.code == 401
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -3409,6 +6227,22 @@ def test_calendar_token_is_scoped_and_not_a_bearer_token(tmp_path):
         assert lm.user_id_for_calendar_token(db_path, second_token) is None
         assert lm.user_id_for_calendar_token(db_path, rotated) == user_id
         assert lm.user_id_for_calendar_token(db_path, other_calendar) == other.id
+
+        for invalid_url in (
+            f"{base}/calendar.ics?token={urllib.parse.quote(first_token)}",
+            f"{base}/calendar.ics?token={urllib.parse.quote(second_token)}",
+            f"{base}/calendar.ics?token=unknown",
+            f"{base}/calendar.ics?token=",
+            f"{base}/calendar.ics?token={urllib.parse.quote(rotated)}&token=unknown",
+        ):
+            with pytest.raises(urllib.error.HTTPError) as invalid_calendar:
+                urllib.request.urlopen(invalid_url, timeout=5)
+            assert invalid_calendar.value.code == 401
+            assert json.loads(invalid_calendar.value.read()) == {"error": "unauthorized"}
+
+        assert "BEGIN:VCALENDAR" in urllib.request.urlopen(
+            f"{base}/calendar.ics?token={urllib.parse.quote(rotated)}", timeout=5
+        ).read().decode("utf-8")
 
         # A calendar token carries no API privileges: used as a bearer token it
         # is simply unauthenticated, not the account it was minted for.
@@ -3467,6 +6301,36 @@ def test_authenticated_api_watch_and_source_mutations_are_user_scoped(tmp_path):
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     try:
+        alice_watch = post_form_with_token(
+            f"{base}/api/watchlist",
+            {
+                "keyword": "Shared Show",
+                "kind": lm.WATCH_KIND_EVENT,
+                "tags": "alice",
+                "regions": "Tokyo",
+                "venues": "Alice Hall",
+                "alerts": "results_today",
+            },
+            alice_token,
+        )
+        bob_watch = post_form_with_token(
+            f"{base}/api/watchlist",
+            {
+                "keyword": "Shared Show",
+                "kind": lm.WATCH_KIND_EVENT,
+                "tags": "bob",
+                "regions": "Osaka",
+                "venues": "Bob Hall",
+                "alerts": "payment_due_soon",
+            },
+            bob_token,
+        )
+        assert alice_watch["id"] == bob_watch["id"] == watch.id
+        assert _get_with_token(f"{base}/api/watchlist", alice_token)[0]["tags"] == "alice"
+        assert _get_with_token(f"{base}/api/watchlist", alice_token)[0]["preferred_regions"] == "Tokyo"
+        assert _get_with_token(f"{base}/api/watchlist", bob_token)[0]["tags"] == "bob"
+        assert _get_with_token(f"{base}/api/watchlist", bob_token)[0]["preferred_regions"] == "Osaka"
+
         alice_source = post_form_with_token(
             f"{base}/api/sources",
             {"watch": str(watch.id), "url": "https://fan.example/alice", "label": "Alice FC", "private_note": "1"},
@@ -3701,12 +6565,39 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         home_with_preferences = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         assert "Example" in home_with_preferences
         assert "not searched yet" in home_with_preferences
+        assert "Add or update a keyword watch" in home_with_preferences
+        assert "Add or update an artist watch" in home_with_preferences
+        assert 'name="regions"' in home_with_preferences
+        assert 'name="venues"' in home_with_preferences
+        assert 'name="alerts"' in home_with_preferences
+        assert 'id="artist-watch-editor"' in home_with_preferences
+        assert 'id="event-watch-editor"' in home_with_preferences
+        assert 'data-edit-watch data-kind="event" data-keyword="Example" data-tags="musical"' in home_with_preferences
+        assert "tags musical | regions none | venues Example Hall | alerts New ticket round" in home_with_preferences
 
         source = post_form(f"{base}/api/sources", {"watch": "Example", "url": "https://fan.example/private", "label": "FC", "private_note": "1"})
         assert source["private_note"] is True
 
         run_alerts = post_form(f"{base}/api/run", {})
         assert any(alert["type"] == "new_lottery_round" for alert in run_alerts)
+        edited_home = post_text(
+            f"{base}/watch/add",
+            {
+                "keyword": "Example",
+                "kind": "event",
+                "tags": "stage",
+                "regions": "Tokyo",
+                "venues": "New Hall",
+                "alerts": "results_today",
+            },
+        )
+        assert "tags stage | regions Tokyo | venues New Hall | alerts Results today" in edited_home
+        edited_watch = json_load_url(f"{base}/api/watchlist")[0]
+        assert edited_watch["tags"] == "stage"
+        assert edited_watch["preferred_regions"] == "Tokyo"
+        assert edited_watch["preferred_venues"] == "New Hall"
+        assert edited_watch["alert_preferences"] == "results_today"
+        assert 'data-keyword="Example" data-tags="stage" data-regions="Tokyo" data-venues="New Hall"' in edited_home
         home_with_source = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         detail_with_source = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert '<a href="https://fan.example/private">Open</a>' not in home_with_source
@@ -3762,6 +6653,28 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         thread.join(timeout=5)
 
 
+def test_web_watch_edit_attributes_escape_saved_preferences(tmp_path):
+    db_path = str(tmp_path / "web-edit-escaping.sqlite3")
+    lm.add_watch(
+        db_path,
+        'Show "quoted" <tour>',
+        kind=lm.WATCH_KIND_EVENT,
+        tags='stage" data-stolen="yes',
+        preferred_regions="Tokyo & Chiba",
+        preferred_venues="Hall <One>",
+        alert_preferences="results_today",
+        user_id=0,
+    )
+
+    page = lm.render_web_page(db_path, user_id=0)
+
+    assert 'data-keyword="Show &quot;quoted&quot; &lt;tour&gt;"' in page
+    assert 'data-tags="stage&quot; data-stolen=&quot;yes"' in page
+    assert 'data-regions="Tokyo &amp; Chiba"' in page
+    assert 'data-venues="Hall &lt;One&gt;"' in page
+    assert 'data-stolen="yes"' not in page
+
+
 def json_load_url(url):
     return json.loads(urllib.request.urlopen(url, timeout=5).read().decode("utf-8"))
 
@@ -3800,6 +6713,188 @@ def post_text_with_token(url, token, values):
     return urllib.request.urlopen(request, timeout=5).read().decode("utf-8")
 
 
+def assert_web_security_headers(response, *, hsts=False):
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+    assert response.headers["Permissions-Policy"] == "camera=(), geolocation=(), microphone=()"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    if hsts:
+        assert response.headers["Strict-Transport-Security"] == "max-age=31536000"
+    else:
+        assert response.headers.get("Strict-Transport-Security") is None
+
+
+def test_web_responses_apply_security_headers(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "security-headers.sqlite3")
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        for path in ("/", "/api/health", "/calendar.ics"):
+            with urllib.request.urlopen(f"{base}{path}", timeout=5) as response:
+                assert_web_security_headers(response)
+
+        class RejectRedirects(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+                return None
+
+        logout = urllib.request.Request(f"{base}/account/logout", data=b"", method="POST")
+        with pytest.raises(urllib.error.HTTPError) as redirect:
+            urllib.request.build_opener(RejectRedirects()).open(logout, timeout=5)
+        assert redirect.value.code == 303
+        assert_web_security_headers(redirect.value)
+
+        monkeypatch.setenv(lm.web.TRUST_PROXY_HEADERS_ENV, "1")
+        proxied = urllib.request.Request(
+            f"{base}/api/health",
+            headers={"Host": "tickets.example", "X-Forwarded-Proto": "https"},
+        )
+        with urllib.request.urlopen(proxied, timeout=5) as response:
+            assert_web_security_headers(response, hsts=True)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_web_rejects_oversized_and_malformed_form_bodies(tmp_path):
+    server = lm.create_web_server(str(tmp_path / "bounded-forms.sqlite3"), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for content_length, expected_status, expected_error in (
+            (str(lm.web.FORM_BODY_LIMIT + 1), 413, "form body exceeds"),
+            ("not-a-number", 400, "invalid content length"),
+            ("-1", 400, "invalid content length"),
+        ):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.putrequest("POST", "/api/watchlist")
+            connection.putheader("Content-Length", content_length)
+            connection.endheaders()
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+            assert response.status == expected_status
+            assert expected_error in payload["error"]
+            assert_web_security_headers(response)
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_invalid_bearer_never_falls_back_to_anonymous_workspace(tmp_path):
+    db_path = str(tmp_path / "invalid-bearer.sqlite3")
+    lm.add_watch(db_path, "Anonymous Watch", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert [watch["keyword"] for watch in json_load_url(f"{base}/api/watchlist")] == ["Anonymous Watch"]
+
+        for request in (
+            urllib.request.Request(
+                f"{base}/api/watchlist", headers={"Authorization": "Bearer expired-token"}
+            ),
+            urllib.request.Request(
+                f"{base}/api/watchlist", headers={"Authorization": "Basic malformed"}
+            ),
+            urllib.request.Request(
+                f"{base}/calendar.ics", headers={"Authorization": "Bearer expired-token"}
+            ),
+        ):
+            with pytest.raises(urllib.error.HTTPError) as unauthorized:
+                urllib.request.urlopen(request, timeout=5)
+            assert unauthorized.value.code == 401
+            assert json.loads(unauthorized.value.read()) == {"error": "unauthorized"}
+
+        with pytest.raises(urllib.error.HTTPError) as mutation:
+            post_form_with_token(
+                f"{base}/api/watchlist",
+                {"keyword": "Must Not Become Anonymous", "kind": "event"},
+                "expired-token",
+            )
+        assert mutation.value.code == 401
+        assert [watch.keyword for watch in lm.list_watches(db_path, user_id=0)] == ["Anonymous Watch"]
+
+        with pytest.raises(urllib.error.HTTPError) as anonymous_logout:
+            post_form(f"{base}/api/auth/logout", {})
+        assert anonymous_logout.value.code == 401
+
+        health = urllib.request.Request(
+            f"{base}/api/health", headers={"Authorization": "Bearer expired-token"}
+        )
+        assert json.loads(urllib.request.urlopen(health, timeout=5).read())["status"] == "ok"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_read_form_rejects_excess_fields_transfer_encoding_and_invalid_utf8():
+    class FakeHandler:
+        def __init__(self, body, headers):
+            self.rfile = io.BytesIO(body)
+            self.headers = headers
+
+    many_fields = "&".join(f"field{index}=x" for index in range(lm.web.FORM_FIELD_LIMIT + 1)).encode()
+    with pytest.raises(lm.web.FormBodyError, match="exceeds 100 fields"):
+        lm.web.read_form(FakeHandler(many_fields, {"Content-Length": str(len(many_fields))}))
+    with pytest.raises(lm.web.FormBodyError, match="transfer encoding"):
+        lm.web.read_form(FakeHandler(b"", {"Transfer-Encoding": "chunked"}))
+    with pytest.raises(lm.web.FormBodyError, match="valid UTF-8"):
+        lm.web.read_form(FakeHandler(b"\xff", {"Content-Length": "1"}))
+    with pytest.raises(lm.web.FormBodyError, match="shorter than content length"):
+        lm.web.read_form(FakeHandler(b"x", {"Content-Length": "2"}))
+
+
+def test_web_bounds_query_fields_and_read_limits(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "bounded-query.sqlite3")
+    seen_search_limits = []
+
+    def fake_search(keyword, limit=6):
+        seen_search_limits.append(limit)
+        return ()
+
+    monkeypatch.setattr(lm.web, "search_web", fake_search)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert json_load_url(f"{base}/api/notifications?limit=1") == []
+        assert json_load_url(f"{base}/api/event/search?keyword=Example&limit=20") == []
+        assert seen_search_limits == [20]
+
+        invalid_paths = (
+            "/api/notifications?limit=0",
+            "/api/notifications?limit=501",
+            "/api/notifications?limit=all",
+            "/api/notifications?limit=1&limit=2",
+            "/api/event/search?keyword=Example&limit=-1",
+            "/api/event/search?keyword=Example&limit=21",
+            "/api/event/search?keyword=Example&limit=all",
+            "/api/event/search?keyword=Example&limit=1&limit=2",
+            "/api/health?" + "&".join(
+                f"field{index}=x" for index in range(lm.web.QUERY_FIELD_LIMIT + 1)
+            ),
+        )
+        for path in invalid_paths:
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(f"{base}{path}", timeout=5)
+            assert rejected.value.code == 400
+            assert json.loads(rejected.value.read())["error"]
+            assert_web_security_headers(rejected.value)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def _get_with_token(url, token):
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     return json.loads(urllib.request.urlopen(request, timeout=5).read().decode("utf-8"))
@@ -3830,7 +6925,7 @@ def test_notification_api_scopes_authenticated_feed_subscriptions_and_devices(tm
     lm.register_device(db_path, "bob-device", platform="ios", user_id=bob.id)
     sent_tokens = []
 
-    def fake_push(notification, devices):
+    def fake_push(notification, devices, invalid_tokens=None):
         sent_tokens.append((notification["subscription_id"], [device.token for device in devices]))
         return True
 
@@ -3981,6 +7076,174 @@ def test_web_auth_register_login_me_logout(tmp_path):
         assert revoked.value.code == 401
     finally:
         server.shutdown()
+
+
+def test_browser_account_cookie_scopes_web_ui_and_logout(tmp_path):
+    db_path = str(tmp_path / "browser-account.sqlite3")
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    cookie_jar = http.cookiejar.CookieJar()
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+
+    def browser_post(path, values):
+        request = urllib.request.Request(
+            f"{base}{path}",
+            data=urllib.parse.urlencode(values).encode("utf-8"),
+            method="POST",
+        )
+        return browser.open(request, timeout=5)
+
+    try:
+        browser_post(
+            "/account/register",
+            {"email": "Browser@Example.com", "password": "correct horse battery"},
+        ).read()
+        cookies = list(cookie_jar)
+        assert len(cookies) == 1
+        session_cookie = cookies[0]
+        assert session_cookie.name == lm.web.WEB_SESSION_COOKIE
+        assert session_cookie.has_nonstandard_attr("HttpOnly")
+        assert session_cookie.get_nonstandard_attr("SameSite") == "Strict"
+        assert session_cookie.secure is False
+        token = session_cookie.value
+
+        # Browser cookies authorize only HTML routes. API clients must present
+        # an explicit bearer token, which keeps a same-site cross-origin caller
+        # from replaying the browser session against /api/* endpoints.
+        with pytest.raises(urllib.error.HTTPError) as cookie_api_request:
+            browser.open(f"{base}/api/auth/me", timeout=5)
+        assert cookie_api_request.value.code == 401
+
+        browser_post("/watch/add", {"keyword": "Private Browser Watch", "kind": "event"}).read()
+        user = lm.user_for_token(db_path, token)
+        assert user is not None
+        user_watches = lm.list_watches(db_path, user_id=user.id)
+        assert [watch.keyword for watch in user_watches] == ["Private Browser Watch"]
+        assert lm.list_watches(db_path, user_id=0) == []
+        assert "Private Browser Watch" in browser.open(base, timeout=5).read().decode("utf-8")
+        assert "Private Browser Watch" not in urllib.request.urlopen(base, timeout=5).read().decode("utf-8")
+
+        lm.save_blocks(
+            db_path,
+            lm.AppBlocks(
+                general_info=lm.EventInfo(
+                    keyword="Private Browser Watch",
+                    official_page="https://official.example/private",
+                    title="Private Browser Event",
+                    summary="Account-scoped event",
+                    event_dates=(),
+                    venues=(),
+                    ticket_links=(),
+                ),
+                ticket_info=(),
+            ),
+            watch_id=user_watches[0].id,
+        )
+        event_id = int(lm.recent_events(db_path, user_id=user.id)[0]["id"])
+        assert "Private Browser Event" in browser.open(f"{base}/events/{event_id}", timeout=5).read().decode("utf-8")
+        assert "Event not found" in urllib.request.urlopen(f"{base}/events/{event_id}", timeout=5).read().decode("utf-8")
+
+        browser_post("/account/logout", {}).read()
+        assert list(cookie_jar) == []
+        assert lm.user_for_token(db_path, token) is None
+        assert "Private Browser Watch" not in browser.open(base, timeout=5).read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_browser_account_accepts_explicit_trusted_https_proxy_and_sets_secure_cookie(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "browser-trusted-proxy.sqlite3")
+    monkeypatch.setenv(lm.web.TRUST_PROXY_HEADERS_ENV, "1")
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    cookie_jar = http.cookiejar.CookieJar()
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/account/register",
+            data=urllib.parse.urlencode(
+                {"email": "proxy@example.com", "password": "correct horse battery"}
+            ).encode("utf-8"),
+            headers={"Host": "tickets.example", "X-Forwarded-Proto": "https"},
+            method="POST",
+        )
+        browser.open(request, timeout=5).read()
+        cookies = list(cookie_jar)
+        assert len(cookies) == 1
+        session_cookie = cookies[0]
+        assert session_cookie.name == lm.web.WEB_SESSION_COOKIE
+        assert session_cookie.has_nonstandard_attr("HttpOnly")
+        assert session_cookie.get_nonstandard_attr("SameSite") == "Strict"
+        assert session_cookie.secure is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_browser_account_rejects_password_on_public_cleartext_host(tmp_path):
+    db_path = str(tmp_path / "browser-public-http.sqlite3")
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        attempts = (
+            ("public.example", "/account/register", "unsafe-browser-one@example.com"),
+            ("192.0.2.1", "/account/register", "unsafe-browser-two@example.com"),
+            ("public.example", "/api/auth/register", "unsafe-api-one@example.com"),
+            ("192.0.2.1", "/api/auth/register", "unsafe-api-two@example.com"),
+        )
+        for host, path, email in attempts:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}{path}",
+                data=urllib.parse.urlencode(
+                    {"email": email, "password": "correct horse battery"}
+                ).encode("utf-8"),
+                headers={"Host": host, "X-Forwarded-Proto": "https"},
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(request, timeout=5)
+            assert rejected.value.code == 400
+        for _, _, email in attempts:
+            assert lm.verify_user(db_path, email, "correct horse battery") is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_browser_forms_reject_cross_origin_requests_and_external_redirects(tmp_path):
+    db_path = str(tmp_path / "browser-csrf.sqlite3")
+    watch = lm.add_watch(db_path, "Browser CSRF", kind=lm.WATCH_KIND_EVENT, user_id=0)
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        cross_origin = urllib.request.Request(
+            f"{base}/watch/remove",
+            data=urllib.parse.urlencode({"identifier": str(watch.id)}).encode("utf-8"),
+            headers={"Origin": "http://127.0.0.1:9999"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(cross_origin, timeout=5)
+        assert rejected.value.code == 403
+        assert lm.list_watches(db_path, user_id=0)[0].muted is False
+
+        assert lm.web.safe_web_redirect("https://evil.example/steal", "/notifications") == "/notifications"
+        assert lm.web.safe_web_redirect("//evil.example/steal", "/notifications") == "/notifications"
+        assert lm.web.safe_web_redirect("/events/1", "/notifications") == "/events/1"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_logout_detaches_only_the_authenticated_accounts_selected_device(tmp_path):
@@ -4163,6 +7426,44 @@ def test_search_api_parses_brave_payload(monkeypatch):
     assert captured["headers"]["X-Subscription-Token"] == "test-key"
     assert [r.url for r in results] == ["https://official.example/stage"]
     assert results[0].title == "公式サイト"
+
+
+def test_search_api_posts_tavily_payload(monkeypatch):
+    monkeypatch.setenv(lm.SEARCH_PROVIDER_ENV, "tavily")
+    monkeypatch.setenv(lm.SEARCH_API_KEY_ENV, "test-key")
+    captured = {}
+
+    def fake_request_json(url, headers=None, *, json_body=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json_body"] = json_body
+        return {
+            "results": [
+                {
+                    "title": "公式サイト",
+                    "url": "https://official.example/stage",
+                    "content": "公演 チケット 抽選",
+                },
+                {"title": "no url"},
+            ]
+        }
+
+    monkeypatch.setattr(lm.search, "request_json", fake_request_json)
+    results = lm.search_api("ディア・エヴァン・ハンセン", limit=5)
+
+    assert captured["url"] == "https://api.tavily.com/search"
+    assert captured["headers"] == {"Authorization": "Bearer test-key"}
+    assert captured["json_body"] == {
+        "query": "ディア・エヴァン・ハンセン 公式 チケット 抽選 先行",
+        "search_depth": "basic",
+        "max_results": 5,
+        "include_answer": False,
+        "include_raw_content": False,
+        "include_images": False,
+        "country": "japan",
+    }
+    assert [result.url for result in results] == ["https://official.example/stage"]
+    assert results[0].snippet == "公演 チケット 抽選"
 
 
 def test_search_web_prefers_api_results_over_scraping(monkeypatch):

@@ -11,6 +11,7 @@ rewriting on the way to Postgres. Depends only on the leaf models module.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import sqlite3
 
@@ -22,10 +23,15 @@ DATABASE_URL_ENV = "CHUSENNOTE_DATABASE_URL"
 
 
 def resolve_target(target: str | None = None) -> str:
-    """Resolve the database target: explicit arg, else env URL, else the default
-    SQLite path. Callers pass a concrete path today, so the env is only consulted
-    when no target is given."""
-    return target or os.environ.get(DATABASE_URL_ENV) or DEFAULT_DB_PATH
+    """Resolve an explicit database target or the deployment default.
+
+    A non-default CLI path is an intentional local override. The ordinary
+    default remains replaceable through ``CHUSENNOTE_DATABASE_URL`` so hosted
+    commands can use Postgres without putting credentials in process arguments.
+    """
+    if target and target != DEFAULT_DB_PATH:
+        return target
+    return os.environ.get(DATABASE_URL_ENV) or target or DEFAULT_DB_PATH
 
 
 def is_postgres_url(target: str) -> bool:
@@ -34,6 +40,19 @@ def is_postgres_url(target: str) -> bool:
 
 def dialect_of(target: str) -> str:
     return "postgres" if is_postgres_url(target) else "sqlite"
+
+
+def database_health_label(target: str) -> str:
+    """Return a non-sensitive database identifier for public health output.
+
+    PostgreSQL URLs commonly embed usernames, passwords, hosts, and TLS query
+    parameters, none of which belongs on an unauthenticated health endpoint.
+    SQLite retains only its filename so local operators can distinguish files
+    without exposing an absolute home or deployment path.
+    """
+    if is_postgres_url(target):
+        return "postgresql"
+    return pathlib.Path(target).name or "sqlite"
 
 
 def split_statements(script: str) -> list[str]:

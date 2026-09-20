@@ -59,19 +59,60 @@ def nearby_phrases(text: str, labels: Iterable[str], width: int = 90, limit: int
 _PERIOD_DATE = r"20\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日(?:\s*[(（][^)）]{1,5}[)）])?"
 _PERIOD_DATE_END = r"(?:20\d{2}\s*年\s*)?(?:\d{1,2}\s*月\s*)?\d{1,2}\s*日(?:\s*[(（][^)）]{1,5}[)）])?"
 PERFORMANCE_PERIOD_RE = re.compile(
-    r"期\s*間\s*(?P<range>" + _PERIOD_DATE + r"(?:\s*[～~〜\-]\s*" + _PERIOD_DATE_END + r")?)"
+    r"期\s*間\s*[：:]?\s*(?P<range>" + _PERIOD_DATE + r"(?:\s*[～~〜\-]\s*" + _PERIOD_DATE_END + r")?)"
 )
 SLASH_PERFORMANCE_PERIOD_RE = re.compile(
     r"(?P<range>20\d{2}/\d{1,2}/\d{1,2}\s*[～~〜\-]\s*20\d{2}/\d{1,2}/\d{1,2})\s*公演"
 )
+LABELED_SLASH_EVENT_RANGE_RE = re.compile(
+    r"(?:公演日|開催日|開催日時)\s*[：:]?\s*"
+    r"(?P<start>(?:20\d{2}/)?\d{1,2}/\d{1,2})\s*[～~〜\-]\s*"
+    r"(?P<end>(?:20\d{2}/)?\d{1,2}/\d{1,2})"
+)
 _PERIOD_LEAD_NOISE = ("受付", "申込", "抽選", "先行", "販売", "入金", "支払", "発売")
-EVENT_DATE_NOISE = ("一般前売", "発売", "先行", "抽選", "料金", "消費税込", "備考", "小人", "追記")
+REGIONAL_PERFORMANCE_RE = re.compile(
+    r"(?P<region>東京|大阪|名古屋|京都|福岡|札幌|仙台|静岡|広島|群馬|愛知|全国)\s*公演\s*"
+    r"(?P<range>(?:20\d{2}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日"
+    r"(?:\s*[(（][^)）]{1,5}[)）])?\s*[～~〜\-]\s*" + _PERIOD_DATE_END + r")"
+)
+EVENT_DATE_NOISE = (
+    "一般前売",
+    "発売",
+    "先行",
+    "抽選",
+    "料金",
+    "消費税込",
+    "備考",
+    "小人",
+    "追記",
+    "各公演日",
+    "公演日の前日",
+)
 
 
 def extract_event_dates(text: str) -> tuple[str, ...]:
     dates: list[str] = []
     seen: set[str] = set()
+    page_year_hint = dominant_year(text)
     for candidate in nearby_phrases(text, ("公演日", "公演期間", "開催日", "開催日時"), limit=5):
+        slash_event_range = LABELED_SLASH_EVENT_RANGE_RE.search(candidate)
+        if slash_event_range:
+            start = slash_event_range.group("start")
+            end = slash_event_range.group("end")
+            if page_year_hint:
+                start = start if re.match(r"20\d{2}/", start) else f"{page_year_hint}/{start}"
+                end = end if re.match(r"20\d{2}/", end) else f"{page_year_hint}/{end}"
+            candidate = f"{start}～{end}"
+        performance_period = PERFORMANCE_PERIOD_RE.search(candidate)
+        period_lead = (
+            candidate[max(0, performance_period.start() - 12) : performance_period.start()]
+            .replace(" ", "")
+            .replace("　", "")
+            if performance_period
+            else ""
+        )
+        if performance_period and not any(noisy in period_lead for noisy in _PERIOD_LEAD_NOISE):
+            candidate = clean_text(performance_period.group("range")).strip(" ：:、。")
         date_match = DATE_RE.search(candidate)
         lead = candidate[: date_match.start()] if date_match else candidate
         label_before_date = any(label in lead for label in ("公演日", "公演期間", "開催日", "開催日時"))
@@ -96,6 +137,16 @@ def extract_event_dates(text: str) -> tuple[str, ...]:
         if phrase and phrase not in seen:
             dates.append(phrase)
             seen.add(phrase)
+    captured_years = {match.group(0) for value in dates for match in re.finditer(r"20\d{2}", value)}
+    page_year = int(next(iter(captured_years))) if len(captured_years) == 1 else page_year_hint
+    for match in REGIONAL_PERFORMANCE_RE.finditer(text):
+        date_range = clean_text(match.group("range")).strip(" ：:、。")
+        if page_year and not re.search(r"20\d{2}\s*年", date_range):
+            date_range = f"{page_year}年{date_range}"
+        phrase = f"{match.group('region')}公演 {date_range}"
+        if phrase not in seen:
+            dates.append(phrase)
+            seen.add(phrase)
     return tuple(dates)
 
 
@@ -110,13 +161,16 @@ def extract_venues(text: str) -> tuple[str, ...]:
     # 会場 label space-tolerantly to catch venues like "EXシアター有明(…)" that have
     # no 劇場/ホール suffix and would otherwise be missed entirely.
     patterns = (
+        rf"(?:東京|大阪|名古屋|京都|福岡|札幌|仙台|静岡|広島|群馬|愛知)\s*公演\s+.{{0,100}}?\s+(?P<venue>[^\s。]{{1,30}}(?:座|劇場|ホール|アリーナ|ドーム|会館))(?=\s|$)",
         rf"会\s*場のご案内\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
         rf"会\s*場\s*(?P<venue>[^。【\n\r]{{2,80}}?){boundary}",
         r"(?:東京|大阪|名古屋|京都|福岡|札幌|仙台|静岡|広島|全国)\s+(?P<venue>[^\s。]{2,40}(?:劇場|ホール|アリーナ|ドーム|会館)(?:［[^］]+］)?(?:（[^）]+）)?)",
+        r"(?P<venue>(?-i:[A-Z][A-Z.-]*(?:\s+[A-Z][A-Z.-]*){0,2}\s+DOME))",
+        r"(?P<venue>[A-Za-z一-龥ぁ-んァ-ヶー・.-]+(?:\s+[A-Za-z一-龥ぁ-んァ-ヶー・.-]+){1,5}\s+(?:HALL|THEATRE|THEATER))",
         r"(?P<venue>[\w一-龥ぁ-んァ-ヶー・（）() ]{2,40}(?:劇場|ホール|アリーナ|ドーム|会館|大劇場|小劇場))",
     )
     for pattern_index, pattern in enumerate(patterns):
-        for match in re.finditer(pattern, text):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             venue = clean_text(match.group("venue")).strip(" ：:、。")
             venue = re.sub(r"^(?:のご案内|会場のご案内)\s*", "", venue).strip()
             if not venue or venue in seen:
@@ -130,7 +184,7 @@ def extract_venues(text: str) -> tuple[str, ...]:
             seen.add(venue)
             if len(venues) >= 5:
                 return tuple(venues)
-        if venues and pattern_index == 2:
+        if venues and pattern_index == 5:
             return tuple(venues)
     return tuple(venues)
 
@@ -138,6 +192,10 @@ def extract_venues(text: str) -> tuple[str, ...]:
 def venue_looks_noisy(venue: str, context: str = "") -> bool:
     venue = clean_text(venue)
     context = clean_text(context)
+    if re.search(r"〒\s*\d{3}-\d{4}", venue):
+        return True
+    if re.match(r"^(?:会場|場所|日程|開場|開演)(?:\s|[：:]|$)", venue):
+        return True
     if any(noisy in context for noisy in ("交通アクセス", "駐車場", "公演スケジュール情報はありません")):
         return True
     return any(
@@ -167,6 +225,129 @@ def venue_looks_noisy(venue: str, context: str = "") -> bool:
     )
 
 
+EVENT_FACT_BOUNDARIES = (
+    "公演日",
+    "開催日",
+    "会場",
+    "料金",
+    "チケット",
+    "お問い合わせ",
+    "主催",
+    "共催",
+    "協力",
+    "後援",
+    "企画・制作",
+    "企画・製作",
+    "企画制作",
+    "企画製作",
+    "制作",
+    "製作",
+    "出演者",
+    "出演",
+    "キャスト",
+    "CAST",
+    "STAFF",
+    "Tickets & Schedule",
+    "Tour",
+    "Story",
+    "News",
+)
+
+
+def extract_labeled_event_facts(
+    text: str,
+    labels: Sequence[str],
+    limit: int = 8,
+    allow_colonless: bool = False,
+) -> tuple[str, ...]:
+    """Extract short organizer/cast values from explicit public-page labels."""
+    facts: list[str] = []
+    seen: set[str] = set()
+    boundaries = sorted(set(EVENT_FACT_BOUNDARIES), key=len, reverse=True)
+    separator = r"(?:\s*[：:]\s*|\s+)"
+    boundary_re = re.compile(
+        r"(?:" + "|".join(re.escape(value) for value in boundaries) + r")" + separator,
+        flags=re.IGNORECASE,
+    )
+    matches = sorted(
+        (
+            match.start(),
+            match.end(),
+        )
+        for label in sorted(labels, key=len, reverse=True)
+        for match in re.finditer(
+            re.escape(label) + (separator if allow_colonless else r"\s*[：:]\s*"),
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    for _, value_start in matches:
+        window = text[value_start : min(len(text), value_start + 180)]
+        boundary = boundary_re.search(window)
+        value = window[: boundary.start()] if boundary else window
+        value = value.split("。", 1)[0]
+        for item in re.split(r"\s*(?:／|/|、|,|\||｜)\s*", value):
+            item = clean_text(item).strip(" ・:：。")
+            if allow_colonless and item.startswith(("する", "した", "され", "の", "によ", "として", "は", "が")):
+                continue
+            if not item or len(item) > 80 or item in seen:
+                continue
+            facts.append(item)
+            seen.add(item)
+            if len(facts) >= limit:
+                return tuple(facts)
+    return tuple(facts)
+
+
+def extract_organizers(text: str) -> tuple[str, ...]:
+    return extract_labeled_event_facts(
+        text,
+        ("企画・制作", "企画・製作", "企画制作", "企画製作", "主催", "共催"),
+        allow_colonless=True,
+    )
+
+
+def extract_lineup(text: str) -> tuple[str, ...]:
+    lineup = list(extract_labeled_event_facts(text, ("出演者", "出演", "キャスト", "CAST")))
+    seen = set(lineup)
+    # Horipro and similar stage pages render performer cards as a bounded
+    # ``Cast … Staff`` section. Track labels are structural card metadata, so
+    # names captured here are explicit cast facts rather than prose guesses.
+    for section in re.finditer(
+        r"(?:^|\s)Cast\s+(.*?)(?=\s+Staff\s|\s+Tickets\s*&\s*Schedule\s|$)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        for match in re.finditer(
+            r"(?:^|コメント\s)([\wぁ-んァ-ヶ一-龯々・.\-]+(?:\s+[\wぁ-んァ-ヶ一-龯々・.\-]+)?)\s*（トラック\d+）",
+            section.group(1),
+        ):
+            performer = clean_text(match.group(1))
+            if performer and performer not in seen:
+                lineup.append(performer)
+                seen.add(performer)
+    # Toho cast cards flatten to ``CAST role kana Performer COMMENT …
+    # CREATIVES``. A COMMENT anchor immediately after a name is a structural
+    # card boundary; discard a leading hiragana role reading when present.
+    for section in re.finditer(
+        r"(?:^|\s)CAST\s+(.*?)(?=\s+CREATIVES(?:\s|$)|$)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        for match in re.finditer(
+            r"(?:^|\s)([^\s]{1,12}(?:\s+[^\s]{1,8})?)\s+COMMENT(?=\s|$)",
+            section.group(1),
+        ):
+            parts = clean_text(match.group(1)).split()
+            if len(parts) == 2 and re.fullmatch(r"[ぁ-ゖー]+", parts[0]):
+                parts = parts[1:]
+            performer = " ".join(parts)
+            if performer and performer not in seen:
+                lineup.append(performer)
+                seen.add(performer)
+    return tuple(lineup)
+
+
 def extract_ticket_links(page: Page) -> tuple[Link, ...]:
     links: list[Link] = []
     seen: set[str] = set()
@@ -175,6 +356,107 @@ def extract_ticket_links(page: Page) -> tuple[Link, ...]:
             if link.url not in seen:
                 links.append(link)
                 seen.add(link.url)
+    return tuple(links)
+
+
+SCHEMA_EVENT_TYPES = {
+    "event",
+    "eventseries",
+    "musicevent",
+    "theaterevent",
+    "danceevent",
+    "festival",
+    "comedyevent",
+    "screeningevent",
+    "sportsevent",
+    "exhibitionevent",
+    "saleevent",
+    "socialevent",
+    "childrensevent",
+    "visualartsevent",
+    "performingartsevent",
+}
+
+
+def json_ld_nodes(value: object) -> Iterable[dict[str, object]]:
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from json_ld_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from json_ld_nodes(child)
+
+
+def schema_types(value: object) -> set[str]:
+    values = value if isinstance(value, list) else [value]
+    return {
+        str(item).rsplit("/", 1)[-1].lower()
+        for item in values
+        if isinstance(item, str) and item.strip()
+    }
+
+
+def structured_event_objects(page: Page) -> tuple[dict[str, object], ...]:
+    events: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for root in page.structured_data:
+        for node in json_ld_nodes(root):
+            if id(node) in seen or not (schema_types(node.get("@type")) & SCHEMA_EVENT_TYPES):
+                continue
+            seen.add(id(node))
+            events.append(node)
+    return tuple(events)
+
+
+def structured_names(value: object) -> tuple[str, ...]:
+    values = value if isinstance(value, list) else [value]
+    names: list[str] = []
+    for item in values:
+        raw = item.get("name") if isinstance(item, dict) else item
+        name = clean_text(str(raw or ""))
+        if name and len(name) <= 120 and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def structured_event_dates(event: dict[str, object]) -> tuple[str, ...]:
+    start = clean_text(str(event.get("startDate") or ""))
+    end = clean_text(str(event.get("endDate") or ""))
+    start = start if re.match(r"^20\d{2}-\d{2}-\d{2}", start) else ""
+    end = end if re.match(r"^20\d{2}-\d{2}-\d{2}", end) else ""
+    if start and end and end != start:
+        return (f"{start} – {end}",)
+    return (start or end,) if start or end else ()
+
+
+def structured_event_venues(event: dict[str, object]) -> tuple[str, ...]:
+    values = event.get("location")
+    locations = values if isinstance(values, list) else [values]
+    venues: list[str] = []
+    for location in locations:
+        if isinstance(location, dict):
+            name = clean_text(str(location.get("name") or ""))
+        elif isinstance(location, str):
+            name = clean_text(location)
+        else:
+            name = ""
+        if name and len(name) <= 160 and name not in venues:
+            venues.append(name)
+    return tuple(venues)
+
+
+def structured_offer_links(page: Page, event: dict[str, object]) -> tuple[Link, ...]:
+    values = event.get("offers")
+    offers = values if isinstance(values, list) else [values]
+    links: list[Link] = []
+    for offer in offers:
+        if not isinstance(offer, dict):
+            continue
+        url = urllib.parse.urljoin(page.url, clean_text(str(offer.get("url") or "")))
+        label = clean_text(str(offer.get("name") or "Tickets"))[:120]
+        if url and is_actionable_ticket_link(url, label):
+            links.append(Link(label, url))
     return tuple(links)
 
 
@@ -196,11 +478,33 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
     venues: list[str] = []
     ticket_rules: list[str] = []
     ticket_prices: list[str] = []
+    organizers: list[str] = []
+    lineup: list[str] = []
+    structured_events: list[dict[str, object]] = []
     for page in official_pages:
+        page_events = structured_event_objects(page)
+        structured_events.extend(page_events)
         for link in extract_ticket_links(page):
             if link.url not in seen:
                 ticket_links.append(link)
                 seen.add(link.url)
+        for event in page_events:
+            for link in structured_offer_links(page, event):
+                if link.url not in seen:
+                    ticket_links.append(link)
+                    seen.add(link.url)
+            for date in structured_event_dates(event):
+                if date not in event_dates:
+                    event_dates.append(date)
+            for venue in structured_event_venues(event):
+                if venue not in venues:
+                    venues.append(venue)
+            for organizer in structured_names(event.get("organizer")):
+                if organizer not in organizers:
+                    organizers.append(organizer)
+            for performer in structured_names(event.get("performer")):
+                if performer not in lineup:
+                    lineup.append(performer)
         for date in extract_event_dates(page.text):
             if date not in event_dates:
                 event_dates.append(date)
@@ -213,10 +517,17 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
         for price in extract_ticket_price_items(page.text):
             if price not in ticket_prices:
                 ticket_prices.append(price)
+        for organizer in extract_organizers(page.text):
+            if organizer not in organizers:
+                organizers.append(organizer)
+        for performer in extract_lineup(page.text):
+            if performer not in lineup:
+                lineup.append(performer)
     if not ticket_links:
         ticket_links.extend(portal_search_links(keyword))
 
     summary = None
+    structured_primary = structured_events[0] if len(structured_events) == 1 else None
     if official:
         summary_phrases = nearby_phrases(
             official.text,
@@ -225,17 +536,23 @@ def build_event_info(keyword: str, official_pages: Sequence[Page]) -> EventInfo:
             limit=2,
         )
         summary = " ".join(dict.fromkeys(summary_phrases)) or None
+    if structured_primary:
+        structured_summary = clean_text(str(structured_primary.get("description") or ""))[:500]
+        summary = structured_summary or summary
+    structured_title = clean_text(str(structured_primary.get("name") or ""))[:240] if structured_primary else ""
 
     return EventInfo(
         keyword=keyword,
         official_page=official.url if official else None,
-        title=official.title if official and official.title else keyword,
+        title=structured_title or (official.title if official and official.title else keyword),
         summary=summary,
         event_dates=tuple(event_dates),
         venues=tuple(venues),
         ticket_links=tuple(ticket_links),
         ticket_rules=tuple(ticket_rules),
         ticket_prices=tuple(ticket_prices),
+        organizers=tuple(organizers),
+        lineup=tuple(lineup),
     )
 
 
@@ -411,7 +728,19 @@ ADVANCE_RANGE_LABELS = (
 )
 
 PAYMENT_RANGE_LABELS = ("入金期間", "支払期間", "支払い期間", "払込期間", "決済期間")
-TRADE_RANGE_LABELS = ("リセール期間", "トレード期間", "公式トレード期間", "チケットトレード期間")
+TRADE_RANGE_LABELS = (
+    "定価リセール受付期間",
+    "公式リセール受付期間",
+    "チケットトレード受付期間",
+    "リセール申込期間",
+    "リセール受付期間",
+    "トレード受付期間",
+    "公式リセール期間",
+    "リセール期間",
+    "トレード期間",
+    "公式トレード期間",
+    "チケットトレード期間",
+)
 
 
 MEMBERSHIP_RANGE_LABELS = (
@@ -518,6 +847,83 @@ ROUND_NAME_LABELS = (
     "一般発売",
 )
 
+PROVIDER_ROUND_LABELS = {
+    "pia": (
+        "いち早プレリザーブ",
+        "セブン-イレブンWEB抽選先行",
+        "ぴあ抽選先行",
+    ),
+    "eplus": (
+        "プレオーダー（抽選）",
+        "プレオーダー(抽選)",
+    ),
+    "lawson": (
+        "プレリク先行",
+        "LEncore先行",
+        "エルアンコール先行",
+    ),
+    "rakuten": ("抽選先行受付", "先行抽選受付"),
+    "ticketboard": ("先行抽選受付", "抽選販売"),
+    "cnplayguide": ("先行抽選予約",),
+    "shiki.jp": ("「四季の会」会員先行予約", "事前抽選販売"),
+    "horipro-stage.jp": ("最速抽選先行", "最終抽選先行"),
+    "tohostage.com": ("東宝ナビザーブ 先行抽選エントリー",),
+}
+PROVIDER_ROUND_PATTERNS = {
+    "cnplayguide": (
+        r"(?:[0-9０-９一二三四五六七八九十]+\s*次\s*)?(?:公式(?:最速|最終)?\s*)?先行抽選予約",
+    ),
+    "horipro-stage.jp": (r"(?:最速|最終)?抽選先行",),
+    "tohostage.com": (r"東宝ナビザーブ\s*先行抽選エントリー",),
+    "ticketboard": (
+        r"ファンクラブ(?:[0-9０-９]+次)?先行[（(]抽選[）)]",
+        r"[A-Z][A-Z0-9 ]{1,40}先行[（(]抽選[）)]",
+    ),
+}
+PROVIDER_APPLICATION_LABELS = {
+    "pia": ("申込受付期間", "公開日時"),
+    "eplus": ("プレオーダー（抽選）申込期間", "プレオーダー(抽選)申込期間"),
+    "lawson": (),
+    "rakuten": ("受付期間",),
+    "ticketboard": ("申込期間", "受付期間"),
+    "cnplayguide": ("抽選予約受付期間",),
+    "shiki.jp": (),
+    "horipro-stage.jp": (),
+    "tohostage.com": ("申込受付期間",),
+}
+PROVIDER_RESULTS_LABELS = {
+    "pia": ("抽選結果発表日時", "抽選結果発表"),
+    "eplus": ("抽選結果確認期間", "結果確認期間"),
+    "lawson": ("抽選結果発表日時", "抽選当落発表", "当落発表"),
+    "rakuten": ("結果発表日時", "結果発表"),
+    "ticketboard": ("当選発表日", "当選発表", "抽選結果発表"),
+    "cnplayguide": (),
+    "shiki.jp": ("抽選結果発表",),
+    "horipro-stage.jp": ("結果発表日", "当落発表日"),
+    "tohostage.com": ("抽選結果発表", "結果発表"),
+}
+PROVIDER_PAYMENT_LABELS = {
+    "pia": ("お支払い期限", "支払期限"),
+    "eplus": ("支払期限", "入金期間"),
+    "lawson": ("店頭入金期間", "入金期間"),
+    "rakuten": ("入金期間", "支払期限"),
+    "ticketboard": ("入金期間", "支払期限"),
+    "cnplayguide": ("入金期間", "支払期限"),
+    "shiki.jp": (),
+    "horipro-stage.jp": (),
+    "tohostage.com": ("入金期間", "支払期限"),
+}
+
+
+def provider_round_names(text: str, platform: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for pattern in PROVIDER_ROUND_PATTERNS.get(platform, ()):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            name = clean_text(match.group(0))
+            if name and name not in names:
+                names.append(name)
+    return tuple(names)
+
 # Keywords that mark a genuine application or sale window. A date-bearing
 # context that matches none of these (and carries no round label) is incidental
 # noise — e.g. terms-of-service prose that merely mentions 抽選販売 — and must
@@ -528,6 +934,8 @@ GENERAL_SALE_SIGNAL_LABELS = ("発売日", "一般発売", "一般前売", "発�
 
 def application_round_name(context: str) -> str | None:
     """A readable name for a labelled-but-untyped round, from its sale signal."""
+    if any(label in context for label in TRADE_RANGE_LABELS):
+        return None
     if any(label in context for label in APPLICATION_SIGNAL_LABELS):
         return "先行受付"
     if any(label in context for label in GENERAL_SALE_SIGNAL_LABELS):
@@ -535,7 +943,11 @@ def application_round_name(context: str) -> str | None:
     return None
 
 
-def round_name_from_context(context: str, fallback: str | None = None) -> str | None:
+def round_name_from_context(
+    context: str,
+    fallback: str | None = None,
+    labels: Sequence[str] = ROUND_NAME_LABELS,
+) -> str | None:
     """Name a round from the label that governs its dates.
 
     A context window often spans several rounds, so a fixed-priority scan can
@@ -551,7 +963,7 @@ def round_name_from_context(context: str, fallback: str | None = None) -> str | 
     numbered = re.search(r"第\s*[0-9０-９一二三四五六七八九十]+\s*次\s*(?:抽選)?\s*先行", context)
     if numbered:
         spans.append((numbered.start(), numbered.end(), clean_text(numbered.group(0))))
-    for label in ROUND_NAME_LABELS:
+    for label in labels:
         pos = context.find(label)
         if pos != -1:
             spans.append((pos, pos + len(label), label))
@@ -575,7 +987,11 @@ def round_name_from_context(context: str, fallback: str | None = None) -> str | 
     return min((start - date_pos, name) for start, name in candidates)[1]
 
 
-def round_section_from_context(context: str, name: str) -> str:
+def round_section_from_context(
+    context: str,
+    name: str,
+    labels: Sequence[str] = ROUND_NAME_LABELS,
+) -> str:
     """Limit a multi-round context to the section governed by ``name``."""
     start = context.find(name)
     if start < 0:
@@ -583,15 +999,126 @@ def round_section_from_context(context: str, name: str) -> str:
     section_start = start - 1 if start > 0 and context[start - 1] in "【[" else start
     end = len(context)
     search_start = start + len(name)
-    for label in ROUND_NAME_LABELS:
+    for label in labels:
         position = context.find(label, search_start)
         if position >= 0:
             end = min(end, position)
     return context[section_start:end].rstrip(" \t\r\n【[")
 
 
+def extract_standalone_trade_rounds(page: Page, year_hint: int | None = None) -> tuple[TicketRound, ...]:
+    """Extract official-resale windows that are not nested in a sale round."""
+    labels = sorted(TRADE_RANGE_LABELS, key=len, reverse=True)
+    label_pattern = re.compile("|".join(re.escape(label) for label in labels), flags=re.IGNORECASE)
+    rounds: list[TicketRound] = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for match in label_pattern.finditer(page.text):
+        label = clean_text(match.group(0))
+        context = clean_text(page.text[max(0, match.start() - 60) : min(len(page.text), match.end() + 180)])
+        start, end = extract_range_after_label(context, (label,), year_hint)
+        if not (start or end) or (start, end) in seen:
+            continue
+        seen.add((start, end))
+        name = label
+        for suffix in ("申込期間", "受付期間", "期間"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        rounds.append(
+            TicketRound(
+                source=source_name_for_url(page.url),
+                url=page.url,
+                name=name,
+                trade_start_at=start,
+                trade_end_at=end,
+                evidence=context[:260],
+                round_type="trade",
+            )
+        )
+    return tuple(rounds)
+
+
+def remove_contained_name_shadows(rounds: Sequence[TicketRound]) -> list[TicketRound]:
+    """Drop a generic sub-label duplicate created inside a longer round name."""
+    kept: list[TicketRound] = []
+    for ticket in rounds:
+        name = normalize_round_name(ticket.name)
+        window = (
+            ticket.application_start_at or ticket.lottery_start,
+            ticket.application_end_at or ticket.lottery_end,
+        )
+        shadowed = any(
+            other is not ticket
+            and other.url == ticket.url
+            and any(window)
+            and window
+            == (
+                other.application_start_at or other.lottery_start,
+                other.application_end_at or other.lottery_end,
+            )
+            and name
+            and name in normalize_round_name(other.name)
+            and len(name) < len(normalize_round_name(other.name))
+            for other in rounds
+        )
+        if not shadowed:
+            kept.append(ticket)
+    return kept
+
+
+def merge_ticket_round_observations(first: TicketRound, later: TicketRound) -> TicketRound:
+    """Fill missing fields when several context windows describe one round."""
+    updates: dict[str, object] = {}
+    for field in (
+        "lottery_start",
+        "lottery_end",
+        "results_date",
+        "general_sale_date",
+        "payment_deadline",
+        "application_start_at",
+        "application_end_at",
+        "payment_start_at",
+        "payment_end_at",
+        "trade_start_at",
+        "trade_end_at",
+        "round_number",
+        "platform",
+    ):
+        if not getattr(first, field) and getattr(later, field):
+            updates[field] = getattr(later, field)
+    if len(later.evidence) > len(first.evidence):
+        updates["evidence"] = later.evidence
+    return dataclasses.replace(first, **updates) if updates else first
+
+
 def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
-    contexts = context_windows(page.text, ROUND_LABEL_PATTERNS + ("受付期間", "申込期間", "抽選結果", "当落", "一般発売"))
+    platform = source_name_for_url(page.url)
+    provider_round_labels = tuple(
+        dict.fromkeys((*provider_round_names(page.text, platform), *PROVIDER_ROUND_LABELS.get(platform, ())))
+    )
+    round_labels = tuple(dict.fromkeys((*provider_round_labels, *ROUND_NAME_LABELS)))
+    application_labels = tuple(dict.fromkeys((*PROVIDER_APPLICATION_LABELS.get(platform, ()), *ADVANCE_RANGE_LABELS)))
+    results_labels = tuple(
+        dict.fromkeys((*PROVIDER_RESULTS_LABELS.get(platform, ()), "抽選結果", "結果発表", "当落", "当選発表"))
+    )
+    provider_payment_labels = PROVIDER_PAYMENT_LABELS.get(platform, ())
+    payment_labels = tuple(dict.fromkeys((*provider_payment_labels, *PAYMENT_RANGE_LABELS)))
+    payment_range_labels = tuple(label for label in payment_labels if "期間" in label)
+    contexts = context_windows(
+        page.text,
+        ROUND_LABEL_PATTERNS
+        + round_labels
+        + application_labels
+        + results_labels
+        + payment_labels
+        + ("受付期間", "申込期間", "一般発売"),
+    )
+    # Provider cards commonly repeat the same deadline under distinct dynamic
+    # headings. Keep each heading at the start of a tight window so an earlier
+    # sibling card cannot supply the round name for both observations.
+    contexts = contexts + label_forward_contexts(page.text, provider_round_labels, lead=4, width=140)
+    if platform == "cnplayguide":
+        contexts = contexts + label_forward_contexts(page.text, ("一般発売", "一般前売"), lead=4, width=180)
     contexts = contexts + label_forward_contexts(page.text, ("先行先着販売", "先着先行"))
     contexts = contexts + context_windows(page.text, ROUND_CONTEXT_HINTS)
     # A page often establishes its year once (e.g. in a heading) and then prints
@@ -599,37 +1126,64 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
     # year the page actually states rather than a today-relative guess.
     page_year = dominant_year(page.text)
     rounds: list[TicketRound] = []
-    seen: set[tuple[str, str | None, str | None]] = set()
+    seen: dict[tuple[str, str | None, str | None], int] = {}
+
+    def store_round(ticket: TicketRound, key: tuple[str, str | None, str | None]) -> None:
+        existing_index = seen.get(key)
+        if existing_index is None:
+            seen[key] = len(rounds)
+            rounds.append(ticket)
+            return
+        rounds[existing_index] = merge_ticket_round_observations(rounds[existing_index], ticket)
+
     for context in contexts:
-        name = round_name_from_context(context) or application_round_name(context)
+        name = round_name_from_context(context, labels=round_labels) or application_round_name(context)
         if not name:
             continue
-        round_context = round_section_from_context(context, name)
-        start, end = extract_range_after_label(
-            round_context,
-            (name,),
-            page_year,
-        )
+        round_context = round_section_from_context(context, name, round_labels)
+        provider_application_labels = PROVIDER_APPLICATION_LABELS.get(platform, ())
+        start, end = extract_range_after_label(round_context, provider_application_labels, page_year)
         if not (start or end):
-            start, end = extract_range_after_label(round_context, ADVANCE_RANGE_LABELS, page_year)
-        results_date = extract_first_date(round_context, ("抽選結果", "結果発表", "当落", "当選発表"), page_year)
-        general_sale_date = extract_first_date(context, ("一般発売", "一般前売", "発売日"), page_year)
-        payment_start, payment_end = extract_range_after_label(round_context, PAYMENT_RANGE_LABELS, page_year)
+            start, end = extract_range_after_label(round_context, (name,), page_year)
+        if not (start or end):
+            start, end = extract_range_after_label(round_context, application_labels, page_year)
+        if start and not end and re.search(r"受付中\s*[～~〜\-]", round_context):
+            start, end = None, start
+        results_date = extract_first_date(round_context, results_labels, page_year)
+        general_sale_date = extract_first_date_after_label(context, ("一般発売", "一般前売"), page_year)
+        general_sale_date = general_sale_date or extract_last_date_before_label(
+            context, ("一般発売", "一般前売", "発売開始"), page_year
+        )
+        general_sale_date = general_sale_date or extract_first_date(context, ("発売日",), page_year)
+        payment_start, payment_end = extract_range_after_label(round_context, payment_range_labels, page_year)
         payment_deadline = payment_end or payment_start or extract_first_date(
-            round_context, ("入金", "支払", "払込", "決済"), page_year
+            round_context,
+            tuple(dict.fromkeys((*provider_payment_labels, "お支払い期限", "支払期限", "入金締切", "決済期限"))),
+            page_year,
         )
         trade_start, trade_end = extract_range_after_label(round_context, TRADE_RANGE_LABELS, page_year)
         if any(label in name for label in ("会員先行予約", "先行予約")):
             start = extract_last_date_before_label(context, ("会員先行予約", "先行予約"), page_year) or start
         start = start or extract_last_date_before_label(context, ("会員先行予約", "先行予約", "先着先行"), page_year)
         start = start or extract_first_date_after_label(context, ("先行先着販売", "先着先行"), page_year)
-        results_date = results_date or extract_first_date(round_context, ("抽選結果", "結果発表", "当落", "当選発表"), page_year)
-        general_sale_date = general_sale_date or extract_first_date(context, ("一般発売", "発売日", "発売開始"), page_year)
-        general_sale_date = general_sale_date or extract_last_date_before_label(context, ("一般発売", "一般前売", "発売開始"), page_year)
+        results_date = results_date or extract_first_date(round_context, results_labels, page_year)
+        general_sale_date = general_sale_date or extract_first_date_after_label(
+            context, ("一般発売", "発売開始"), page_year
+        )
         payment_deadline = payment_deadline or extract_first_date(
-            round_context, ("入金", "支払", "支払い", "支払期限", "入金締切"), page_year
+            round_context,
+            tuple(dict.fromkeys((*provider_payment_labels, "お支払い期限", "支払期限", "入金締切", "決済期限"))),
+            page_year,
         )
         if not any((start, end, results_date, general_sale_date, payment_deadline, trade_start, trade_end)):
+            continue
+        if (
+            any(label in name for label in ("抽選", "エントリー"))
+            and not any((start, end, results_date, payment_deadline, trade_start, trade_end))
+        ):
+            # A prose mention such as "先行抽選エントリーは会員限定" can
+            # share a context window with a later general-sale date. It is not
+            # itself a dated lottery round.
             continue
         # Require a round label or a real application/sale signal. A date that
         # carries neither is incidental noise (legal/terms prose), not a round.
@@ -654,33 +1208,70 @@ def extract_ticket_rounds(page: Page) -> tuple[TicketRound, ...]:
         if membership_rounds:
             for ticket in membership_rounds:
                 key = (ticket.name, ticket.lottery_start, ticket.lottery_end)
-                if key in seen:
-                    continue
-                seen.add(key)
-                rounds.append(ticket)
+                store_round(ticket, key)
             continue
-        key = (name, start, end)
-        if key in seen:
-            continue
-        seen.add(key)
-        rounds.append(
-            TicketRound(
-                source=source_name_for_url(page.url),
-                url=page.url,
-                name=name,
-                lottery_start=start,
-                lottery_end=end,
-                results_date=results_date,
-                general_sale_date=general_sale_date,
-                payment_deadline=payment_deadline,
-                payment_start_at=payment_start,
-                payment_end_at=payment_end,
-                trade_start_at=trade_start,
-                trade_end_at=trade_end,
-                evidence=round_context[:260],
-            )
+        ticket = TicketRound(
+            source=source_name_for_url(page.url),
+            url=page.url,
+            name=name,
+            lottery_start=start,
+            lottery_end=end,
+            results_date=results_date,
+            general_sale_date=general_sale_date,
+            payment_deadline=payment_deadline,
+            payment_start_at=payment_start,
+            payment_end_at=payment_end,
+            trade_start_at=trade_start,
+            trade_end_at=trade_end,
+            evidence=round_context[:260],
         )
+        key = (name, start, end)
+        if ("一般発売" in name or "一般前売" in name) and general_sale_date:
+            key = (name, general_sale_date, None)
+        store_round(ticket, key)
+    rounds = remove_contained_name_shadows(rounds)
+    application_rounds = [ticket for ticket in rounds if ticket.lottery_start or ticket.lottery_end]
+    if len(application_rounds) == 1:
+        target = application_rounds[0]
+        global_result = extract_first_date(page.text, results_labels, page_year)
+        global_payment = extract_first_date(page.text, provider_payment_labels, page_year)
+        enriched = dataclasses.replace(
+            target,
+            results_date=target.results_date or global_result,
+            payment_deadline=target.payment_deadline or global_payment,
+        )
+        rounds[rounds.index(target)] = enriched
+    existing_trade_windows = {(ticket.trade_start_at, ticket.trade_end_at) for ticket in rounds}
+    rounds.extend(
+        ticket
+        for ticket in extract_standalone_trade_rounds(page, page_year)
+        if (ticket.trade_start_at, ticket.trade_end_at) not in existing_trade_windows
+    )
     return tuple(rounds)
+
+
+def ticket_year_hint(ticket: TicketRound) -> int | None:
+    """Use source evidence or an already-normalized field to stabilize bare dates."""
+    # Cleanup may split a persisted parent round long after its yearless source
+    # text was fetched. Preserve the year already established on that round;
+    # re-inferring against today's date can otherwise move only the start into
+    # the following year and create an impossible reversed range.
+    known_date = next(
+        (
+            parsed
+            for value in (
+                ticket.lottery_start,
+                ticket.lottery_end,
+                ticket.results_date,
+                ticket.general_sale_date,
+                ticket.payment_start_at,
+                ticket.payment_end_at,
+            )
+            if value and (parsed := parse_iso_date(value)) is not None
+        ),
+        None,
+    )
+    return dominant_year(ticket.evidence) or (known_date.year if known_date else None)
 
 
 def membership_rounds_from_ticket(ticket: TicketRound) -> tuple[TicketRound, ...]:
@@ -703,7 +1294,7 @@ def membership_rounds_from_ticket(ticket: TicketRound) -> tuple[TicketRound, ...
         payment_end_at=ticket.payment_end_at,
         trade_start_at=ticket.trade_start_at,
         trade_end_at=ticket.trade_end_at,
-        year_hint=dominant_year(ticket.evidence),
+        year_hint=ticket_year_hint(ticket),
     )
     return tuple(
         normalize_ticket_round(
@@ -721,11 +1312,13 @@ def membership_rounds_from_ticket(ticket: TicketRound) -> tuple[TicketRound, ...
 
 def adapt_ticket_rounds(page: Page, platform: str) -> tuple[TicketRound, ...]:
     rounds = extract_ticket_rounds(page)
-    return tuple(
-        normalize_ticket_round(
+    return dedupe_ticket_rounds(
+        tuple(
+            normalize_ticket_round(
             dataclasses.replace(ticket, source=platform, platform=platform, confidence=platform_confidence(platform))
+            )
+            for ticket in rounds
         )
-        for ticket in rounds
     )
 
 
@@ -1093,6 +1686,21 @@ def compute_ticket_status(ticket: TicketRound, today: dt.date | None = None) -> 
     results_date = parse_iso_date(ticket.results_date)
     payment_end = parse_iso_date(ticket.payment_end_at or ticket.payment_deadline)
     general_sale = parse_iso_date(ticket.general_sale_date)
+    trade_start = parse_iso_date(ticket.trade_start_at)
+    trade_end = parse_iso_date(ticket.trade_end_at)
+
+    is_trade_round = ticket.round_type == "trade" or infer_round_type(ticket.name) == "trade"
+    if is_trade_round:
+        if trade_end and today > trade_end:
+            return "closed"
+        if trade_end and 0 <= (trade_end - today).days <= 2 and (not trade_start or trade_start <= today):
+            return "trade_closing_soon"
+        if trade_start and today < trade_start:
+            return "upcoming"
+        if trade_start and (not trade_end or today <= trade_end):
+            return "trade_open"
+        if trade_end and today <= trade_end:
+            return "trade_open"
 
     if results_date == today:
         return "results_today"
@@ -1152,6 +1760,8 @@ def ticket_round_latest_ordinal(ticket: TicketRound) -> int:
         ticket.results_date,
         ticket.general_sale_date,
         ticket.payment_end_at or ticket.payment_deadline,
+        ticket.trade_start_at,
+        ticket.trade_end_at,
     )
     parsed = [parse_iso_date(value) for value in candidates if value]
     valid = [date for date in parsed if date]
@@ -1160,7 +1770,7 @@ def ticket_round_latest_ordinal(ticket: TicketRound) -> int:
 
 def dedupe_ticket_rounds(rounds: Sequence[TicketRound], today: dt.date | None = None) -> tuple[TicketRound, ...]:
     deduped: list[TicketRound] = []
-    seen: set[tuple[str, str, str, str | None, str | None, str | None, str | None]] = set()
+    seen: set[tuple[str, str, str, str | None, str | None, str | None, str | None, str | None, str | None]] = set()
     for ticket in rounds:
         normalized = normalize_ticket_round(ticket, today)
         key = (
@@ -1171,6 +1781,8 @@ def dedupe_ticket_rounds(rounds: Sequence[TicketRound], today: dt.date | None = 
             normalized.application_end_at,
             normalized.results_date,
             normalized.general_sale_date,
+            normalized.trade_start_at,
+            normalized.trade_end_at,
         )
         if key in seen:
             continue

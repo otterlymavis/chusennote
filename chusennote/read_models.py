@@ -22,6 +22,7 @@ from .search import *  # noqa: F401,F403
 from .extract import *  # noqa: F401,F403
 from .schema import *  # noqa: F401,F403
 from .crud import *  # noqa: F401,F403
+from .storage import resolve_target
 
 
 TOUR_CITY_KEYWORDS = (
@@ -78,8 +79,34 @@ STATUS_LABELS = {
     "payment_due": "Payment due",
     "general_sale_soon": "General sale soon",
     "open": "Open now",
+    "trade_open": "Resale open",
+    "trade_closing_soon": "Resale closing soon",
     "upcoming": "Upcoming",
     "closed": "Closed",
+}
+
+EVENT_STATUS_LABELS = {
+    "watching": "Watching",
+    "official_found": "Official page found",
+    "ticket_links_found": "Ticket links found",
+    "lottery_found": "Ticket rounds found",
+    "lottery_open": "Ticket window open",
+}
+
+ALERT_TYPE_LABELS = {
+    "new_official_page": "Official page found",
+    "new_ticket_link": "Ticket link found",
+    "new_lottery_round": "New ticket round",
+    "ticket_field_changed": "Ticket details changed",
+    "lottery_opened": "Lottery opened",
+    "lottery_closing_soon": "Lottery closing soon",
+    "results_today": "Results today",
+    "payment_due_soon": "Payment due soon",
+    "general_sale_soon": "General sale soon",
+    "trade_opened": "Official resale opened",
+    "trade_closing_soon": "Official resale closing soon",
+    "watch_failed": "Watch check failed",
+    "watch_filtered": "Watch filtered",
 }
 
 
@@ -91,6 +118,25 @@ def human_status(status: object) -> str:
     anything unrecognised render as empty so the UI can simply hide it.
     """
     return STATUS_LABELS.get(str(status or ""), "")
+
+
+def human_event_status(status: object) -> str:
+    """A readable label for a persisted event lifecycle status code."""
+    return EVENT_STATUS_LABELS.get(str(status or ""), "")
+
+
+def human_alert_type(alert_type: object) -> str:
+    """A readable label while retaining stable alert identifiers for logic."""
+    code = clean_text(str(alert_type or ""))
+    if not code:
+        return ""
+    return ALERT_TYPE_LABELS.get(code, code.replace("_", " ").capitalize())
+
+
+def human_alert_preferences(value: object) -> str:
+    """Render the stored comma-separated alert keys without changing them."""
+    labels = [human_alert_type(item) for item in str(value or "").split(",") if clean_text(item)]
+    return ", ".join(label for label in labels if label) or "none"
 
 
 ROUND_TYPE_LABELS = {
@@ -140,6 +186,13 @@ def round_schedule_label(round_info: dict[str, object]) -> str:
         parts.append(f"Pay by {text(round_info.get('payment_end_at'))}")
     if text(round_info.get("general_sale_date")):
         parts.append(f"Sale {text(round_info.get('general_sale_date'))}")
+    trade_start, trade_end = text(round_info.get("trade_start_at")), text(round_info.get("trade_end_at"))
+    if trade_start and trade_end:
+        parts.append(f"Resale {trade_start} – {trade_end}")
+    elif trade_start:
+        parts.append(f"Resale from {trade_start}")
+    elif trade_end:
+        parts.append(f"Resale by {trade_end}")
     return " · ".join(parts)
 
 
@@ -201,6 +254,88 @@ def event_match_reasons(event: dict[str, object]) -> list[str]:
     return reasons
 
 
+def event_has_concrete_schedule(event: dict[str, object]) -> bool:
+    if any(clean_text(str(value)) for value in event.get("event_dates", [])):
+        return True
+    schedule_fields = (
+        "application_start_at", "application_end_at", "results_date",
+        "payment_end_at", "general_sale_date", "trade_start_at", "trade_end_at",
+    )
+    return any(
+        clean_text(str(round_info.get(field) or ""))
+        for round_info in event.get("rounds", [])
+        if isinstance(round_info, dict)
+        for field in schedule_fields
+    )
+
+
+def event_is_recommendable(event: dict[str, object], *, source: bool = False) -> bool:
+    return bool(
+        not event.get("watch_muted")
+        and (not source or event.get("watch_kind") == WATCH_KIND_EVENT)
+        and is_public_fetch_url(event.get("official_url"))
+        and event_has_concrete_schedule(event)
+    )
+
+
+def normalized_fact_map(values: object) -> dict[str, str]:
+    if not isinstance(values, list):
+        return {}
+    return {
+        clean_text(str(value)).casefold(): clean_text(str(value))
+        for value in values
+        if clean_text(str(value))
+    }
+
+
+def recommendation_reasons(source: dict[str, object], candidate: dict[str, object]) -> tuple[int, list[str]]:
+    score = 0
+    reasons: list[str] = []
+    for field, label, weight in (
+        ("organizers", "Shared organizer", 4),
+        ("lineup", "Shared performer", 3),
+        ("venues", "Shared venue", 2),
+    ):
+        source_values = normalized_fact_map(source.get(field))
+        candidate_values = normalized_fact_map(candidate.get(field))
+        shared = sorted(source_values.keys() & candidate_values.keys())
+        if shared:
+            score += weight * len(shared)
+            reasons.append(f"{label}: {source_values[shared[0]]}")
+    source_keyword = clean_text(str(source.get("keyword") or "")).casefold()
+    candidate_keyword = clean_text(str(candidate.get("keyword") or "")).casefold()
+    if source_keyword and source_keyword == candidate_keyword:
+        score += 2
+        reasons.append(f"Same tracked event: {source.get('keyword')}")
+    return score, reasons
+
+
+def attach_related_event_recommendations(events: list[dict[str, object]], limit: int = 3) -> None:
+    """Attach explainable recommendations without external discovery or account crossover."""
+    for source in events:
+        ranked: list[tuple[int, str, dict[str, object], list[str]]] = []
+        if event_is_recommendable(source, source=True):
+            for candidate in events:
+                if candidate.get("id") == source.get("id") or not event_is_recommendable(candidate):
+                    continue
+                score, reasons = recommendation_reasons(source, candidate)
+                if score:
+                    ranked.append((score, str(candidate.get("updated_at") or ""), candidate, reasons))
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        source["related_events"] = [
+            {
+                "id": candidate.get("id"),
+                "title": candidate.get("title"),
+                "official_url": candidate.get("official_url"),
+                "event_date": next(iter(candidate.get("event_dates", [])), ""),
+                "venue_label": candidate.get("venue_label"),
+                "status_label": candidate.get("status_label"),
+                "recommendation_reasons": reasons[:3],
+            }
+            for _, _, candidate, reasons in ranked[:limit]
+        ]
+
+
 def round_latest_date_ordinal(round_info: dict[str, object]) -> int:
     dates = [
         parse_iso_date(str(round_info.get(field) or ""))
@@ -210,6 +345,8 @@ def round_latest_date_ordinal(round_info: dict[str, object]) -> int:
             "results_date",
             "general_sale_date",
             "payment_end_at",
+            "trade_start_at",
+            "trade_end_at",
         )
     ]
     valid_dates = [date for date in dates if date]
@@ -248,9 +385,12 @@ def recent_events(
         params.append(limit)
         rows = connection.execute(
             f"""
-            SELECT e.id, w.id, w.keyword, w.kind, e.canonical_title, e.official_url, e.summary,
+            SELECT e.id, w.id, w.keyword,
+                   {"COALESCE(uw.kind, w.kind)" if user_id is not None and user_id > 0 else "w.kind"},
+                   e.canonical_title, e.official_url, e.summary,
                    e.event_dates_json, e.venues_json, e.ticket_rules_json, e.ticket_prices_json,
-                   e.status, e.updated_at
+                   e.organizers_json, e.lineup_json, e.status, e.updated_at,
+                   {"(w.muted != 0 OR uw.muted != 0)" if user_id is not None and user_id > 0 else "w.local_muted" if user_id is not None else "w.muted"}
             FROM events e
             JOIN watched_keywords w ON w.id = e.watch_id
             {join}
@@ -282,8 +422,8 @@ def recent_events(
             rounds = connection.execute(
                 """
                 SELECT name, platform, url, application_start_at, application_end_at,
-                       results_date, general_sale_date, payment_end_at, status, confidence,
-                       round_type, membership_required, evidence, round_key
+                       results_date, general_sale_date, payment_end_at, trade_start_at, trade_end_at,
+                       status, confidence, round_type, membership_required, evidence, round_key
                 FROM ticket_rounds
                 WHERE event_id = ?
                 ORDER BY platform, round_number, name
@@ -309,15 +449,17 @@ def recent_events(
                     "results_date": ticket[5],
                     "general_sale_date": ticket[6],
                     "payment_end_at": ticket[7],
-                    "status": ticket[8],
-                    "status_label": human_status(ticket[8]),
-                    "confidence": ticket[9],
-                    "round_type": ticket[10],
-                    "round_type_label": round_type_label(ticket[10]),
-                    "membership_required": ticket[11],
-                    "membership_label": membership_label(ticket[11]),
-                    "evidence": ticket[12],
-                    "round_key": ticket[13],
+                    "trade_start_at": ticket[8],
+                    "trade_end_at": ticket[9],
+                    "status": ticket[10],
+                    "status_label": human_status(ticket[10]),
+                    "confidence": ticket[11],
+                    "round_type": ticket[12],
+                    "round_type_label": round_type_label(ticket[12]),
+                    "membership_required": ticket[13],
+                    "membership_label": membership_label(ticket[13]),
+                    "evidence": ticket[14],
+                    "round_key": ticket[15],
                 }
                 for ticket in rounds
                 if not is_noisy_url(ticket[2])
@@ -343,8 +485,12 @@ def recent_events(
                     "venues": json.loads(row[8] or "[]"),
                     "ticket_rules": json.loads(row[9] or "[]"),
                     "ticket_prices": json.loads(row[10] or "[]"),
-                    "status": row[11],
-                    "updated_at": row[12],
+                    "organizers": json.loads(row[11] or "[]"),
+                    "lineup": json.loads(row[12] or "[]"),
+                    "status": row[13],
+                    "status_label": human_event_status(row[13]),
+                    "updated_at": row[14],
+                    "watch_muted": bool(row[15]),
                     "ticket_links": [
                         {
                             "label": link[0],
@@ -370,6 +516,7 @@ def recent_events(
             ]
             event["match_reasons"] = event_match_reasons(event)
             events.append(event)
+        attach_related_event_recommendations(events)
         return events
 
 
@@ -434,6 +581,8 @@ def upcoming_priority_rows(
 
 
 def recent_alerts(db_path: str, limit: int = 50, user_id: int | None = None) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
     with connect(db_path) as connection:
         init_db(connection)
         # user_id None returns the shared CLI workspace; user_id 0 returns only
@@ -447,34 +596,70 @@ def recent_alerts(db_path: str, limit: int = 50, user_id: int | None = None) -> 
             params.append(user_id)
         elif user_id is not None:
             where = "WHERE w.local_visible = 1 AND w.local_muted = 0"
-        params.append(limit)
+        account_scoped = user_id is not None and user_id > 0
+        alert_preferences_sql = "COALESCE(uw.alert_preferences, w.alert_preferences)" if account_scoped else "w.alert_preferences"
+        regions_sql = "COALESCE(uw.preferred_regions, w.preferred_regions)" if account_scoped else "w.preferred_regions"
+        venues_sql = "COALESCE(uw.preferred_venues, w.preferred_venues)" if account_scoped else "w.preferred_venues"
+        limit_sql = "" if account_scoped else "LIMIT ?"
+        if not account_scoped:
+            params.append(limit)
         rows = connection.execute(
             f"""
             SELECT a.id, a.event_id, a.alert_type, a.payload_json, a.created_at,
-                   e.canonical_title, w.id, w.keyword, w.kind, w.muted
+                   e.canonical_title, w.id, w.keyword,
+                   {"COALESCE(uw.kind, w.kind)" if account_scoped else "w.kind"},
+                   w.muted, {alert_preferences_sql}, {regions_sql}, {venues_sql},
+                   e.event_dates_json, e.venues_json, e.summary
             FROM alert_log a
             LEFT JOIN events e ON e.id = a.event_id
             LEFT JOIN watched_keywords w ON w.id = e.watch_id
             {join}
             {where}
             ORDER BY a.created_at DESC, a.id DESC
-            LIMIT ?
+            {limit_sql}
             """,
             params,
-        ).fetchall()
+        )
         alerts: list[dict[str, object]] = []
-        for alert_id, event_id, alert_type, payload_json, created_at, event_title, watch_id, keyword, kind, muted in rows:
+        for (
+            alert_id, event_id, alert_type, payload_json, created_at, event_title,
+            watch_id, keyword, kind, muted, alert_preferences, preferred_regions,
+            preferred_venues, event_dates_json, venues_json, summary,
+        ) in rows:
+            if account_scoped:
+                allowed = {
+                    clean_text(value).lower()
+                    for value in str(alert_preferences or DEFAULT_ALERT_PREFERENCES).split(",")
+                    if clean_text(value)
+                }
+                if str(alert_type or "").lower() not in allowed:
+                    continue
+                location_filters = [
+                    clean_text(value).lower()
+                    for text in (preferred_regions, preferred_venues)
+                    for value in str(text or "").split(",")
+                    if clean_text(value)
+                ]
+                if location_filters:
+                    haystack = " ".join(
+                        (str(event_dates_json or ""), str(venues_json or ""), str(summary or ""))
+                    ).lower()
+                    if not any(value in haystack for value in location_filters):
+                        continue
             payload = json.loads(payload_json)
             payload["alert_id"] = alert_id
             payload["event_id"] = event_id
             payload["created_at"] = created_at
             payload["alert_type"] = alert_type
+            payload["type_label"] = human_alert_type(alert_type)
             payload["event_title"] = event_title
             payload["watch_id"] = watch_id
             payload["watch_keyword"] = keyword
             payload["watch_kind"] = kind
             payload["watch_muted"] = bool(muted) if muted is not None else None
             alerts.append(payload)
+            if len(alerts) >= limit:
+                break
         return alerts
 
 
@@ -611,9 +796,11 @@ def api_health(db_path: str) -> dict[str, object]:
         alerts = connection.execute("SELECT COUNT(*) FROM alert_log").fetchone()[0]
     return {
         "app": "chusennote",
+        "version": APP_VERSION,
+        "build": APP_BUILD,
         "status": "ok",
         "schema_version": schema_version,
-        "db_path": db_path,
+        "db_path": database_health_label(resolve_target(db_path)),
         "tracked_artists": artists,
         "tracked_events": tracked_events,
         "saved_events": saved_events,
@@ -622,12 +809,14 @@ def api_health(db_path: str) -> dict[str, object]:
     }
 
 
-def event_detail(db_path: str, event_id: int) -> dict[str, object] | None:
+def event_detail(db_path: str, event_id: int, user_id: int | None = None) -> dict[str, object] | None:
     for event in recent_events(
         db_path,
         limit=500,
         include_muted_sources=True,
         include_muted_watches=True,
+        user_id=user_id,
+        source_user_id=user_id,
     ):
         if int(event["id"]) == event_id:
             return event

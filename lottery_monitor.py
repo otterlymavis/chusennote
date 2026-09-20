@@ -14,6 +14,8 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import os
+import pathlib
 import sys
 from collections.abc import Sequence
 
@@ -25,9 +27,11 @@ from chusennote import (  # noqa: F401  (re-exported for monkeypatch targets)
     netio,
     notifications,
     pipeline,
+    preflight,
     read_models,
     schema,
     search,
+    smoke,
     util,
     web,
 )
@@ -42,6 +46,8 @@ from chusennote.read_models import *  # noqa: F401,F403
 from chusennote.pipeline import *  # noqa: F401,F403
 from chusennote.web import *  # noqa: F401,F403
 from chusennote.notifications import *  # noqa: F401,F403
+from chusennote.preflight import *  # noqa: F401,F403
+from chusennote.smoke import *  # noqa: F401,F403
 from chusennote.auth import *  # noqa: F401,F403
 
 
@@ -86,8 +92,11 @@ def render_blocks(blocks: AppBlocks) -> str:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     cleaned_argv, session_log, session_log_dir = split_session_log_args(argv)
-    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "db", "notify", "-h", "--help"}:
-        parser = argparse.ArgumentParser(description="Search Japanese event ticket lotteries by keyword.")
+    if cleaned_argv and cleaned_argv[0] not in {"search", "watch", "artist", "event", "export", "web", "db", "notify", "preflight", "smoke", "-h", "--help", "--version"}:
+        parser = argparse.ArgumentParser(
+            prog="lottery_monitor.py",
+            description="Search Japanese event ticket lotteries by keyword.",
+        )
         parser.add_argument("keyword", help="Artist, event, or musical keyword to search for")
         parser.add_argument("--json", action="store_true", help="Output the two app blocks as JSON")
         parser.add_argument("--db", default=None, help="SQLite database path for saving watch/event/ticket history")
@@ -98,7 +107,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         args.session_log_dir = session_log_dir
         return args
 
-    parser = argparse.ArgumentParser(description="Monitor Japanese event ticket lotteries.")
+    parser = argparse.ArgumentParser(
+        prog="lottery_monitor.py",
+        description="Monitor Japanese event ticket lotteries.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {APP_VERSION} ({APP_BUILD})",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     search_parser = subparsers.add_parser("search", help="Search a single keyword")
@@ -205,8 +222,34 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     web_parser = subparsers.add_parser("web", help="Run the local web UI")
     web_parser.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
-    web_parser.add_argument("--port", type=int, default=8877, help="Local port to serve on")
+    web_parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "8877")),
+        help="Port to serve on (default: PORT environment variable or 8877)",
+    )
     web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
+
+    preflight_parser = subparsers.add_parser("preflight", help="Report secret-safe release configuration readiness")
+    preflight_parser.add_argument("--json", action="store_true")
+    preflight_parser.add_argument(
+        "--production",
+        action="store_true",
+        help="Require every mandatory production configuration component (external acceptance remains separate)",
+    )
+    preflight_parser.add_argument(
+        "--require",
+        action="append",
+        choices=PREFLIGHT_COMPONENTS,
+        default=[],
+        help="Return failure unless this component is configured; repeat as needed",
+    )
+
+    smoke_parser = subparsers.add_parser("smoke", help="Read-only smoke check a running deployment")
+    smoke_parser.add_argument("--base-url", default="http://127.0.0.1:8877")
+    smoke_parser.add_argument("--timeout", type=positive_float, default=10.0)
+    smoke_parser.add_argument("--require-postgres", action="store_true", help="Fail unless health confirms PostgreSQL is active")
+    smoke_parser.add_argument("--json", action="store_true")
 
     notify_parser = subparsers.add_parser("notify", help="Manage notification subscriptions and delivery")
     notify_subparsers = notify_parser.add_subparsers(dest="notify_command", required=True)
@@ -216,7 +259,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     notify_sub.add_argument("--scope", choices=NOTIFY_SCOPES, default=NOTIFY_SCOPE_EVENT_ALL)
     notify_sub.add_argument("--location", default="", help="City/location for event_location scope")
     notify_sub.add_argument("--round-key", default="", help="Round key for round scope")
-    notify_sub.add_argument("--channels", default=DEFAULT_NOTIFY_CHANNELS, help="Comma list: feed,email,push")
+    notify_sub.add_argument(
+        "--channels",
+        default=DEFAULT_NOTIFY_CHANNELS,
+        help="Comma list: feed,email,push,slack,discord,line",
+    )
     notify_sub.add_argument("--lead-days", default="7,1,0", help="Days before each date to remind")
     notify_sub.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
 
@@ -231,11 +278,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     notify_run = notify_subparsers.add_parser("run", help="Generate and deliver due reminders")
     notify_run.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     notify_run.add_argument("--json", action="store_true")
-    notify_run.add_argument("--no-deliver", action="store_true", help="Record reminders without sending email/push")
+    notify_run.add_argument("--no-deliver", action="store_true", help="Record reminders without external delivery")
 
     notify_feed = notify_subparsers.add_parser("feed", help="Show recent reminders")
     notify_feed.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
     notify_feed.add_argument("--json", action="store_true")
+
+    notify_status = notify_subparsers.add_parser("status", help="Check external delivery configuration")
+    notify_status.add_argument("--db", default=DEFAULT_DB_PATH, help=f"SQLite database path (default: {DEFAULT_DB_PATH})")
+    notify_status.add_argument("--json", action="store_true")
 
     device_parser = notify_subparsers.add_parser("device", help="Manage mobile push device tokens")
     device_subparsers = device_parser.add_subparsers(dest="device_command", required=True)
@@ -346,10 +397,17 @@ def run_notify_command(args: argparse.Namespace) -> int:
         if args.json:
             print(json.dumps(delivered, ensure_ascii=False, indent=2))
         else:
-            print(f"Delivered {len(delivered)} reminder(s).")
+            failures = sum(notification_has_delivery_failure(item) for item in delivered)
+            if failures:
+                print(
+                    f"Processed {len(delivered)} reminder(s); "
+                    f"{failures} external delivery failure(s) remain eligible for retry."
+                )
+            else:
+                print(f"Delivered {len(delivered)} reminder(s).")
             for notification in delivered:
                 print(f"- {notification['title']}: {notification['body']}")
-        return 0
+        return 1 if any(notification_has_delivery_failure(item) for item in delivered) else 0
     if args.notify_command == "feed":
         feed = notification_feed(args.db)
         if args.json:
@@ -360,6 +418,28 @@ def run_notify_command(args: argparse.Namespace) -> int:
             for notification in feed:
                 print(f"- {notification.get('created_at')} {notification.get('title')}: {notification.get('body')}")
         return 0
+    if args.notify_command == "status":
+        status = notification_configuration_status(args.db)
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, indent=2))
+        else:
+            push = status["push"]
+            email = status["email"]
+            print(
+                "Push: "
+                f"{push['subscriptions']} subscription(s), "
+                f"{push['owners_without_devices']} owner(s) without devices, "
+                f"credentials {'ready' if push['credentials_ready'] else 'not ready'}."
+            )
+            print(
+                "Email: "
+                f"{email['anonymous_subscriptions']} local subscription(s), "
+                f"{email['account_subscriptions']} account subscription(s), "
+                f"SMTP {'configured' if email['smtp_host_configured'] and email['recipient_configured'] else 'not configured'}."
+            )
+            for issue in status["issues"]:
+                print(f"- {issue}")
+        return 0 if status["ok"] else 1
     if args.notify_command == "device":
         if args.device_command == "add":
             try:
@@ -387,6 +467,36 @@ def run_notify_command(args: argparse.Namespace) -> int:
 
 
 def run_command(args: argparse.Namespace) -> int:
+    if args.command == "smoke":
+        result = smoke_deployment(
+            args.base_url,
+            timeout=args.timeout,
+            api_token=os.environ.get("CHUSENNOTE_SMOKE_API_TOKEN", ""),
+            require_postgres=args.require_postgres,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            for check in result["checks"]:
+                print(f"{'OK' if check['ok'] else 'FAIL'} {check['endpoint']}")
+            for error in result["errors"]:
+                print(f"- {error}", file=sys.stderr)
+        return 0 if result["ok"] else 1
+    if args.command == "preflight":
+        status = release_configuration_status(pathlib.Path(__file__).resolve().parent)
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, indent=2))
+        else:
+            local_label = "ready" if status["release_files_ready"] else "incomplete"
+            print(f"Local release files: {local_label}.")
+            for name, component in status["components"].items():
+                label = "configured" if component["configured"] else "not configured"
+                print(f"- {name}: {label} ({component['detail']})")
+        required = set(args.require)
+        if args.production:
+            required.update(PRODUCTION_PREFLIGHT_COMPONENTS)
+        missing_required = [name for name in required if not status["components"][name]["configured"]]
+        return 1 if missing_required or not status["release_files_ready"] else 0
     if args.command == "web":
         run_web(args.db, args.port, args.host)
         return 0
@@ -432,15 +542,19 @@ def run_command(args: argparse.Namespace) -> int:
         return 0
     if args.command in {"artist", "event"}:
         if args.kind_command == "add":
-            watch = add_watch(
-                args.db,
-                args.keyword,
-                kind=args.kind,
-                tags=args.tags,
-                preferred_regions=args.regions,
-                preferred_venues=args.venues,
-                alert_preferences=args.alerts,
-            )
+            try:
+                watch = add_watch(
+                    args.db,
+                    args.keyword,
+                    kind=args.kind,
+                    tags=args.tags,
+                    preferred_regions=args.regions,
+                    preferred_venues=args.venues,
+                    alert_preferences=args.alerts,
+                )
+            except ValueError as error:
+                print(str(error))
+                return 1
             print(f"Added tracked {args.kind} {watch.id}: {watch.keyword}")
             return 0
         if args.kind_command == "list":
@@ -462,11 +576,17 @@ def run_command(args: argparse.Namespace) -> int:
         if args.kind_command == "run":
             alerts = run_watches(args.db, kind=args.kind)
             reminders = run_notifications(args.db)
+            delivery_failures = sum(notification_has_delivery_failure(item) for item in reminders)
             if args.alerts_json:
                 print(json.dumps(alerts, ensure_ascii=False, indent=2))
             else:
-                print(f"Ran {len(list_watches(args.db, kind=args.kind))} active tracked {args.kind}s; {len(alerts)} alerts; {len(reminders)} reminders sent.")
-            return 0
+                reminder_summary = (
+                    f"{len(reminders)} reminders processed; {delivery_failures} awaiting external delivery retry"
+                    if delivery_failures
+                    else f"{len(reminders)} reminders sent"
+                )
+                print(f"Ran {len(list_watches(args.db, kind=args.kind))} active tracked {args.kind}s; {len(alerts)} alerts; {reminder_summary}.")
+            return 1 if delivery_failures else 0
     if args.command == "watch":
         if args.watch_command == "source":
             if args.source_command == "add":
@@ -494,14 +614,18 @@ def run_command(args: argparse.Namespace) -> int:
                 print("Unmuted source." if unmuted else "Source not found.")
                 return 0 if unmuted else 1
         if args.watch_command == "add":
-            watch = add_watch(
-                args.db,
-                args.keyword,
-                kind=WATCH_KIND_EVENT,
-                tags=args.tags,
-                preferred_regions=args.regions,
-                preferred_venues=args.venues,
-            )
+            try:
+                watch = add_watch(
+                    args.db,
+                    args.keyword,
+                    kind=WATCH_KIND_EVENT,
+                    tags=args.tags,
+                    preferred_regions=args.regions,
+                    preferred_venues=args.venues,
+                )
+            except ValueError as error:
+                print(str(error))
+                return 1
             print(f"Added watch {watch.id}: {watch.keyword}")
             return 0
         if args.watch_command == "list":
@@ -523,11 +647,17 @@ def run_command(args: argparse.Namespace) -> int:
         if args.watch_command == "run":
             alerts = run_watches(args.db)
             reminders = run_notifications(args.db)
+            delivery_failures = sum(notification_has_delivery_failure(item) for item in reminders)
             if args.alerts_json:
                 print(json.dumps(alerts, ensure_ascii=False, indent=2))
             else:
-                print(f"Ran {len(list_watches(args.db))} active watches; {len(alerts)} alerts; {len(reminders)} reminders sent.")
-            return 0
+                reminder_summary = (
+                    f"{len(reminders)} reminders processed; {delivery_failures} awaiting external delivery retry"
+                    if delivery_failures
+                    else f"{len(reminders)} reminders sent"
+                )
+                print(f"Ran {len(list_watches(args.db))} active watches; {len(alerts)} alerts; {reminder_summary}.")
+            return 1 if delivery_failures else 0
         if args.watch_command == "loop":
             return run_watch_loop(
                 args.db,
@@ -540,7 +670,12 @@ def run_command(args: argparse.Namespace) -> int:
                 notify_func=run_notifications,
             )
 
-    blocks = build_blocks(args.keyword)
+    try:
+        keyword = validated_keyword(args.keyword)
+    except ValueError as error:
+        print(str(error))
+        return 1
+    blocks = build_blocks(keyword)
     alerts: list[dict[str, str]] = []
     if args.db:
         alerts = save_blocks(args.db, blocks)

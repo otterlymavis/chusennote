@@ -10,7 +10,9 @@ import dataclasses
 import re
 
 
-USER_AGENT = "chusennote/0.2 (+https://github.com/otterlymavis/chusennote; ticket lottery monitor)"
+APP_VERSION = "0.1.0"
+APP_BUILD = 1
+USER_AGENT = f"chusennote/{APP_VERSION} (+https://github.com/otterlymavis/chusennote; ticket lottery monitor)"
 # A browser-like UA for the optional headless-browser fetch path, which renders
 # JavaScript-heavy ticket platforms that the plain HTTP fetch cannot read.
 BROWSER_USER_AGENT = (
@@ -46,25 +48,37 @@ BING_SEARCH_URL = "https://www.bing.com/search"
 # Optional managed search backend. HTML scraping of DuckDuckGo/Bing gets
 # bot-throttled and returns irrelevant results, so a real search API is the
 # reliable way to locate official pages. Set both env vars to enable it.
-SEARCH_PROVIDER_ENV = "CHUSENNOTE_SEARCH_PROVIDER"  # brave | bing | serpapi
+SEARCH_PROVIDER_ENV = "CHUSENNOTE_SEARCH_PROVIDER"  # tavily | brave | bing | serpapi
 SEARCH_API_KEY_ENV = "CHUSENNOTE_SEARCH_API_KEY"
 TIMEOUT_SECONDS = 20
+MAX_FETCH_RESPONSE_BYTES = 5 * 1024 * 1024
 DEFAULT_DB_PATH = "chusennote.sqlite3"
 DEFAULT_SESSION_LOG_DIR = "history_logs"
-DB_SCHEMA_VERSION = 13
+DB_SCHEMA_VERSION = 16
+MAX_KEYWORD_LENGTH = 200
+MAX_SOURCE_VALUE_LENGTH = 4096
+MAX_SOURCE_LABEL_LENGTH = 120
+MAX_DEVICE_TOKEN_LENGTH = 4096
+MAX_DEVICE_LABEL_LENGTH = 120
+DEVICE_PLATFORMS = ("android", "ios")
+MAX_EMAIL_LENGTH = 254
+MAX_PASSWORD_LENGTH = 1024
+MAX_AUTH_TOKEN_LENGTH = 512
 MIN_KEYWORD_OVERLAP = 0.45
 WATCH_KIND_ARTIST = "artist"
 WATCH_KIND_EVENT = "event"
 WATCH_KINDS = (WATCH_KIND_ARTIST, WATCH_KIND_EVENT)
 UPCOMING_STATUS_ORDER = {
     "closing_soon": 0,
-    "results_today": 1,
-    "payment_due": 2,
-    "general_sale_soon": 3,
-    "open": 4,
-    "upcoming": 5,
-    "unknown": 6,
-    "closed": 7,
+    "trade_closing_soon": 1,
+    "results_today": 2,
+    "payment_due": 3,
+    "general_sale_soon": 4,
+    "open": 5,
+    "trade_open": 6,
+    "upcoming": 7,
+    "unknown": 8,
+    "closed": 9,
 }
 DEFAULT_ALERT_PREFERENCES = ",".join(
     (
@@ -77,6 +91,8 @@ DEFAULT_ALERT_PREFERENCES = ",".join(
         "results_today",
         "payment_due_soon",
         "general_sale_soon",
+        "trade_opened",
+        "trade_closing_soon",
         "watch_failed",
     )
 )
@@ -88,6 +104,7 @@ TICKET_DOMAINS = {
     "rakuten": ("r-t.jp", "ticket.rakuten.co.jp"),
     "ticketboard": ("ticketboard.jp", "tickebo.jp"),
     "cnplayguide": ("cnplayguide.com",),
+    "toho-navi": ("toho-navi.com",),
     "e-get": ("e-get.jp",),
     "tv-asahi-ticket": ("ticket.tv-asahi.co.jp",),
 }
@@ -204,6 +221,8 @@ class Page:
     title: str
     text: str
     links: tuple[Link, ...]
+    structured_data: tuple[object, ...] = ()
+    discovery_links: tuple[Link, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -217,6 +236,8 @@ class EventInfo:
     ticket_links: tuple[Link, ...]
     ticket_rules: tuple[str, ...] = ()
     ticket_prices: tuple[str, ...] = ()
+    organizers: tuple[str, ...] = ()
+    lineup: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -291,18 +312,25 @@ NOTIFY_SCOPES = (
     NOTIFY_SCOPE_EVENT_LOCATION,
     NOTIFY_SCOPE_ROUND,
 )
-NOTIFY_CHANNELS = ("feed", "email", "push")
+NOTIFY_CHANNELS = ("feed", "email", "push", "slack", "discord", "line")
 DEFAULT_NOTIFY_CHANNELS = "feed"
 # Remind ahead of and on each date: 7 days before, 1 day before, the day itself.
 DEFAULT_LEAD_DAYS = (7, 1, 0)
 # Push delivery (FCM) and email (SMTP) are configured through the environment.
-FCM_SERVER_KEY_ENV = "CHUSENNOTE_FCM_SERVER_KEY"
+# FCM authentication uses Google Application Default Credentials; this optional
+# override selects the target Firebase project when ADC cannot infer it.
+FCM_PROJECT_ID_ENV = "CHUSENNOTE_FIREBASE_PROJECT_ID"
+FCM_OAUTH_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 SMTP_HOST_ENV = "CHUSENNOTE_SMTP_HOST"
 SMTP_PORT_ENV = "CHUSENNOTE_SMTP_PORT"
 SMTP_USER_ENV = "CHUSENNOTE_SMTP_USER"
 SMTP_PASSWORD_ENV = "CHUSENNOTE_SMTP_PASSWORD"
 SMTP_FROM_ENV = "CHUSENNOTE_SMTP_FROM"
 NOTIFY_EMAIL_ENV = "CHUSENNOTE_NOTIFY_EMAIL"
+SLACK_WEBHOOK_URL_ENV = "CHUSENNOTE_SLACK_WEBHOOK_URL"
+DISCORD_WEBHOOK_URL_ENV = "CHUSENNOTE_DISCORD_WEBHOOK_URL"
+LINE_CHANNEL_ACCESS_TOKEN_ENV = "CHUSENNOTE_LINE_CHANNEL_ACCESS_TOKEN"
+LINE_TARGET_ID_ENV = "CHUSENNOTE_LINE_TARGET_ID"
 
 
 @dataclasses.dataclass(frozen=True)

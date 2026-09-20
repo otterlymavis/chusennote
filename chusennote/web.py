@@ -11,8 +11,11 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import html
+import http.cookies
 import http.server
+import ipaddress
 import json
+import os
 import re
 import urllib.parse
 from collections.abc import Iterable, Sequence
@@ -28,6 +31,93 @@ from .read_models import *  # noqa: F401,F403
 from .pipeline import *  # noqa: F401,F403
 from .notifications import *  # noqa: F401,F403
 from .auth import *  # noqa: F401,F403
+from .storage import is_postgres_url, resolve_target
+
+
+WEB_SESSION_COOKIE = "chusennote_session"
+TRUST_PROXY_HEADERS_ENV = "CHUSENNOTE_TRUST_PROXY_HEADERS"
+FORM_BODY_LIMIT = 64 * 1024
+FORM_FIELD_LIMIT = 100
+QUERY_FIELD_LIMIT = 100
+NOTIFICATION_LIMIT_MAX = 500
+EVENT_SEARCH_LIMIT_MAX = 20
+
+
+class FormBodyError(ValueError):
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class QueryParameterError(ValueError):
+    pass
+
+
+def web_session_cookie(token: str, *, secure: bool, clear: bool = False) -> str:
+    cookie = http.cookies.SimpleCookie()
+    cookie[WEB_SESSION_COOKIE] = token
+    morsel = cookie[WEB_SESSION_COOKIE]
+    morsel["path"] = "/"
+    morsel["httponly"] = True
+    morsel["samesite"] = "Strict"
+    if secure:
+        morsel["secure"] = True
+    if clear:
+        morsel["max-age"] = 0
+    return morsel.OutputString()
+
+
+def web_request_uses_https(handler: http.server.BaseHTTPRequestHandler) -> bool:
+    trusted = os.environ.get(TRUST_PROXY_HEADERS_ENV, "").strip().lower() in {"1", "true", "yes"}
+    forwarded_proto = handler.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    return trusted and forwarded_proto == "https"
+
+
+def web_request_allows_credentials(handler: http.server.BaseHTTPRequestHandler) -> bool:
+    if web_request_uses_https(handler):
+        return True
+    host_header = handler.headers.get("Host", "")
+    host = urllib.parse.urlsplit(f"//{host_header}").hostname
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv4Address):
+        return address.is_loopback or address.is_link_local or any(
+            address in network
+            for network in (
+                ipaddress.ip_network("10.0.0.0/8"),
+                ipaddress.ip_network("172.16.0.0/12"),
+                ipaddress.ip_network("192.168.0.0/16"),
+            )
+        )
+    return (
+        address.is_loopback
+        or address.is_link_local
+        or address in ipaddress.ip_network("fc00::/7")
+    )
+
+
+def web_request_has_valid_origin(handler: http.server.BaseHTTPRequestHandler) -> bool:
+    origin = handler.headers.get("Origin", "").strip()
+    if not origin:
+        return True
+    parsed = urllib.parse.urlsplit(origin)
+    expected_scheme = "https" if web_request_uses_https(handler) else "http"
+    return parsed.scheme.lower() == expected_scheme and parsed.netloc.lower() == handler.headers.get("Host", "").lower()
+
+
+def safe_web_redirect(value: str, fallback: str = "/") -> str:
+    parsed = urllib.parse.urlsplit(value)
+    if not value.startswith("/") or value.startswith("//") or parsed.scheme or parsed.netloc:
+        return fallback
+    if any(character in value for character in "\r\n"):
+        return fallback
+    return value
 
 
 def web_source_link(url: object, label: str = "Open") -> str:
@@ -43,13 +133,20 @@ def web_source_link(url: object, label: str = "Open") -> str:
 artist_venue_label = venue_label
 
 
-def render_artist_detail_page(db_path: str, artist_id: int) -> str:
-    artist = next((watch for watch in list_watches(db_path, include_muted=True) if watch.id == artist_id and watch.kind == WATCH_KIND_ARTIST), None)
+def render_artist_detail_page(db_path: str, artist_id: int, user_id: int = 0) -> str:
+    artist = next((watch for watch in list_watches(db_path, include_muted=True, user_id=user_id) if watch.id == artist_id and watch.kind == WATCH_KIND_ARTIST), None)
     if not artist:
         return "<!doctype html><title>Not found</title><h1>Artist not found</h1>"
     artist_events = [
         event
-        for event in recent_events(db_path, limit=500, include_muted_sources=True, include_muted_watches=True)
+        for event in recent_events(
+            db_path,
+            limit=500,
+            include_muted_sources=True,
+            include_muted_watches=True,
+            user_id=user_id,
+            source_user_id=user_id,
+        )
         if int(event.get("watch_id") or 0) == artist.id
     ]
     artist_events.sort(key=lambda event: (first_event_sort_date(event) is None, first_event_sort_date(event) or dt.date.max, str(event.get("title") or "")))
@@ -154,8 +251,8 @@ def format_evidence_snippet(value: object, limit: int = 180) -> str:
     return f"{text[:limit].rstrip()}..."
 
 
-def render_event_detail_page(db_path: str, event_id: int) -> str:
-    event = event_detail(db_path, event_id)
+def render_event_detail_page(db_path: str, event_id: int, user_id: int = 0) -> str:
+    event = event_detail(db_path, event_id, user_id=user_id)
     if not event:
         return "<!doctype html><title>Not found</title><h1>Event not found</h1>"
     event_dates = [clean_text(str(item)) for item in event.get("event_dates", []) if clean_text(str(item))]
@@ -170,6 +267,8 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
     ticket_prices = tuple(
         clean_text(str(item)) for item in event.get("ticket_prices", []) if clean_text(str(item))
     ) or extract_ticket_price_items(summary_text)
+    organizers = tuple(clean_text(str(item)) for item in event.get("organizers", []) if clean_text(str(item)))
+    lineup = tuple(clean_text(str(item)) for item in event.get("lineup", []) if clean_text(str(item)))
     ticket_rule_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_rules) or "<li>Ticket rules not captured yet.</li>"
     ticket_price_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_prices) or "<li>Ticket prices not captured yet.</li>"
     ticket_link_items = "".join(
@@ -193,6 +292,8 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
             ("Results", "results_date"),
             ("Payment due", "payment_end_at"),
             ("On sale", "general_sale_date"),
+            ("Resale opens", "trade_start_at"),
+            ("Resale closes", "trade_end_at"),
         ):
             value = clean_text(str(ticket.get(key) or ""))
             if value:
@@ -213,7 +314,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         meta_line = f"<p><small>{' · '.join(meta_parts)}</small></p>" if meta_parts else ""
         evidence_snippet = format_evidence_snippet(ticket.get("evidence"))
         evidence_line = f"<p><small>Evidence: {html.escape(evidence_snippet)}</small></p>" if evidence_snippet != "none" else ""
-        status = clean_text(str(ticket.get("status") or ""))
+        status = clean_text(str(ticket.get("status_label") or ticket.get("status") or ""))
         status_badge = f'<span class="status">{html.escape(status)}</span>' if status and status != "unknown" else ""
         return f"""
         <article class="round-card">
@@ -267,12 +368,12 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
             <small>{len(tickets)} round{'s' if len(tickets) != 1 else ''}</small>
           </div>
           {render_platform_links(platform)}
-          <div class="round-group-list">{''.join(render_round_card(ticket) for ticket in tickets) or '<p>No parsed lottery rounds from this website yet.</p>'}</div>
+          <div class="round-group-list">{''.join(render_round_card(ticket) for ticket in tickets) or '<p>No parsed ticket rounds from this website yet.</p>'}</div>
         </div>
         """
         for platform in sorted(rounds_by_platform, key=platform_sort_key)
         for tickets in (rounds_by_platform[platform],)
-    ) or "<p>No lottery rounds saved yet.</p>"
+    ) or "<p>No ticket rounds saved yet.</p>"
     tour_items = "".join(
         f"""
         <li>
@@ -302,6 +403,22 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         """
         for source in event.get("manual_sources", [])
     ) or "<li>No manual sources.</li>"
+    related_items = "".join(
+        f"""
+        <li>
+          <span><strong><a href="/events/{html.escape(str(related.get('id')))}">{html.escape(str(related.get('title') or 'Related event'))}</a></strong>
+          <small>{html.escape(' · '.join(str(reason) for reason in related.get('recommendation_reasons', [])[:3]))}</small></span>
+          {web_source_link(related.get('official_url'), 'Official')}
+        </li>
+        """
+        for related in event.get("related_events", [])
+        if isinstance(related, dict)
+    )
+    related_section = (
+        f'<section><h2>Related Saved Events</h2><ul>{related_items}</ul></section>'
+        if related_items
+        else ""
+    )
     official = event.get("official_url") or ""
     official_link = web_source_link(official, "Open") if is_web_url(official) else "<span>Unavailable</span>"
     return f"""<!doctype html>
@@ -350,7 +467,7 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
   </style>
 </head>
 <body>
-  <header><div class="topbar"><a class="back" href="/" title="Back" aria-label="Back">‹</a><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span></div></header>
+  <header><div class="topbar"><a class="back" href="/" title="Back" aria-label="Back">‹</a><span class="status">{html.escape(str(event.get('status_label') or event.get('status') or 'watching'))}</span></div></header>
   <main>
     <div class="hero">
       <h1>{html.escape(str(event.get('title') or 'Untitled event'))}</h1>
@@ -366,13 +483,16 @@ def render_event_detail_page(db_path: str, event_id: int) -> str:
         <div><small>Location</small><strong>{html.escape(location_label)}</strong></div>
         <div><small>Time</small><strong>{html.escape(time_label)}</strong></div>
         <div><small>Venue</small><strong>{html.escape(venue_label)}</strong></div>
+        <div><small>Organizer</small><strong>{html.escape('; '.join(organizers) or 'Unknown')}</strong></div>
+        <div><small>Cast &amp; lineup</small><strong>{html.escape('; '.join(lineup) or 'Unknown')}</strong></div>
       </div>
     </section>
     {tour_section}
     <section><h2>Ticket Rules</h2><ul>{ticket_rule_items}</ul></section>
     <section><h2>Ticket Price</h2><ul>{ticket_price_items}</ul></section>
     <section><h2>Ticket Links</h2><ul>{ticket_link_items}</ul></section>
-    <section><h2>Lottery Rounds</h2><div class="round-actions">{event_subscribe}</div><div class="rounds">{round_items}</div></section>
+    <section><h2>Ticket Rounds</h2><div class="round-actions">{event_subscribe}</div><div class="rounds">{round_items}</div></section>
+    {related_section}
     <section><h2>Manual Sources</h2><ul>{manual_source_items}</ul></section>
   </main>
 </body>
@@ -411,15 +531,58 @@ def subscribe_button(
     """
 
 
-def render_notifications_page(db_path: str) -> str:
-    watches = {watch.id: watch.keyword for watch in list_watches(db_path, include_muted=True)}
-    subscriptions = list_subscriptions(db_path, user_id=0)
-    feed = notification_feed(db_path, limit=100, user_id=0)
-    subscription_items = "".join(
-        f"""
-        <li>
-          <span><strong>{html.escape(watches.get(subscription.watch_id, str(subscription.watch_id)))}</strong>
-          <small>{html.escape(NOTIFY_SCOPE_LABELS.get(subscription.scope, subscription.scope))}{(' · ' + html.escape(subscription.location)) if subscription.location else ''} · {html.escape(subscription.channels)} · lead {html.escape(subscription.lead_days)}</small></span>
+def notification_channels_from_form(form: dict[str, str], default: str) -> str:
+    if form.get("channel_editor") != "1":
+        return form.get("channels", default)
+    selected = [channel for channel in NOTIFY_CHANNELS if form.get(f"channel_{channel}") == "1"]
+    return ",".join(selected) or DEFAULT_NOTIFY_CHANNELS
+
+
+def render_notifications_page(db_path: str, user_id: int = 0) -> str:
+    watches = {watch.id: watch.keyword for watch in list_watches(db_path, include_muted=True, user_id=user_id)}
+    subscriptions = list_subscriptions(db_path, user_id=user_id)
+    feed = notification_feed(db_path, limit=100, user_id=user_id)
+    def render_subscription_item(subscription: NotificationSubscription) -> str:
+        selected = parsed_notification_channels(subscription.channels)
+        available_channels = ("feed", "push") if user_id > 0 else NOTIFY_CHANNELS
+        channel_controls: list[str] = []
+        for channel in available_channels:
+            label = channel.upper() if channel == "line" else channel.title()
+            if channel == "feed":
+                channel_controls.append(
+                    '<label><input type="checkbox" checked disabled> Feed</label>'
+                    '<input type="hidden" name="channel_feed" value="1">'
+                )
+            else:
+                checked = " checked" if channel in selected else ""
+                channel_controls.append(
+                    f'<label><input type="checkbox" name="channel_{channel}" value="1"{checked}> {label}</label>'
+                )
+        location_text = f" · {html.escape(subscription.location)}" if subscription.location else ""
+        account_note = (
+            "Account subscriptions support private feed and push delivery."
+            if user_id > 0
+            else "Slack, Discord, and LINE use the server's local-workspace credentials."
+        )
+        return f"""
+        <li class="subscription-row">
+          <div class="subscription-copy"><strong>{html.escape(watches.get(subscription.watch_id, str(subscription.watch_id)))}</strong>
+          <small>{html.escape(NOTIFY_SCOPE_LABELS.get(subscription.scope, subscription.scope))}{location_text} · {html.escape(subscription.channels)} · lead {html.escape(subscription.lead_days)}</small></div>
+          <details class="subscription-editor">
+            <summary>Edit delivery</summary>
+            <form method="post" action="/subscribe">
+              <input type="hidden" name="channel_editor" value="1">
+              <input type="hidden" name="watch" value="{subscription.watch_id}">
+              <input type="hidden" name="scope" value="{html.escape(subscription.scope)}">
+              <input type="hidden" name="location" value="{html.escape(subscription.location, quote=True)}">
+              <input type="hidden" name="round_key" value="{html.escape(subscription.round_key, quote=True)}">
+              <input type="hidden" name="redirect" value="/notifications">
+              <fieldset><legend>Channels</legend><div class="channel-options">{''.join(channel_controls)}</div></fieldset>
+              <label class="lead-days">Reminder days before <input name="lead_days" value="{html.escape(subscription.lead_days, quote=True)}" inputmode="numeric" pattern="[0-9, ]+" required></label>
+              <small>{account_note}</small>
+              <button class="action-link" type="submit">Save delivery</button>
+            </form>
+          </details>
           <form method="post" action="/subscribe/remove">
             <input type="hidden" name="identifier" value="{subscription.id}">
             <input type="hidden" name="redirect" value="/notifications">
@@ -427,8 +590,8 @@ def render_notifications_page(db_path: str) -> str:
           </form>
         </li>
         """
-        for subscription in subscriptions
-    ) or "<li>No subscriptions yet. Open an event and tap “Notify me”.</li>"
+
+    subscription_items = "".join(render_subscription_item(subscription) for subscription in subscriptions) or "<li>No subscriptions yet. Open an event and tap “Notify me”.</li>"
     feed_items = "".join(
         f"""
         <li>
@@ -462,6 +625,17 @@ def render_notifications_page(db_path: str) -> str:
     small {{ display: block; color: var(--muted); line-height: 1.45; }}
     .action-link {{ display: inline-flex; align-items: center; min-height: 32px; padding: 6px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; cursor: pointer; }}
     form {{ margin: 0; }}
+    .subscription-copy {{ min-width: 180px; flex: 1 1 240px; }}
+    .subscription-editor {{ flex: 2 1 360px; }}
+    .subscription-editor summary {{ cursor: pointer; font-weight: 850; }}
+    .subscription-editor form {{ margin-top: 10px; display: grid; gap: 10px; }}
+    fieldset {{ margin: 0; border: 1px solid var(--line); border-radius: 8px; }}
+    legend {{ color: var(--muted); font-size: 13px; font-weight: 800; }}
+    .channel-options {{ display: flex; flex-wrap: wrap; gap: 8px 14px; }}
+    .channel-options label, .lead-days {{ font-size: 14px; font-weight: 700; }}
+    .lead-days {{ display: grid; gap: 5px; }}
+    .lead-days input {{ min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }}
+    @media (max-width: 680px) {{ li.subscription-row {{ flex-direction: column; }} .subscription-editor {{ width: 100%; }} }}
   </style>
 </head>
 <body>
@@ -474,9 +648,22 @@ def render_notifications_page(db_path: str) -> str:
 </html>"""
 
 
+def send_security_headers(handler: http.server.BaseHTTPRequestHandler) -> None:
+    """Apply browser/API protections consistently to every response shape."""
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+    handler.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    if web_request_uses_https(handler):
+        handler.send_header("Strict-Transport-Security", "max-age=31536000")
+
+
 def json_response(handler: http.server.BaseHTTPRequestHandler, payload: object, status: int = 200) -> None:
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     handler.send_response(status)
+    send_security_headers(handler)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
@@ -486,6 +673,7 @@ def json_response(handler: http.server.BaseHTTPRequestHandler, payload: object, 
 def text_response(handler: http.server.BaseHTTPRequestHandler, body: str, content_type: str, status: int = 200) -> None:
     data = body.encode("utf-8")
     handler.send_response(status)
+    send_security_headers(handler)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
@@ -495,6 +683,7 @@ def text_response(handler: http.server.BaseHTTPRequestHandler, body: str, conten
 def html_response(handler: http.server.BaseHTTPRequestHandler, body: str, status: int = 200) -> None:
     data = body.encode("utf-8")
     handler.send_response(status)
+    send_security_headers(handler)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
@@ -502,15 +691,73 @@ def html_response(handler: http.server.BaseHTTPRequestHandler, body: str, status
 
 
 def read_form(handler: http.server.BaseHTTPRequestHandler) -> dict[str, str]:
-    length = int(handler.headers.get("Content-Length", "0"))
-    raw = handler.rfile.read(length).decode("utf-8") if length else ""
-    parsed = urllib.parse.parse_qs(raw)
+    if handler.headers.get("Transfer-Encoding"):
+        raise FormBodyError("transfer encoding is not supported")
+    raw_length = handler.headers.get("Content-Length", "0")
+    try:
+        length = int(raw_length)
+    except (TypeError, ValueError) as error:
+        raise FormBodyError("invalid content length") from error
+    if length < 0:
+        raise FormBodyError("invalid content length")
+    if length > FORM_BODY_LIMIT:
+        raise FormBodyError(f"form body exceeds {FORM_BODY_LIMIT} bytes", status=413)
+    try:
+        body = handler.rfile.read(length) if length else b""
+        if len(body) != length:
+            raise FormBodyError("form body is shorter than content length")
+        raw = body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise FormBodyError("form body must be valid UTF-8") from error
+    try:
+        parsed = urllib.parse.parse_qs(raw, max_num_fields=FORM_FIELD_LIMIT)
+    except ValueError as error:
+        raise FormBodyError(f"form body exceeds {FORM_FIELD_LIMIT} fields") from error
     return {key: values[0] for key, values in parsed.items() if values}
 
 
-def redirect_response(handler: http.server.BaseHTTPRequestHandler, location: str = "/") -> None:
+def parse_query(query_string: str) -> dict[str, list[str]]:
+    try:
+        return urllib.parse.parse_qs(
+            query_string,
+            keep_blank_values=True,
+            max_num_fields=QUERY_FIELD_LIMIT,
+        )
+    except ValueError as error:
+        raise QueryParameterError(f"query exceeds {QUERY_FIELD_LIMIT} fields") from error
+
+
+def bounded_query_int(
+    query: dict[str, list[str]],
+    name: str,
+    default: int,
+    maximum: int,
+) -> int:
+    values = query.get(name, [])
+    if not values or values == [""]:
+        return default
+    if len(values) != 1:
+        raise QueryParameterError(f"{name} must be specified once")
+    try:
+        value = int(values[0])
+    except ValueError as error:
+        raise QueryParameterError(f"{name} must be an integer") from error
+    if value < 1 or value > maximum:
+        raise QueryParameterError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def redirect_response(
+    handler: http.server.BaseHTTPRequestHandler,
+    location: str = "/",
+    *,
+    set_cookie: str = "",
+) -> None:
     handler.send_response(303)
+    send_security_headers(handler)
     handler.send_header("Location", location)
+    if set_cookie:
+        handler.send_header("Set-Cookie", set_cookie)
     handler.end_headers()
 
 
@@ -534,9 +781,28 @@ def render_watch_preferences(watch: Watch, include_alerts: bool = False) -> str:
         f"venues {watch.preferred_venues or 'none'}",
     ]
     if include_alerts:
-        parts.append(f"alerts {watch.alert_preferences or 'none'}")
+        parts.append(f"alerts {human_alert_preferences(watch.alert_preferences)}")
     parts.append(f"last checked {watch.last_checked_at or 'never'}")
     return " | ".join(parts)
+
+
+def render_watch_edit_button(watch: Watch) -> str:
+    attributes = {
+        "kind": watch.kind,
+        "keyword": watch.keyword,
+        "tags": watch.tags,
+        "regions": watch.preferred_regions,
+        "venues": watch.preferred_venues,
+        "alerts": watch.alert_preferences,
+    }
+    encoded = " ".join(
+        f'data-{name}="{html.escape(str(value or ""), quote=True)}"'
+        for name, value in attributes.items()
+    )
+    return (
+        f'<button class="action-link" type="button" data-edit-watch {encoded} '
+        'title="Edit watch preferences" aria-label="Edit watch preferences">Edit</button>'
+    )
 
 
 def tracked_event_display_key(watch: Watch, event: dict[str, object] | None) -> tuple[int, int, int, int, str]:
@@ -555,10 +821,13 @@ def render_web_page(
     event_search_results: Sequence[SearchResult] = (),
     event_search_error: str = "",
     selected_tab: str = "",
+    user_id: int = 0,
+    account_email: str = "",
+    account_error: str = "",
 ) -> str:
-    watches = list_watches(db_path, include_muted=True)
-    events = recent_events(db_path)
-    upcoming_rows = upcoming_priority_rows(db_path, limit=6)
+    watches = list_watches(db_path, include_muted=True, user_id=user_id)
+    events = recent_events(db_path, user_id=user_id, source_user_id=user_id)
+    upcoming_rows = upcoming_priority_rows(db_path, limit=6, user_id=user_id)
     latest_event_by_watch_id = {
         int(event["watch_id"]): event
         for event in reversed(events)
@@ -575,8 +844,8 @@ def render_web_page(
     artist_items = "\n".join(
         f"""
         <li class="watch-row">
-          <span class="watch-copy"><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | checked {html.escape(watch.last_checked_at or 'never')} | {event_count_by_artist_id.get(watch.id, 0)} results</small></span>
-          <span class="row-actions"><a class="action-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">Open</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
+          <span class="watch-copy"><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | {html.escape(render_watch_preferences(watch))} | {event_count_by_artist_id.get(watch.id, 0)} results</small></span>
+          <span class="row-actions"><a class="action-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">Open</a>{render_watch_edit_button(watch)}<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
         for watch in active_artist_watches
@@ -586,8 +855,8 @@ def render_web_page(
         if not event:
             return f"""
         <li class="watch-row">
-          <span class="watch-copy"><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} | not searched yet</small></span>
-          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form>
+          <span class="watch-copy"><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} | not searched yet | {html.escape(render_watch_preferences(watch, include_alerts=True))}</small></span>
+          <span class="row-actions">{render_watch_edit_button(watch)}<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
         detail_url = f"/events/{html.escape(str(event.get('id')))}"
@@ -600,7 +869,7 @@ def render_web_page(
         <li class="watch-row event-row">
           <span class="watch-copy">
             <a class="watch-title event-title" href="{detail_url}" title="Open event details">{html.escape(str(event.get('title') or watch.keyword))}</a>
-            <small>{html.escape(watch.keyword)}</small>
+            <small>{html.escape(watch.keyword)} | {html.escape(render_watch_preferences(watch, include_alerts=True))}</small>
             <span class="watch-meta">
               <span class="mini-stat" title="Official page">{html.escape(official_label)}</span>
               <span class="mini-stat" title="Ticket links">Tickets {ticket_count}</span>
@@ -608,7 +877,7 @@ def render_web_page(
               <span class="mini-stat wide" title="First date clue">Date {html.escape(date_label)}</span>
             </span>
           </span>
-          <span class="row-actions"><a class="action-link" href="{detail_url}" title="Open event details" aria-label="Open event details">Open</a><form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
+          <span class="row-actions"><a class="action-link" href="{detail_url}" title="Open event details" aria-label="Open event details">Open</a>{render_watch_edit_button(watch)}<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
         </li>
         """
 
@@ -646,7 +915,7 @@ def render_web_page(
             <a class="watch-title" href="/events/{html.escape(str(row.get('event_id')))}">{html.escape(str(row.get('event_title') or 'Untitled event'))}</a>
             <small>{html.escape(str(row.get('keyword') or 'unknown'))}</small>
             <span class="watch-meta">
-              <span class="mini-stat" title="Ticket status">{html.escape(str(row.get('status') or 'unknown'))}</span>
+              <span class="mini-stat" title="Ticket status">{html.escape(str(row.get('status_label') or row.get('status') or 'unknown'))}</span>
               <span class="mini-stat" title="Relevant date">Date {html.escape(str(row.get('relevant_date') or 'unknown'))}</span>
               <span class="mini-stat" title="Platform">{html.escape(str(row.get('platform') or 'unknown'))}</span>
               <span class="mini-stat wide" title="Round">{html.escape(str(row.get('round_name') or 'Ticket round'))}</span>
@@ -659,6 +928,26 @@ def render_web_page(
     ) or '<li class="empty-row">No ticket rounds need attention.</li>'
     upcoming_label = "round" if len(upcoming_rows) == 1 else "rounds"
     active_dashboard_tab = selected_tab if selected_tab in {"attention", "artists", "events"} else "events" if event_search_keyword or event_search_error else "attention"
+    if account_email:
+        account_panel = f"""
+        <div class="account-panel signed-in">
+          <span>Signed in as <strong>{html.escape(account_email)}</strong></span>
+          <form method="post" action="/account/logout"><button class="secondary-button" type="submit">Log out</button></form>
+        </div>
+        """
+    else:
+        account_panel = f"""
+        <details class="account-panel"{' open' if account_error else ''}>
+          <summary>Sign in or create an account</summary>
+          {f'<p class="message">{html.escape(account_error)}</p>' if account_error else ''}
+          <form method="post" action="/account/login">
+            <input name="email" type="email" autocomplete="username" placeholder="Email" maxlength="{MAX_EMAIL_LENGTH}" required>
+            <input name="password" type="password" autocomplete="current-password" placeholder="Password" minlength="8" maxlength="{MAX_PASSWORD_LENGTH}" required>
+            <button class="secondary-button" type="submit">Log in</button>
+            <button class="secondary-button" type="submit" formaction="/account/register">Register</button>
+          </form>
+        </details>
+        """
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -738,6 +1027,11 @@ def render_web_page(
       font-weight: 850;
       white-space: nowrap;
     }}
+    .account-panel {{ margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: var(--shadow); }}
+    .account-panel summary {{ cursor: pointer; color: var(--ink); font-weight: 900; }}
+    .account-panel form {{ margin-top: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; }}
+    .account-panel.signed-in {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
+    .account-panel.signed-in form {{ display: block; margin: 0; }}
     .dashboard-tabs {{
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -905,11 +1199,16 @@ def render_web_page(
     li .icon-button {{ width: 34px; min-width: 34px; min-height: 34px; font-size: 18px; }}
     .run-form {{ display: flex; margin-top: 10px; }}
     .run-form button {{ width: auto; min-width: 92px; padding: 0 12px; font-size: 14px; }}
+    .watch-editor {{ margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }}
+    .watch-editor summary {{ cursor: pointer; font-weight: 900; }}
+    .watch-editor form {{ margin: 10px 0 7px; }}
     @media (max-width: 820px) {{
       header {{ padding: 12px 16px; }}
       main {{ padding: 18px 16px 42px; }}
       .dashboard-intro {{ align-items: flex-start; flex-direction: column; }}
       .summary-strip {{ justify-content: flex-start; }}
+      .account-panel form {{ grid-template-columns: 1fr; }}
+      .account-panel.signed-in {{ align-items: flex-start; flex-direction: column; }}
       .dashboard-tabs {{ grid-template-columns: 1fr; }}
       form {{ grid-template-columns: 1fr auto; }}
       input {{ grid-column: 1 / -1; }}
@@ -927,6 +1226,7 @@ def render_web_page(
     </div>
   </header>
   <main>
+    {account_panel}
     <div class="dashboard-intro">
       <div>
         <h1>Watch dashboard</h1>
@@ -936,6 +1236,7 @@ def render_web_page(
         <span class="summary-pill">{len(active_artist_watches)} active artists</span>
         <span class="summary-pill">{len(active_event_watches)} active events</span>
         <span class="summary-pill">{len(events)} saved events</span>
+        <span class="summary-pill" title="Server release">v{html.escape(APP_VERSION)} ({APP_BUILD}) · schema {DB_SCHEMA_VERSION}</span>
       </div>
     </div>
     <div class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
@@ -949,18 +1250,39 @@ def render_web_page(
     </section>
     <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'artists' else ''}" id="panel-artists" role="tabpanel" aria-labelledby="tab-artists" data-tab-panel="artists">
       <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>
-      <form method="post" action="/watch/add">
-        <input type="hidden" name="kind" value="artist">
-        <input name="keyword" placeholder="Artist" required>
-        <button class="secondary-button" title="Add artist" aria-label="Add artist">Add</button>
-      </form>
+      <details class="watch-editor" id="artist-watch-editor">
+        <summary>Add or update an artist watch</summary>
+        <form method="post" action="/watch/add">
+          <input type="hidden" name="kind" value="artist">
+          <input id="artist-watch-keyword" name="keyword" placeholder="Artist or production company" aria-label="Artist or production company" maxlength="{MAX_KEYWORD_LENGTH}" required>
+          <input id="artist-watch-tags" name="tags" placeholder="Tags, comma separated" aria-label="Tags">
+          <input id="artist-watch-regions" name="regions" placeholder="Preferred regions" aria-label="Preferred regions">
+          <input id="artist-watch-venues" name="venues" placeholder="Preferred venues" aria-label="Preferred venues">
+          <input id="artist-watch-alerts" name="alerts" placeholder="Alert types, comma separated" aria-label="Alert types" value="{html.escape(DEFAULT_ALERT_PREFERENCES)}">
+          <button class="secondary-button" title="Save artist watch" aria-label="Save artist watch">Save</button>
+        </form>
+        <small>Enter an existing artist keyword to update only your account's filters and alerts.</small>
+      </details>
       <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="secondary-button" title="Run artists" aria-label="Run artists">Run artists</button></form>
       <ul>{artist_items}</ul>
     </section>
     <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'events' else ''}" id="panel-events" role="tabpanel" aria-labelledby="tab-events" data-tab-panel="events">
       <div class="section-head"><h2>Tracked Events</h2><span class="status">{len(active_event_watches)} active</span></div>
+      <details class="watch-editor" id="event-watch-editor">
+        <summary>Add or update a keyword watch</summary>
+        <form method="post" action="/watch/add">
+          <input type="hidden" name="kind" value="event">
+          <input id="event-watch-keyword" name="keyword" placeholder="Event keyword" aria-label="Event keyword" maxlength="{MAX_KEYWORD_LENGTH}" required>
+          <input id="event-watch-tags" name="tags" placeholder="Tags, comma separated" aria-label="Tags">
+          <input id="event-watch-regions" name="regions" placeholder="Preferred regions" aria-label="Preferred regions">
+          <input id="event-watch-venues" name="venues" placeholder="Preferred venues" aria-label="Preferred venues">
+          <input id="event-watch-alerts" name="alerts" placeholder="Alert types, comma separated" aria-label="Alert types" value="{html.escape(DEFAULT_ALERT_PREFERENCES)}">
+          <button class="secondary-button" title="Save watch" aria-label="Save watch">Save</button>
+        </form>
+        <small>Enter an existing keyword to update only your account's filters and alerts.</small>
+      </details>
       <form method="post" action="/event/search">
-        <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" required>
+        <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" maxlength="{MAX_KEYWORD_LENGTH}" required>
         <button class="secondary-button" title="Search events" aria-label="Search events">Search</button>
       </form>
       {event_search_panel}
@@ -981,6 +1303,19 @@ def render_web_page(
     }}
     tabButtons.forEach((button) => {{
       button.addEventListener('click', () => showDashboardTab(button.dataset.tabTarget));
+    }});
+    document.querySelectorAll('[data-edit-watch]').forEach((button) => {{
+      button.addEventListener('click', () => {{
+        const kind = button.dataset.kind === 'artist' ? 'artist' : 'event';
+        showDashboardTab(kind === 'artist' ? 'artists' : 'events');
+        const editor = document.getElementById(`${{kind}}-watch-editor`);
+        if (editor) editor.open = true;
+        ['keyword', 'tags', 'regions', 'venues', 'alerts'].forEach((field) => {{
+          const input = document.getElementById(`${{kind}}-watch-${{field}}`);
+          if (input) input.value = button.dataset[field] || '';
+        }});
+        document.getElementById(`${{kind}}-watch-keyword`)?.focus();
+      }});
     }});
   </script>
 </body>
@@ -1004,7 +1339,7 @@ def render_alert_item(alert: dict[str, object]) -> str:
     elif alert.get("watch_id"):
         watch_context = f" <small>watch #{html.escape(str(alert.get('watch_id')))}</small>"
     return (
-        f"<li><strong>{html.escape(str(alert.get('type', alert.get('alert_type', 'alert'))))}</strong> "
+        f"<li><strong>{html.escape(str(alert.get('type_label') or alert.get('type') or alert.get('alert_type') or 'Alert'))}</strong> "
         f"{event_link} {html.escape(str(alert.get('round', '')))} "
         f"{watch_context} <small>{html.escape(str(alert.get('created_at', '')))}</small></li>"
     )
@@ -1028,9 +1363,10 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
         f"""
         <div class="round">
           <strong>{html.escape(str(ticket.get('name') or 'Ticket round'))}</strong>
-          <div><span class="status">{html.escape(str(ticket.get('status') or 'unknown'))}</span> {html.escape(str(ticket.get('platform') or 'unknown'))} · confidence {html.escape(str(ticket.get('confidence') or 'unknown'))}</div>
+          <div><span class="status">{html.escape(str(ticket.get('status_label') or ticket.get('status') or 'unknown'))}</span> {html.escape(str(ticket.get('platform') or 'unknown'))} · confidence {html.escape(str(ticket.get('confidence') or 'unknown'))}</div>
           <small>Apply: {html.escape(str(ticket.get('application_start_at') or 'unknown'))} to {html.escape(str(ticket.get('application_end_at') or 'unknown'))}</small><br>
           <small>Results: {html.escape(str(ticket.get('results_date') or 'unknown'))}</small><br>
+          <small>Resale: {html.escape(str(ticket.get('trade_start_at') or 'unknown'))} to {html.escape(str(ticket.get('trade_end_at') or 'unknown'))}</small><br>
           <small>Type: {html.escape(str(ticket.get('round_type') or 'unknown'))} · membership: {html.escape(str(ticket.get('membership_required') or 'unknown'))}</small><br>
           <small>Evidence: {html.escape(str(ticket.get('evidence') or 'none'))}</small><br>
           {f'<a href="{html.escape(str(ticket.get("url")))}">Source</a>' if is_web_url(ticket.get("url")) else '<span>Source unavailable</span>'}
@@ -1048,7 +1384,7 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
     return f"""
     <article class="event">
       <h3><a href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a></h3>
-      <p><span class="status">{html.escape(str(event.get('status') or 'watching'))}</span> {official_link} · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
+      <p><span class="status">{html.escape(str(event.get('status_label') or event.get('status') or 'watching'))}</span> {official_link} · <small>{html.escape(str(event.get('updated_at') or ''))}</small></p>
       {metadata}
       {reason_section}
       {ticket_section}
@@ -1061,38 +1397,87 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             return
 
-        def bearer_token(self) -> str:
+        def authorization_token(self) -> str:
             header = self.headers.get("Authorization", "")
             prefix = "Bearer "
             return header[len(prefix):].strip() if header.startswith(prefix) else ""
 
-        def authenticated_user(self):
-            return user_for_token(db_path, self.bearer_token())
+        def has_invalid_authorization(self) -> bool:
+            """Distinguish an absent local-workspace credential from a bad one."""
+            header = self.headers.get("Authorization", "").strip()
+            if not header:
+                return False
+            token = self.authorization_token()
+            return not token or user_for_token(db_path, token) is None
 
-        def notification_user_id(self) -> int:
+        def reject_invalid_authorization(self, path: str) -> bool:
+            # Logout validates its token inside the endpoint so a retry after a
+            # lost successful response can remain idempotent after revocation.
+            public_api_paths = {
+                "/api/health",
+                "/api/auth/register",
+                "/api/auth/login",
+                "/api/auth/logout",
+            }
+            protected_by_presence = (path.startswith("/api/") and path not in public_api_paths) or path == "/calendar.ics"
+            if protected_by_presence and self.has_invalid_authorization():
+                json_response(self, {"error": "unauthorized"}, status=401)
+                return True
+            return False
+
+        def browser_token(self) -> str:
+            try:
+                cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+                return cookie[WEB_SESSION_COOKIE].value if WEB_SESSION_COOKIE in cookie else ""
+            except http.cookies.CookieError:
+                return ""
+
+        def authenticated_user(self, *, allow_browser_cookie: bool = True):
+            token = self.authorization_token()
+            if not token and allow_browser_cookie:
+                token = self.browser_token()
+            return user_for_token(db_path, token)
+
+        def browser_user_id(self) -> int:
             user = self.authenticated_user()
             return user.id if user else 0
 
         def api_user_id(self) -> int:
-            user = self.authenticated_user()
+            user = self.authenticated_user(allow_browser_cookie=False)
             return user.id if user else 0
 
         def do_GET(self) -> None:
             parsed_url = urllib.parse.urlparse(self.path)
             path = parsed_url.path
-            query = urllib.parse.parse_qs(parsed_url.query)
+            if self.reject_invalid_authorization(path):
+                return
+            try:
+                query = parse_query(parsed_url.query)
+            except QueryParameterError as error:
+                json_response(self, {"error": str(error)}, status=400)
+                return
             if path == "/":
-                html_response(self, render_web_page(db_path, selected_tab=query.get("tab", [""])[0]))
+                user = self.authenticated_user()
+                user_id = user.id if user else 0
+                html_response(
+                    self,
+                    render_web_page(
+                        db_path,
+                        selected_tab=query.get("tab", [""])[0],
+                        user_id=user_id,
+                        account_email=user.email if user else "",
+                    ),
+                )
             elif re.fullmatch(r"/artists/\d+", path):
-                html_response(self, render_artist_detail_page(db_path, int(path.rsplit("/", 1)[1])))
+                html_response(self, render_artist_detail_page(db_path, int(path.rsplit("/", 1)[1]), self.browser_user_id()))
             elif re.fullmatch(r"/events/\d+", path):
-                html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1])))
+                html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1]), self.browser_user_id()))
             elif path == "/notifications":
-                html_response(self, render_notifications_page(db_path))
+                html_response(self, render_notifications_page(db_path, self.browser_user_id()))
             elif path == "/api/health":
                 json_response(self, api_health(db_path))
             elif path == "/api/auth/me":
-                user = self.authenticated_user()
+                user = self.authenticated_user(allow_browser_cookie=False)
                 if user is None:
                     json_response(self, {"error": "unauthorized"}, status=401)
                 else:
@@ -1135,17 +1520,18 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/api/alerts":
                 json_response(self, recent_alerts(db_path, user_id=self.api_user_id()))
             elif path == "/api/notifications":
-                limit = int(query.get("limit", ["100"])[0] or "100")
-                json_response(self, notification_feed(db_path, limit=limit, user_id=self.notification_user_id()))
-            elif path == "/api/event/search":
-                keyword = clean_text(query.get("keyword", [""])[0])
-                if not keyword:
-                    json_response(self, {"error": "keyword is required"}, status=400)
-                    return
                 try:
-                    limit = int(query.get("limit", ["6"])[0] or "6")
+                    limit = bounded_query_int(query, "limit", 100, NOTIFICATION_LIMIT_MAX)
+                except QueryParameterError as error:
+                    json_response(self, {"error": str(error)}, status=400)
+                    return
+                json_response(self, notification_feed(db_path, limit=limit, user_id=self.api_user_id()))
+            elif path == "/api/event/search":
+                try:
+                    keyword = validated_keyword(query.get("keyword", [""])[0])
+                    limit = bounded_query_int(query, "limit", 6, EVENT_SEARCH_LIMIT_MAX)
                     results = search_web(keyword, limit=limit)
-                except (OSError, ValueError) as error:
+                except (OSError, ValueError, QueryParameterError) as error:
                     json_response(self, {"error": str(error)}, status=400)
                     return
                 json_response(self, [dataclasses.asdict(result) for result in results])
@@ -1154,17 +1540,17 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     self,
                     [
                         dataclasses.asdict(subscription)
-                        for subscription in list_subscriptions(db_path, user_id=self.notification_user_id())
+                        for subscription in list_subscriptions(db_path, user_id=self.api_user_id())
                     ],
                 )
             elif path == "/api/devices":
                 json_response(
                     self,
-                    [dataclasses.asdict(device) for device in list_devices(db_path, user_id=self.notification_user_id())],
+                    [dataclasses.asdict(device) for device in list_devices(db_path, user_id=self.api_user_id())],
                 )
             elif path == "/api/sources":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                user = self.authenticated_user()
+                user = self.authenticated_user(allow_browser_cookie=False)
                 source_user_id = user.id if user else 0
                 json_response(
                     self,
@@ -1177,13 +1563,17 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 )
             elif path == "/calendar.ics":
                 include_muted = query.get("include_muted", ["0"])[0].lower() in {"1", "true", "yes"}
-                token = clean_text(query.get("token", [""])[0])
+                token_values = query.get("token", [])
+                token = clean_text(token_values[0]) if len(token_values) == 1 else ""
                 # The query-string token is a calendar-only token (its own table,
                 # unrelated to api_tokens) so a leaked feed URL can't be replayed
                 # as a full-access bearer token; the Authorization header path
                 # still checks the regular account token.
-                if token:
-                    user_id = user_id_for_calendar_token(db_path, token) or 0
+                if token_values:
+                    user_id = user_id_for_calendar_token(db_path, token) if token else None
+                    if user_id is None:
+                        json_response(self, {"error": "unauthorized"}, status=401)
+                        return
                 else:
                     user = self.authenticated_user()
                     user_id = user.id if user else 0
@@ -1197,8 +1587,64 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             path = urllib.parse.urlparse(self.path).path
-            form = read_form(self)
-            if path == "/api/auth/register":
+            if self.reject_invalid_authorization(path):
+                return
+            try:
+                form = read_form(self)
+            except FormBodyError as error:
+                if path.startswith("/api/"):
+                    json_response(self, {"error": str(error)}, status=error.status)
+                else:
+                    html_response(
+                        self,
+                        f"<!doctype html><title>Bad request</title><h1>{html.escape(str(error))}</h1>",
+                        status=error.status,
+                    )
+                return
+            if not path.startswith("/api/") and not web_request_has_valid_origin(self):
+                html_response(self, "<!doctype html><title>Forbidden</title><h1>Cross-origin form submission rejected</h1>", status=403)
+                return
+            if path in {"/account/register", "/account/login"}:
+                if not web_request_allows_credentials(self):
+                    html_response(
+                        self,
+                        render_web_page(
+                            db_path,
+                            account_error="Use HTTPS, localhost, or a literal private-network IP to sign in.",
+                        ),
+                        status=400,
+                    )
+                    return
+                email = form.get("email", "")
+                password = form.get("password", "")
+                if path == "/account/register":
+                    try:
+                        user = create_user(db_path, email, password)
+                    except ValueError as error:
+                        html_response(self, render_web_page(db_path, account_error=str(error)), status=400)
+                        return
+                else:
+                    user = verify_user(db_path, email, password)
+                    if user is None:
+                        html_response(self, render_web_page(db_path, account_error="Invalid credentials."), status=401)
+                        return
+                token = issue_token(db_path, user.id)
+                redirect_response(
+                    self,
+                    set_cookie=web_session_cookie(token, secure=web_request_uses_https(self)),
+                )
+            elif path == "/account/logout":
+                token = self.browser_token()
+                if token:
+                    revoke_token(db_path, token)
+                redirect_response(
+                    self,
+                    set_cookie=web_session_cookie("", secure=web_request_uses_https(self), clear=True),
+                )
+            elif path == "/api/auth/register":
+                if not web_request_allows_credentials(self):
+                    json_response(self, {"error": "HTTPS or a private-network endpoint is required"}, status=400)
+                    return
                 try:
                     user = create_user(db_path, form.get("email", ""), form.get("password", ""))
                 except ValueError as error:
@@ -1207,6 +1653,9 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 token = issue_token(db_path, user.id)
                 json_response(self, {"token": token, "user": dataclasses.asdict(user)})
             elif path == "/api/auth/login":
+                if not web_request_allows_credentials(self):
+                    json_response(self, {"error": "HTTPS or a private-network endpoint is required"}, status=400)
+                    return
                 user = verify_user(db_path, form.get("email", ""), form.get("password", ""))
                 if user is None:
                     json_response(self, {"error": "invalid credentials"}, status=401)
@@ -1215,51 +1664,60 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 json_response(self, {"token": token, "user": dataclasses.asdict(user)})
             elif path == "/api/auth/logout":
                 device_token = clean_text(form.get("device_token", ""))
-                if not revoke_token(db_path, self.bearer_token(), device_token):
+                authorization_token = self.authorization_token()
+                if not authorization_token or not revoke_token(db_path, authorization_token, device_token):
                     json_response(self, {"error": "unauthorized"}, status=401)
                     return
                 json_response(self, {"revoked": True, "device_detached": True})
             elif path == "/watch/add":
-                keyword = clean_text(form.get("keyword", ""))
-                if not keyword:
-                    json_response(self, {"error": "keyword is required"}, status=400)
+                try:
+                    add_watch_from_form(db_path, form, user_id=self.browser_user_id())
+                except ValueError as error:
+                    html_response(
+                        self,
+                        f"<!doctype html><title>Invalid watch</title><h1>{html.escape(str(error))}</h1>",
+                        status=400,
+                    )
                     return
-                add_watch_from_form(db_path, form, user_id=0)
                 redirect_response(self, f"/?tab={'artists' if form.get('kind') == WATCH_KIND_ARTIST else 'events'}")
             elif path == "/watch/remove":
-                remove_watch(db_path, form.get("identifier", ""), user_id=0)
+                remove_watch(db_path, form.get("identifier", ""), user_id=self.browser_user_id())
                 redirect_response(self)
             elif path == "/watch/unmute":
-                set_watch_muted(db_path, form.get("identifier", ""), False, user_id=0)
+                set_watch_muted(db_path, form.get("identifier", ""), False, user_id=self.browser_user_id())
                 redirect_response(self)
             elif path == "/watch/run":
                 kind = form.get("kind") or None
-                run_watches(db_path, kind=kind)
+                run_watches(db_path, kind=kind, user_id=self.browser_user_id())
                 redirect_response(self, f"/?tab={'artists' if kind == WATCH_KIND_ARTIST else 'events' if kind == WATCH_KIND_EVENT else 'attention'}")
             elif path == "/event/search":
-                keyword = clean_text(form.get("keyword", ""))
-                if not keyword:
-                    html_response(self, render_web_page(db_path, event_search_error="Keyword is required."))
-                    return
                 try:
+                    keyword = validated_keyword(form.get("keyword", ""))
                     results = search_web(keyword, limit=6)
                 except (OSError, ValueError) as error:
-                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error=str(error)))
+                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error=str(error), user_id=self.browser_user_id()))
                     return
-                html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_results=results))
+                html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_results=results, user_id=self.browser_user_id()))
             elif path == "/event/add":
                 keyword = clean_text(form.get("keyword", ""))
                 title = clean_text(form.get("title", ""))
                 url = clean_text(form.get("url", ""))
                 snippet = clean_text(form.get("snippet", ""))
-                if not is_web_url(url):
-                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error="Pick a valid event page."))
+                if not is_public_fetch_url(url):
+                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error="Pick a public credential-free HTTP(S) event page.", user_id=self.browser_user_id()))
                     return
                 try:
-                    blocks = build_exact_event_blocks(keyword or title, title, url, snippet)
-                    save_blocks(db_path, blocks)
+                    event_keyword = keyword or title
+                    watch = add_watch(
+                        db_path,
+                        event_keyword,
+                        kind=WATCH_KIND_EVENT,
+                        user_id=self.browser_user_id(),
+                    )
+                    blocks = build_exact_event_blocks(event_keyword, title, url, snippet)
+                    save_blocks(db_path, blocks, watch_id=watch.id)
                 except (OSError, ValueError) as error:
-                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error=str(error)))
+                    html_response(self, render_web_page(db_path, event_search_keyword=keyword, event_search_error=str(error), user_id=self.browser_user_id()))
                     return
                 redirect_response(self)
             elif path == "/source/add":
@@ -1270,17 +1728,17 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         form.get("url", ""),
                         form.get("label", ""),
                         bool(form.get("private_note")),
-                        user_id=0,
+                        user_id=self.browser_user_id(),
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
                     return
                 redirect_response(self)
             elif path == "/source/remove":
-                remove_watch_source(db_path, form.get("identifier", ""), user_id=0)
+                remove_watch_source(db_path, form.get("identifier", ""), user_id=self.browser_user_id())
                 redirect_response(self)
             elif path == "/source/unmute":
-                set_watch_source_muted(db_path, form.get("identifier", ""), False, user_id=0)
+                set_watch_source_muted(db_path, form.get("identifier", ""), False, user_id=self.browser_user_id())
                 redirect_response(self)
             elif path == "/api/watchlist":
                 keyword = clean_text(form.get("keyword", ""))
@@ -1319,8 +1777,8 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 title = clean_text(form.get("title", ""))
                 url = clean_text(form.get("url", ""))
                 snippet = clean_text(form.get("snippet", ""))
-                if not is_web_url(url):
-                    json_response(self, {"error": "Pick a valid event page."}, status=400)
+                if not is_public_fetch_url(url):
+                    json_response(self, {"error": "Pick a public credential-free HTTP(S) event page."}, status=400)
                     return
                 try:
                     event_keyword = keyword or title
@@ -1347,18 +1805,18 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         form.get("scope", NOTIFY_SCOPE_EVENT_ALL),
                         location=form.get("location", ""),
                         round_key=form.get("round_key", ""),
-                        channels=form.get("channels", NOTIFY_CHANNEL_PRESET),
+                        channels=notification_channels_from_form(form, NOTIFY_CHANNEL_PRESET),
                         lead_days=form.get("lead_days", "7,1,0"),
-                        user_id=0,
+                        user_id=self.browser_user_id(),
                     )
                 except ValueError:
                     pass
-                redirect_response(self, form.get("redirect") or "/notifications")
+                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/notifications"))
             elif path == "/subscribe/remove":
                 identifier = form.get("identifier", "")
                 if str(identifier).isdigit():
-                    remove_subscription(db_path, int(identifier), user_id=0)
-                redirect_response(self, form.get("redirect") or "/notifications")
+                    remove_subscription(db_path, int(identifier), user_id=self.browser_user_id())
+                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/notifications"))
             elif path == "/api/subscriptions":
                 try:
                     subscription = add_subscription(
@@ -1369,7 +1827,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         round_key=form.get("round_key", ""),
                         channels=form.get("channels", DEFAULT_NOTIFY_CHANNELS),
                         lead_days=form.get("lead_days", "7,1,0"),
-                        user_id=self.notification_user_id(),
+                        user_id=self.api_user_id(),
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
@@ -1378,13 +1836,13 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
             elif path == "/api/subscriptions/remove":
                 identifier = form.get("identifier", "")
                 removed = (
-                    remove_subscription(db_path, int(identifier), user_id=self.notification_user_id())
+                    remove_subscription(db_path, int(identifier), user_id=self.api_user_id())
                     if str(identifier).isdigit()
                     else False
                 )
                 json_response(self, {"removed": removed})
             elif path == "/api/calendar/token":
-                user_id = self.notification_user_id()
+                user_id = self.api_user_id()
                 if user_id <= 0:
                     json_response(self, {"error": "unauthorized"}, status=401)
                     return
@@ -1397,14 +1855,14 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         form.get("token", ""),
                         platform=form.get("platform", "android"),
                         label=form.get("label", ""),
-                        user_id=self.notification_user_id(),
+                        user_id=self.api_user_id(),
                     )
                 except ValueError as error:
                     json_response(self, {"error": str(error)}, status=400)
                     return
                 json_response(self, dataclasses.asdict(device))
             elif path == "/api/notifications/run":
-                json_response(self, run_notifications(db_path, user_id=self.notification_user_id()))
+                json_response(self, run_notifications(db_path, user_id=self.api_user_id()))
             elif path == "/api/sources":
                 try:
                     source = add_watch_source(
@@ -1457,8 +1915,16 @@ def create_web_server(db_path: str, port: int, host: str = "127.0.0.1") -> http.
 
 
 def run_web(db_path: str, port: int, host: str = "127.0.0.1") -> None:
+    require_postgres = os.environ.get("CHUSENNOTE_REQUIRE_POSTGRES", "").strip().lower() in {"1", "true", "yes"}
+    if require_postgres and not is_postgres_url(resolve_target(db_path)):
+        raise ValueError("CHUSENNOTE_REQUIRE_POSTGRES requires a PostgreSQL CHUSENNOTE_DATABASE_URL")
     server = create_web_server(db_path, port, host)
     display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     bind_note = f" (bound to {host})" if display_host != host else ""
     print(f"Serving chusennote at http://{display_host}:{server.server_port}{bind_note}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("Chusennote server stopped.")
+    finally:
+        server.server_close()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import os
 import re
 import sys
@@ -44,7 +45,8 @@ def search_api(keyword: str, limit: int = 8) -> list[SearchResult]:
     """Query a managed search API when configured via env vars.
 
     Returns ``[]`` when no provider/key is set or the call fails, so callers can
-    fall back to HTML scraping. Supported providers: brave, bing, serpapi.
+    fall back to HTML scraping. Supported providers: tavily, brave, bing,
+    serpapi.
     """
     provider = os.environ.get(SEARCH_PROVIDER_ENV, "").strip().lower()
     api_key = os.environ.get(SEARCH_API_KEY_ENV, "").strip()
@@ -52,6 +54,22 @@ def search_api(keyword: str, limit: int = 8) -> list[SearchResult]:
         return []
     query = search_query(keyword)
     try:
+        if provider == "tavily":
+            data = request_json(
+                "https://api.tavily.com/search",
+                {"Authorization": f"Bearer {api_key}"},
+                json_body={
+                    "query": query,
+                    "search_depth": "basic",
+                    "max_results": limit,
+                    "include_answer": False,
+                    "include_raw_content": False,
+                    "include_images": False,
+                    "country": "japan",
+                },
+            )
+            rows = data.get("results", []) if isinstance(data, dict) else []
+            return parse_api_results(rows, "title", "url", "content", limit)
         if provider == "brave":
             url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode(
                 {"q": query, "count": limit, "search_lang": "jp", "country": "jp"}
@@ -243,5 +261,8 @@ def choose_official_results(results: Sequence[SearchResult], keyword: str, limit
 
 
 def page_matches_keyword(keyword: str, page: Page) -> bool:
-    title_and_intro = f"{page.title} {page.text[:1200]}"
+    structured_intro = ""
+    if page.structured_data:
+        structured_intro = json.dumps(page.structured_data, ensure_ascii=False, separators=(",", ":"))[:4000]
+    title_and_intro = f"{page.title} {page.text[:1200]} {structured_intro}"
     return keyword_matches_text(keyword, title_and_intro)

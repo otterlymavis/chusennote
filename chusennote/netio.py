@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
 from .models import (
@@ -19,11 +21,12 @@ from .models import (
     BROWSER_USER_AGENT,
     EMPTY_STATE_MARKERS,
     Link,
+    MAX_FETCH_RESPONSE_BYTES,
     Page,
     TIMEOUT_SECONDS,
     USER_AGENT,
 )
-from .util import absolute_url, clean_text
+from .util import absolute_url, clean_text, is_public_fetch_url
 
 
 class ExtractedHTML:
@@ -32,10 +35,13 @@ class ExtractedHTML:
         self.og_title = ""
         self.text_parts: list[str] = []
         self.links: list[Link] = []
+        self.discovery_links: list[Link] = []
+        self.structured_data: list[object] = []
         self._tag_stack: list[str] = []
         self._current_href: str | None = None
         self._current_label: list[str] = []
         self._title_parts: list[str] = []
+        self._json_ld_parts: list[str] | None = None
 
 
 class EventHTMLParser(HTMLParser):
@@ -47,6 +53,21 @@ class EventHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key.lower(): value or "" for key, value in attrs}
         self.data._tag_stack.append(tag)
+        if tag == "link" and attr_map.get("href"):
+            rel = {value.lower() for value in attr_map.get("rel", "").split()}
+            content_type = attr_map.get("type", "").split(";", 1)[0].strip().lower()
+            if "sitemap" in rel or ("alternate" in rel and content_type in {"application/rss+xml", "application/atom+xml"}):
+                self.data.discovery_links.append(
+                    Link(label=content_type or "sitemap", url=absolute_url(self.base_url, attr_map["href"]))
+                )
+        if tag == "img":
+            alt = clean_text(attr_map.get("alt", ""))
+            if alt:
+                self.data.text_parts.append(alt)
+                if self.data._current_href:
+                    self.data._current_label.append(alt)
+        if tag == "script" and attr_map.get("type", "").split(";", 1)[0].strip().lower() == "application/ld+json":
+            self.data._json_ld_parts = []
         if tag == "meta" and attr_map.get("property", "").lower() == "og:title":
             self.data.og_title = clean_text(attr_map.get("content", ""))
         if tag == "a" and attr_map.get("href"):
@@ -54,6 +75,14 @@ class EventHTMLParser(HTMLParser):
             self.data._current_label = []
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self.data._json_ld_parts is not None:
+            raw = "".join(self.data._json_ld_parts).strip()
+            if raw and len(raw) <= 262_144 and len(self.data.structured_data) < 20:
+                try:
+                    self.data.structured_data.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    pass
+            self.data._json_ld_parts = None
         if tag == "title" and self.data._title_parts:
             self.data.title = clean_text(" ".join(self.data._title_parts))
             self.data._title_parts = []
@@ -68,6 +97,9 @@ class EventHTMLParser(HTMLParser):
             self.data._tag_stack.pop()
 
     def handle_data(self, value: str) -> None:
+        if self.data._json_ld_parts is not None:
+            self.data._json_ld_parts.append(value)
+            return
         current = self.data._tag_stack[-1] if self.data._tag_stack else ""
         if current in {"script", "style", "noscript"}:
             return
@@ -78,6 +110,49 @@ class EventHTMLParser(HTMLParser):
         self.data.text_parts.append(value)
 
 
+class _PublicFetchRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Allow redirects only while every visible hop remains a public web URL."""
+
+    _credential_headers = {
+        "authorization",
+        "ocp-apim-subscription-key",
+        "x-subscription-token",
+    }
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int | None]:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+        if port is None:
+            port = 443 if parsed.scheme.lower() == "https" else 80 if parsed.scheme.lower() == "http" else None
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        if not is_public_fetch_url(new_url):
+            raise urllib.error.URLError("redirect target is not a public HTTP(S) URL")
+        credentialed = any(
+            name.lower() in self._credential_headers
+            for name, _value in (*request.header_items(), *request.unredirected_hdrs.items())
+        )
+        if credentialed and self._origin(request.full_url) != self._origin(new_url):
+            raise urllib.error.URLError("credentialed redirect target changed origin")
+        return super().redirect_request(request, file_pointer, code, message, headers, new_url)
+
+
+def _open_public_request(request: urllib.request.Request):
+    if not is_public_fetch_url(request.full_url):
+        raise ValueError("Fetch target must be a credential-free public HTTP(S) URL")
+    opener = urllib.request.build_opener(_PublicFetchRedirectHandler())
+    return opener.open(request, timeout=TIMEOUT_SECONDS)
+
+
+def _read_limited_response(response) -> bytes:
+    body = response.read(MAX_FETCH_RESPONSE_BYTES + 1)
+    if len(body) > MAX_FETCH_RESPONSE_BYTES:
+        raise OSError(f"Fetch response exceeds {MAX_FETCH_RESPONSE_BYTES} bytes")
+    return body
+
+
 def request_html(url: str, params: dict[str, str] | None = None) -> str:
     if params:
         separator = "&" if urllib.parse.urlparse(url).query else "?"
@@ -86,20 +161,35 @@ def request_html(url: str, params: dict[str, str] | None = None) -> str:
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "ja,en;q=0.8"},
     )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-        body = response.read()
+    with _open_public_request(request) as response:
+        if not is_public_fetch_url(response.geturl()):
+            raise OSError("Fetch response URL is not a public HTTP(S) URL")
+        body = _read_limited_response(response)
         content_type = response.headers.get_content_charset() or "utf-8"
     return body.decode(content_type, errors="replace")
 
 
-def request_json(url: str, headers: dict[str, str] | None = None) -> object:
+def request_json(
+    url: str,
+    headers: dict[str, str] | None = None,
+    *,
+    json_body: object | None = None,
+) -> object:
+    encoded_body = None
+    request_headers = {"User-Agent": USER_AGENT, "Accept": "application/json", **(headers or {})}
+    if json_body is not None:
+        encoded_body = json.dumps(json_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        request_headers.setdefault("Content-Type", "application/json")
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT, "Accept": "application/json", **(headers or {})},
+        data=encoded_body,
+        headers=request_headers,
     )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+    with _open_public_request(request) as response:
+        if not is_public_fetch_url(response.geturl()):
+            raise OSError("Fetch response URL is not a public HTTP(S) URL")
         charset = response.headers.get_content_charset() or "utf-8"
-        return json.loads(response.read().decode(charset, errors="replace"))
+        return json.loads(_read_limited_response(response).decode(charset, errors="replace"))
 
 
 def parse_page(url: str, html: str) -> Page:
@@ -118,7 +208,64 @@ def parse_page(url: str, html: str) -> Page:
         title=extracted.og_title or extracted.title,
         text=clean_text(" ".join(extracted.text_parts)),
         links=tuple(links),
+        structured_data=tuple(extracted.structured_data),
+        discovery_links=tuple(extracted.discovery_links),
     )
+
+
+def parse_discovery_document(
+    base_url: str,
+    xml_text: str,
+    limit: int = 1000,
+) -> tuple[tuple[Link, ...], tuple[str, ...]]:
+    """Extract page and nested-manifest URLs from RSS, Atom, or sitemap XML."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return (), ()
+
+    def local_name(element: ET.Element) -> str:
+        return element.tag.rsplit("}", 1)[-1].lower()
+
+    pages: list[Link] = []
+    manifests: list[str] = []
+    root_name = local_name(root)
+    if root_name in {"urlset", "sitemapindex"}:
+        child_name = "url" if root_name == "urlset" else "sitemap"
+        for child in root:
+            if local_name(child) != child_name:
+                continue
+            location = next((clean_text(item.text or "") for item in child if local_name(item) == "loc"), "")
+            if not location:
+                continue
+            resolved = absolute_url(base_url, location)
+            if root_name == "sitemapindex":
+                manifests.append(resolved)
+            else:
+                pages.append(Link(label=resolved, url=resolved))
+            if len(pages) + len(manifests) >= limit:
+                break
+    else:
+        entries = [element for element in root.iter() if local_name(element) in {"item", "entry"}]
+        for entry in entries[:limit]:
+            title = next((clean_text(item.text or "") for item in entry if local_name(item) == "title"), "")
+            url = ""
+            fallback_url = ""
+            for item in entry:
+                if local_name(item) != "link":
+                    continue
+                candidate = clean_text(item.attrib.get("href", "") or item.text or "")
+                if not candidate:
+                    continue
+                fallback_url = fallback_url or candidate
+                if item.attrib.get("rel", "alternate").lower() in {"", "alternate"}:
+                    url = candidate
+                    break
+            url = url or fallback_url
+            if url:
+                resolved = absolute_url(base_url, url)
+                pages.append(Link(label=title or resolved, url=resolved))
+    return tuple(pages), tuple(manifests)
 
 
 def browser_fetch_mode() -> str:
@@ -155,18 +302,26 @@ def page_needs_browser(page: Page) -> bool:
 def _browser_render(url: str) -> Page:
     """One headless-Chromium render pass. Raises ImportError if playwright is
     absent and playwright's own errors on any browser failure."""
+    if not is_public_fetch_url(url):
+        raise ValueError("Fetch target must be a credential-free public HTTP(S) URL")
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as runner:
         browser = runner.chromium.launch(headless=True)
         try:
             context = browser.new_context(user_agent=BROWSER_USER_AGENT, locale="ja-JP")
+            context.route(
+                "**/*",
+                lambda route: route.continue_() if is_public_fetch_url(route.request.url) else route.abort(),
+            )
             page = context.new_page()
             # "networkidle" never settles on ad/analytics-heavy JP sites;
             # wait for the DOM then give client-side JS a moment to render.
             page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
             page.wait_for_timeout(BROWSER_SETTLE_MS)
             html = page.content()
+            if len(html.encode("utf-8")) > MAX_FETCH_RESPONSE_BYTES:
+                raise OSError(f"Browser response exceeds {MAX_FETCH_RESPONSE_BYTES} bytes")
         finally:
             browser.close()
     return parse_page(url, html)

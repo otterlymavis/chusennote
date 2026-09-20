@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import ipaddress
+import math
 import pathlib
 import re
 import shlex
@@ -17,6 +19,7 @@ from collections.abc import Sequence
 
 from .models import (
     DEFAULT_SESSION_LOG_DIR,
+    MAX_KEYWORD_LENGTH,
     OFFICIAL_HINTS,
     OFFICIAL_HOST_HINTS,
     SOCIAL_OR_NOISY_DOMAINS,
@@ -35,6 +38,15 @@ def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def validated_keyword(value: object) -> str:
+    keyword = clean_text(str(value or ""))
+    if not keyword:
+        raise ValueError("keyword is required")
+    if len(keyword) > MAX_KEYWORD_LENGTH:
+        raise ValueError(f"keyword must be {MAX_KEYWORD_LENGTH} characters or fewer")
+    return keyword
+
+
 def non_negative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
@@ -46,6 +58,13 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
     return parsed
 
 
@@ -75,6 +94,47 @@ def format_shell_args(argv: Sequence[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in argv)
 
 
+def redact_url_for_log(value: str) -> str:
+    """Remove credentials and capability-bearing URL parts from log output."""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return "<redacted-url>" if "://" in value else value
+    if parsed.scheme.lower() in {"postgres", "postgresql"}:
+        return "<redacted-database-url>"
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return value
+    if not (parsed.username or parsed.password or parsed.query or parsed.fragment):
+        return value
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        return "<redacted-url>"
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    return urllib.parse.urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, "<redacted>", ""))
+
+
+def redact_session_log_args(argv: Sequence[str], args: argparse.Namespace) -> list[str]:
+    """Return command arguments safe to persist in an opt-in session log."""
+    redacted = [redact_url_for_log(str(part)) for part in argv]
+    database = str(getattr(args, "db", "") or "")
+    if database.startswith(("postgres://", "postgresql://")):
+        for index, part in enumerate(argv):
+            raw = str(part)
+            if raw == database:
+                redacted[index] = "<redacted-database-url>"
+            elif raw.startswith("--db=") and raw.split("=", 1)[1] == database:
+                redacted[index] = "--db=<redacted-database-url>"
+    if getattr(args, "command", "") == "notify" and getattr(args, "notify_command", "") == "device":
+        device_secret = str(getattr(args, "token", "") or getattr(args, "identifier", "") or "")
+        if device_secret:
+            redacted = ["<redacted-device-token>" if str(part) == device_secret else safe for part, safe in zip(argv, redacted)]
+    return redacted
+
+
 def session_log_path(log_dir: str = DEFAULT_SESSION_LOG_DIR, now: dt.datetime | None = None) -> pathlib.Path:
     timestamp = now or dt.datetime.now().astimezone()
     return pathlib.Path(log_dir) / f"session_{timestamp:%Y_%m_%d}.md"
@@ -90,7 +150,8 @@ def append_session_log(
     ended_at = ended_at or dt.datetime.now().astimezone()
     path = session_log_path(args.session_log_dir, ended_at)
     path.parent.mkdir(parents=True, exist_ok=True)
-    command = format_shell_args(("lottery_monitor.py", *argv))
+    safe_argv = redact_session_log_args(argv, args)
+    command = format_shell_args(("lottery_monitor.py", *safe_argv))
     db_path = getattr(args, "db", None)
     target = getattr(args, "command", "unknown")
     details = [
@@ -102,7 +163,12 @@ def append_session_log(
         f"- Duration seconds: `{(ended_at - started_at).total_seconds():.3f}`",
     ]
     if db_path:
-        details.append(f"- Database: `{db_path}`")
+        safe_database = (
+            "<redacted-database-url>"
+            if str(db_path).startswith(("postgres://", "postgresql://"))
+            else str(db_path)
+        )
+        details.append(f"- Database: `{safe_database}`")
     details.append("")
     with path.open("a", encoding="utf-8") as log_file:
         log_file.write("\n".join(details))
@@ -192,6 +258,32 @@ def source_provenance(url: str, label: str = "") -> str:
 def is_web_url(url: object) -> bool:
     parsed = urllib.parse.urlparse(str(url or ""))
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def is_public_fetch_url(url: object) -> bool:
+    """Return whether a user-supplied URL is safe to queue for a public fetch.
+
+    This rejects embedded credentials and obvious local-network targets. DNS and
+    redirects still need enforcement by the outbound fetch layer; this helper is
+    the stable validation boundary for manually submitted source URLs.
+    """
+    try:
+        parsed = urllib.parse.urlparse(str(url or ""))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        # Accessing port validates malformed and out-of-range port syntax.
+        parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
 
 
 def platform_confidence(platform: str) -> int:
