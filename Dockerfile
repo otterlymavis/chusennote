@@ -18,7 +18,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt \
     "playwright==1.62.0" \
-    "psycopg[binary]==3.2.3"
+    "psycopg[binary]==3.2.13"
 
 # Just copy the source (see .dockerignore for exclusions).
 COPY . /app
