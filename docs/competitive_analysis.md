@@ -81,6 +81,12 @@ and its dashboard tabs and notifications page have been exercised against the
 live schema-v16 backend. Firebase/APNs, SMTP, chat-provider, physical-device
 delivery, and App Store distribution signing remain environment-specific
 release gates rather than unfinished roadmap code.
+The configured Firebase service account can obtain a short-lived OAuth token,
+and an HTTP v1 permission probe reaches FCM successfully (the deliberately
+invalid device token is rejected as `INVALID_ARGUMENT`, rather than an
+authentication or authorization failure). The Android release APK also builds
+with the configured release key and passes `apksigner` verification; these
+checks still do not substitute for delivery to a registered physical device.
 Live public-source acceptance also covers manually attached Shiki, Horipro, and
 Toho official pages plus Rakuten Ticket, Ticket Board, and CN Playguide pages.
 The observed evidence includes image-alt schedules, regional dates and venues,
