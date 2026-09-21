@@ -139,6 +139,11 @@ actor DeviceRegistration {
         registerSavedTokenIfPossible()
     }
 
+    func resumeAfterAccountDeletion() {
+        ChusennoteSettings.pushToken = ""
+        isPaused = false
+    }
+
     private func enqueue(token: String) {
         let previous = pendingRegistration
         let baseURL = ChusennoteSettings.baseURL

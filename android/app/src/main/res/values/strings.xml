@@ -5,6 +5,7 @@
     <string name="register">Register</string>
     <string name="log_in">Log In</string>
     <string name="log_out">Log Out</string>
+    <string name="delete_account">Delete Account</string>
     <string name="add_artist">Add Artist</string>
     <string name="run_artist_watches">Run Artist Watches</string>
     <string name="add_event">Add Event</string>
@@ -63,6 +64,13 @@
     <string name="signing_out">Signing out…</string>
     <string name="could_not_finish_signing_out">Could not finish signing out. Reconnect and retry: %1$s</string>
     <string name="could_not_verify_account">Could not verify account. Login saved; try again when the server is available.</string>
+    <string name="current_password">Current password</string>
+    <string name="delete_account_confirmation_title">Permanently delete account?</string>
+    <string name="delete_account_confirmation_message">This permanently deletes your account, watches, private sources, reminders, calendar tokens, and registered push devices. This cannot be undone. Enter your current password to confirm.</string>
+    <string name="enter_password_to_delete_account">Enter your password to confirm account deletion.</string>
+    <string name="deleting_account">Deleting account…</string>
+    <string name="account_deleted">Account deleted.</string>
+    <string name="could_not_delete_account">Could not delete account: %1$s</string>
 
     <string name="server_status">Server %1$s%2$s%3$s - %4$s, %5$s, %6$s.</string>
 

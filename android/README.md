@@ -5,6 +5,9 @@ server's REST API (watches, events, upcoming ticket dates, alerts) and receives
 push reminders via Firebase Cloud Messaging.
 
 The Android client supports both broad ticket watches and exact-event tracking.
+Signed-in users can permanently delete their account from the Account section;
+the app requires the current password and clears local credentials only after
+the backend confirms that account-owned data was removed.
 Use **Find Exact Event** to search for an official event page, open it for
 review, and then add that specific event to the current account or local
 workspace.

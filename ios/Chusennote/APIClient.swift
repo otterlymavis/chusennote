@@ -315,6 +315,47 @@ final class ChusennoteStore: ObservableObject {
         isAccountTransitioning = false
     }
 
+    @discardableResult
+    func deleteAccount(password: String) async -> Bool {
+        guard isSignedIn else {
+            errorMessage = "Not signed in."
+            return false
+        }
+        guard !password.isEmpty else {
+            errorMessage = "Enter your password to confirm account deletion."
+            return false
+        }
+        guard BackendURLPolicy.permitsCredentialTransport(baseURL) else {
+            errorMessage = BackendURLPolicy.credentialTransportMessage
+            return false
+        }
+
+        isAccountTransitioning = true
+        await DeviceRegistration.shared.pauseForAccountTransition()
+        do {
+            let response: DeleteAccountResponse = try await post(
+                "/api/auth/delete",
+                body: formBody([URLQueryItem(name: "password", value: password)]),
+                requiresCredentialTransport: true
+            )
+            guard response.deleted else {
+                throw APIClientError.http(status: 409, message: "The server did not confirm account deletion.")
+            }
+            apiToken = ""
+            signedInEmail = ""
+            errorMessage = nil
+            await DeviceRegistration.shared.resumeAfterAccountDeletion()
+            await refresh()
+            isAccountTransitioning = false
+            return true
+        } catch {
+            await DeviceRegistration.shared.resumeAfterAccountTransition()
+            errorMessage = "Could not delete account: \(error.localizedDescription)"
+            isAccountTransitioning = false
+            return false
+        }
+    }
+
     func addWatch(
         keyword: String,
         kind: String,

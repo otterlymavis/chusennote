@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var editingArtistWatchID: Int?
     @State private var accountEmail = ""
     @State private var accountPassword = ""
+    @State private var deletionPassword = ""
+    @State private var showsDeleteAccountConfirmation = false
     @State private var showsNotificationFeed = false
     @State private var showsSubscriptions = false
     @State private var showsManualSources = false
@@ -48,6 +50,16 @@ struct SettingsView: View {
                                 systemImage: "rectangle.portrait.and.arrow.right",
                                 isLoading: store.isAccountTransitioning
                             )
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(store.isAccountTransitioning)
+
+                        Button(role: .destructive) {
+                            deletionPassword = ""
+                            showsDeleteAccountConfirmation = true
+                        } label: {
+                            Label("Delete Account", systemImage: "person.crop.circle.badge.xmark")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
@@ -382,6 +394,19 @@ struct SettingsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Permanently Delete Account?", isPresented: $showsDeleteAccountConfirmation) {
+            SecureField("Current password", text: $deletionPassword)
+            Button("Cancel", role: .cancel) {
+                deletionPassword = ""
+            }
+            Button("Delete Account", role: .destructive) {
+                let password = deletionPassword
+                deletionPassword = ""
+                Task { await store.deleteAccount(password: password) }
+            }
+        } message: {
+            Text("This permanently deletes your account, watches, private sources, reminders, calendar tokens, and registered push devices. This cannot be undone.")
+        }
     }
 
     private func addSource() {

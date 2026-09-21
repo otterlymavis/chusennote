@@ -179,6 +179,13 @@ An absent bearer token continues to select the local anonymous workspace, but
 any supplied malformed, expired, or revoked authorization is rejected with 401
 instead of silently reading or mutating that workspace.
 
+Authenticated mobile users can permanently delete their account with
+`POST /api/auth/delete` after confirming their current password. The operation
+atomically removes the user, bearer and calendar tokens, device registrations,
+private sources, subscriptions, notification records, and per-user watches;
+canonical public event data is retained only when another user or the local
+workspace still owns the watch.
+
 Deployment environment names are collected in [`.env.example`](.env.example).
 The application does not automatically load that file: export the values from
 your service manager, or copy it to the ignored `.env` filename and pass it to

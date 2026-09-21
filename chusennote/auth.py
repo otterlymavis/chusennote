@@ -181,6 +181,102 @@ def revoke_token(db_path: str, token: str, device_token: str = "") -> bool:
     return True
 
 
+def delete_user_account(db_path: str, token: str, password: str) -> bool:
+    """Permanently delete the authenticated user and account-owned data.
+
+    Canonical event data is shared between users. It is removed only when the
+    deleted account was the final owner and the watch was never part of the
+    anonymous/local workspace.
+    """
+    valid_input = (
+        bool(token)
+        and len(token) <= MAX_AUTH_TOKEN_LENGTH
+        and bool(password)
+        and len(password) <= MAX_PASSWORD_LENGTH
+    )
+    fingerprint = token_fingerprint(token) if valid_input else token_fingerprint("invalid")
+    with connect(db_path) as connection:
+        init_db(connection)
+        row = connection.execute(
+            """
+            SELECT u.id, u.password_hash, u.password_salt
+            FROM api_tokens t JOIN users u ON u.id = t.user_id
+            WHERE t.token_hash = ?
+            """,
+            (fingerprint,),
+        ).fetchone()
+        password_hash = str(row[1]) if row else "0" * 64
+        salt = str(row[2]) if row else "0" * 32
+        candidate_password = password if len(password) <= MAX_PASSWORD_LENGTH else "invalid oversized password"
+        if not valid_input or not row or not password_matches(candidate_password, password_hash, salt):
+            return False
+
+        user_id = int(row[0])
+        watch_ids = [
+            int(item[0])
+            for item in connection.execute(
+                "SELECT watch_id FROM user_watches WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        ]
+        connection.execute(
+            """
+            DELETE FROM notification_log
+            WHERE subscription_id IN (
+                SELECT id FROM notification_subscriptions WHERE user_id = ?
+            )
+            """,
+            (user_id,),
+        )
+        connection.execute("DELETE FROM notification_subscriptions WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM watch_sources WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM device_tokens WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM calendar_tokens WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM user_watches WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+        for watch_id in watch_ids:
+            still_owned = connection.execute(
+                """
+                SELECT 1
+                FROM watched_keywords w
+                WHERE w.id = ?
+                  AND (
+                    w.local_visible != 0
+                    OR EXISTS (SELECT 1 FROM user_watches uw WHERE uw.watch_id = w.id)
+                  )
+                """,
+                (watch_id,),
+            ).fetchone()
+            if still_owned:
+                continue
+            connection.execute(
+                "DELETE FROM notification_log WHERE event_id IN (SELECT id FROM events WHERE watch_id = ?)",
+                (watch_id,),
+            )
+            connection.execute(
+                "DELETE FROM ticket_rounds WHERE event_id IN (SELECT id FROM events WHERE watch_id = ?)",
+                (watch_id,),
+            )
+            connection.execute(
+                "DELETE FROM snapshots WHERE event_id IN (SELECT id FROM events WHERE watch_id = ?)",
+                (watch_id,),
+            )
+            connection.execute(
+                "DELETE FROM alert_log WHERE event_id IN (SELECT id FROM events WHERE watch_id = ?)",
+                (watch_id,),
+            )
+            connection.execute(
+                "DELETE FROM sources WHERE event_id IN (SELECT id FROM events WHERE watch_id = ?)",
+                (watch_id,),
+            )
+            connection.execute("DELETE FROM notification_subscriptions WHERE watch_id = ?", (watch_id,))
+            connection.execute("DELETE FROM watch_sources WHERE watch_id = ?", (watch_id,))
+            connection.execute("DELETE FROM events WHERE watch_id = ?", (watch_id,))
+            connection.execute("DELETE FROM watched_keywords WHERE id = ?", (watch_id,))
+    return True
+
+
 def issue_calendar_token(
     db_path: str, user_id: int, now: str | None = None, *, rotate: bool = False
 ) -> str:

@@ -352,6 +352,10 @@ struct LogoutResponse: Codable {
     }
 }
 
+struct DeleteAccountResponse: Codable {
+    let deleted: Bool
+}
+
 struct APIErrorResponse: Codable {
     let error: String
 }

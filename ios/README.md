@@ -40,6 +40,11 @@ and migrated push tokens are stored in the Keychain. Finish logout before
 changing accounts or servers so the backend can revoke the session and detach
 the device registration.
 
+Signed-in users can permanently delete their account from Settings. The app
+requires the current password and a destructive confirmation, waits for the
+server to remove account-owned data, and clears its saved credentials and push
+token only after the server confirms deletion.
+
 ## Firebase push setup
 
 `FirebaseMessaging` is linked through Swift Package Manager and locked in

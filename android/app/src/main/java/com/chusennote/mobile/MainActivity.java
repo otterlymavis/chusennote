@@ -2,6 +2,7 @@ package com.chusennote.mobile;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Intent;
@@ -57,6 +58,7 @@ public class MainActivity extends Activity {
     private Button registerButton;
     private Button loginButton;
     private Button logoutButton;
+    private Button deleteAccountButton;
     private EditText artistInput;
     private EditText artistTagsInput;
     private EditText artistRegionsInput;
@@ -237,6 +239,11 @@ public class MainActivity extends Activity {
         logoutButton.setOnClickListener(view -> logoutAccount());
         accountButtons.addView(logoutButton);
         root.addView(accountButtons);
+        deleteAccountButton = new Button(this);
+        deleteAccountButton.setId(R.id.delete_account_button);
+        deleteAccountButton.setText(R.string.delete_account);
+        deleteAccountButton.setOnClickListener(view -> showDeleteAccountDialog());
+        root.addView(deleteAccountButton);
 
         root.addView(section("Tracked Artists"));
         artistInput = new EditText(this);
@@ -966,6 +973,69 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void showDeleteAccountDialog() {
+        if (SecureTokenStore.apiToken(getApplicationContext()).isEmpty()) {
+            accountStatusText.setText(R.string.not_signed_in);
+            return;
+        }
+        EditText confirmation = new EditText(this);
+        confirmation.setSingleLine(true);
+        confirmation.setHint(R.string.current_password);
+        confirmation.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        confirmation.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.delete_account_confirmation_title)
+                .setMessage(R.string.delete_account_confirmation_message)
+                .setView(confirmation)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.delete_account, (dialog, which) ->
+                        deleteAccount(confirmation.getText().toString()))
+                .show();
+    }
+
+    private void deleteAccount(String password) {
+        if (password.isEmpty()) {
+            accountStatusText.setText(R.string.enter_password_to_delete_account);
+            return;
+        }
+        if (!BackendUrlPolicy.permitsCredentialTransport(apiBaseUrl)) {
+            accountStatusText.setText(BackendUrlPolicy.CREDENTIAL_TRANSPORT_MESSAGE);
+            return;
+        }
+        setAccountTransitionControls();
+        accountStatusText.setText(R.string.deleting_account);
+        executor.execute(() -> {
+            try {
+                synchronized (ChusennoteMessagingService.REGISTRATION_LOCK) {
+                    JSONObject response = new JSONObject(postForm(
+                            "/api/auth/delete", "password=" + encode(password)));
+                    if (!response.optBoolean("deleted")) {
+                        throw new IOException("The server did not confirm account deletion.");
+                    }
+                    SecureTokenStore.setApiToken(getApplicationContext(), "");
+                    SecureTokenStore.setPushToken(getApplicationContext(), "");
+                    try {
+                        Tasks.await(FirebaseMessaging.getInstance().deleteToken(), 10, TimeUnit.SECONDS);
+                    } catch (Exception ignored) {
+                        // The backend record is already deleted. Firebase token
+                        // cleanup is best effort and must not resurrect it.
+                    }
+                }
+                postToMain(() -> {
+                    accountStatusText.setText(R.string.account_deleted);
+                    setSignedInControls(false);
+                    refresh();
+                });
+            } catch (Exception error) {
+                postToMain(() -> {
+                    accountStatusText.setText(
+                            getString(R.string.could_not_delete_account, error.getMessage()));
+                    setSignedInControls(true);
+                });
+            }
+        });
+    }
+
     private void refreshAccountStatus() {
         if (SecureTokenStore.apiToken(getApplicationContext()).isEmpty()) {
             accountStatusText.setText(R.string.not_signed_in);
@@ -1010,6 +1080,7 @@ public class MainActivity extends Activity {
         registerButton.setEnabled(!signedIn);
         loginButton.setEnabled(!signedIn);
         logoutButton.setEnabled(signedIn);
+        deleteAccountButton.setEnabled(signedIn);
     }
 
     /** Prevent duplicate login/logout submissions while one is in flight. */
@@ -1020,6 +1091,7 @@ public class MainActivity extends Activity {
         registerButton.setEnabled(false);
         loginButton.setEnabled(false);
         logoutButton.setEnabled(false);
+        deleteAccountButton.setEnabled(false);
     }
 
     private void render(

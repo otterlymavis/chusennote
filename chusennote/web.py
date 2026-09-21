@@ -1447,7 +1447,7 @@ def render_privacy_page() -> str:
         <h2>Service providers</h2>
         <p>The hosted service uses Render for application hosting, Neon for PostgreSQL storage, Tavily for public-web discovery, and Firebase Cloud Messaging for push delivery. Apple may process information under its own policies when you download or use the iOS app. Public source sites are contacted only to discover or refresh event information.</p>
         <h2>Retention and control</h2>
-        <p>Account data is retained while the account is active or as needed to operate and secure the service. Logging out revokes the current session and detaches that installation's push registration when the server confirms the request. To request access, correction, or deletion, use the support link below. Do not include passwords, access tokens, or other secrets in a public issue.</p>
+        <p>Account data is retained while the account is active or as needed to operate and secure the service. Logging out revokes the current session and detaches that installation's push registration when the server confirms the request. Signed-in users can permanently delete their account and associated account data from Settings by confirming with their current password. To request access or correction, use the support link below. Do not include passwords, access tokens, or other secrets in a public issue.</p>
         <h2>Security and changes</h2>
         <p>The hosted service uses HTTPS and restricts credential transport. No internet service can guarantee absolute security. Material changes to this notice will be published at this URL with a revised effective date.</p>
         <p><a href="/support">Contact Chusennote support</a></p>
@@ -1470,7 +1470,7 @@ def render_support_page() -> str:
         </ul>
         <h2>Contact</h2>
         <p><a href="https://github.com/otterlymavis/chusennote/issues/new">Open a support request on GitHub</a>. Do not include passwords, API tokens, private calendar links, or device tokens.</p>
-        <p>For privacy requests, state only that the request concerns Chusennote account data and ask for private follow-up instructions. Do not post an account email or other personal data in the public issue.</p>
+        <p>Account deletion is available directly inside the signed-in iOS and Android apps under Settings. For other privacy requests, state only that the request concerns Chusennote account data and ask for private follow-up instructions. Do not post an account email or other personal data in the public issue.</p>
         <p><a href="/privacy">Read the Privacy Policy</a></p>
         """,
     )
@@ -1757,6 +1757,14 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     json_response(self, {"error": "unauthorized"}, status=401)
                     return
                 json_response(self, {"revoked": True, "device_detached": True})
+            elif path == "/api/auth/delete":
+                authorization_token = self.authorization_token()
+                if not authorization_token or not delete_user_account(
+                    db_path, authorization_token, form.get("password", "")
+                ):
+                    json_response(self, {"error": "invalid credentials"}, status=401)
+                    return
+                json_response(self, {"deleted": True})
             elif path == "/watch/add":
                 try:
                     add_watch_from_form(db_path, form, user_id=self.browser_user_id())

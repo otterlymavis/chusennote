@@ -102,6 +102,13 @@ public class MainActivityTest {
     }
 
     @Test
+    public void accountDeletionControlIsVisibleInAccountSection() {
+        onView(withId(R.id.delete_account_button))
+                .perform(scrollTo())
+                .check(matches(isDisplayed()));
+    }
+
+    @Test
     public void serverReleaseIdentityIsVisible() {
         assertEventuallyDisplayed("Server ok - v0.1.0 (1) - schema 16 - 0 artists, 0 events, 0 alerts.");
     }

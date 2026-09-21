@@ -7107,6 +7107,98 @@ def test_web_auth_register_login_me_logout(tmp_path):
         server.shutdown()
 
 
+def test_delete_user_account_removes_owned_data_and_preserves_shared_user(tmp_path):
+    db_path = str(tmp_path / "delete-account.sqlite3")
+    alice = lm.create_user(db_path, "alice@example.com", "alice password 1")
+    bob = lm.create_user(db_path, "bob@example.com", "bob password 12")
+    alice_token = lm.issue_token(db_path, alice.id)
+    bob_token = lm.issue_token(db_path, bob.id)
+    lm.issue_calendar_token(db_path, alice.id)
+    shared = lm.add_watch(db_path, "Shared Account Watch", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    lm.add_watch(db_path, "Shared Account Watch", kind=lm.WATCH_KIND_EVENT, user_id=bob.id)
+    private = lm.add_watch(db_path, "Alice Only Watch", kind=lm.WATCH_KIND_EVENT, user_id=alice.id)
+    lm.save_blocks(
+        db_path,
+        _subscription_event_blocks("Alice Only Watch"),
+        now="2026-06-01T00:00:00+00:00",
+        watch_id=private.id,
+    )
+    alice_subscription = lm.add_subscription(
+        db_path, str(shared.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=alice.id
+    )
+    bob_subscription = lm.add_subscription(
+        db_path, str(shared.id), lm.NOTIFY_SCOPE_EVENT_ALL, channels="feed,push", user_id=bob.id
+    )
+    lm.register_device(db_path, "alice-delete-device", platform="ios", user_id=alice.id)
+    lm.register_device(db_path, "bob-keep-device", platform="android", user_id=bob.id)
+    with lm.connect(db_path) as connection:
+        lm.init_db(connection)
+        connection.execute(
+            """
+            INSERT INTO notification_log(
+                notification_key, subscription_id, event_id, channel, payload_json,
+                created_at, updated_at, attempt_count
+            ) VALUES (?, ?, NULL, 'feed', '{}', ?, ?, 1)
+            """,
+            ("alice-delete-log", alice_subscription.id, "2026-06-01T00:00:00+00:00", "2026-06-01T00:00:00+00:00"),
+        )
+
+    assert lm.delete_user_account(db_path, alice_token, "wrong password") is False
+    assert lm.user_for_token(db_path, alice_token) is not None
+    assert lm.delete_user_account(db_path, alice_token, "alice password 1") is True
+    assert lm.user_for_token(db_path, alice_token) is None
+    assert lm.user_for_token(db_path, bob_token) is not None
+    assert [watch.keyword for watch in lm.list_watches(db_path, user_id=bob.id)] == ["Shared Account Watch"]
+    assert lm.list_devices(db_path, user_id=alice.id) == []
+    assert [device.token for device in lm.list_devices(db_path, user_id=bob.id)] == ["bob-keep-device"]
+    assert [item.id for item in lm.list_subscriptions(db_path, user_id=bob.id)] == [bob_subscription.id]
+    with lm.connect(db_path) as connection:
+        lm.init_db(connection)
+        assert connection.execute("SELECT 1 FROM users WHERE id = ?", (alice.id,)).fetchone() is None
+        assert connection.execute("SELECT 1 FROM watched_keywords WHERE id = ?", (shared.id,)).fetchone()
+        assert connection.execute("SELECT 1 FROM watched_keywords WHERE id = ?", (private.id,)).fetchone() is None
+        assert connection.execute(
+            "SELECT 1 FROM notification_log WHERE subscription_id = ?", (alice_subscription.id,)
+        ).fetchone() is None
+
+
+def test_web_auth_delete_requires_password_and_revokes_account(tmp_path):
+    db_path = str(tmp_path / "delete-account-web.sqlite3")
+    server = lm.create_web_server(db_path, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        registered = post_form(
+            f"{base}/api/auth/register",
+            {"email": "delete@example.com", "password": "correct horse battery"},
+        )
+        token = registered["token"]
+        with pytest.raises(urllib.error.HTTPError) as wrong_password:
+            post_form_with_token(
+                f"{base}/api/auth/delete", {"password": "wrong password"}, token
+            )
+        assert wrong_password.value.code == 401
+        assert _get_with_token(f"{base}/api/auth/me", token)["email"] == "delete@example.com"
+
+        deleted = post_form_with_token(
+            f"{base}/api/auth/delete", {"password": "correct horse battery"}, token
+        )
+        assert deleted == {"deleted": True}
+        with pytest.raises(urllib.error.HTTPError) as revoked:
+            _get_with_token(f"{base}/api/auth/me", token)
+        assert revoked.value.code == 401
+        with pytest.raises(urllib.error.HTTPError) as removed_login:
+            post_form(
+                f"{base}/api/auth/login",
+                {"email": "delete@example.com", "password": "correct horse battery"},
+            )
+        assert removed_login.value.code == 401
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def test_browser_account_cookie_scopes_web_ui_and_logout(tmp_path):
     db_path = str(tmp_path / "browser-account.sqlite3")
     server = lm.create_web_server(db_path, 0)
