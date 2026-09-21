@@ -78,9 +78,12 @@ launches bundled Chromium, serves schema-v16 health as a non-root user, and
 reaches Docker's healthy state. The deployed Render service at
 `https://chusennote.onrender.com` passes the PostgreSQL-required smoke suite,
 and its dashboard tabs and notifications page have been exercised against the
-live schema-v16 backend. Firebase/APNs, SMTP, chat-provider, physical-device
-delivery, and App Store distribution signing remain environment-specific
-release gates rather than unfinished roadmap code.
+live schema-v16 backend. Firebase/APNs, SMTP, chat-provider, and physical-device
+delivery remain environment-specific release gates rather than unfinished
+roadmap code. App Store distribution signing is now verified separately: the
+Release archive and export use the `Chusennote App Store` profile and an Apple
+Distribution identity, and the exported IPA contains the production APNs
+entitlement.
 The configured Firebase service account can obtain a short-lived OAuth token,
 and an HTTP v1 permission probe reaches FCM successfully (the deliberately
 invalid device token is rejected as `INVALID_ARGUMENT`, rather than an
