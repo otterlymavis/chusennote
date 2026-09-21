@@ -62,3 +62,27 @@ Unsigned CI/simulator builds remain buildable and launch-safe without the
 plist: Firebase startup and token registration are skipped. Signed Release
 builds require it, so an installable release cannot silently omit push
 configuration.
+
+## App Store archive
+
+Create and export a distribution-signed archive from a Mac whose Xcode account
+has an Apple Distribution certificate and App Store provisioning access:
+
+```bash
+xcodebuild -project ios/Chusennote.xcodeproj \
+  -scheme Chusennote -configuration Release \
+  -destination 'generic/platform=iOS' \
+  -archivePath /tmp/Chusennote.xcarchive \
+  -allowProvisioningUpdates archive
+
+xcodebuild -exportArchive \
+  -archivePath /tmp/Chusennote.xcarchive \
+  -exportPath /tmp/Chusennote-export \
+  -exportOptionsPlist ios/ExportOptions.plist \
+  -allowProvisioningUpdates
+```
+
+The export configuration is non-secret and selects App Store Connect,
+automatic signing, and team `D8H3TBWH7P`. A successful archive alone is not
+distribution proof: verify that export produces an IPA signed by an Apple
+Distribution identity and containing a production push entitlement.
