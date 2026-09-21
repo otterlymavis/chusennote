@@ -65,24 +65,26 @@ configuration.
 
 ## App Store archive
 
-Create and export a distribution-signed archive from a Mac whose Xcode account
-has an Apple Distribution certificate and App Store provisioning access:
+Create and export a distribution-signed archive from a Mac whose login
+keychain contains the team's Apple Distribution certificate and private key,
+and whose provisioning-profile directory contains `Chusennote App Store`:
 
 ```bash
 xcodebuild -project ios/Chusennote.xcodeproj \
   -scheme Chusennote -configuration Release \
   -destination 'generic/platform=iOS' \
   -archivePath /tmp/Chusennote.xcarchive \
-  -allowProvisioningUpdates archive
+  archive
 
 xcodebuild -exportArchive \
   -archivePath /tmp/Chusennote.xcarchive \
   -exportPath /tmp/Chusennote-export \
-  -exportOptionsPlist ios/ExportOptions.plist \
-  -allowProvisioningUpdates
+  -exportOptionsPlist ios/ExportOptions.plist
 ```
 
-The export configuration is non-secret and selects App Store Connect,
-automatic signing, and team `D8H3TBWH7P`. A successful archive alone is not
-distribution proof: verify that export produces an IPA signed by an Apple
-Distribution identity and containing a production push entitlement.
+The Release target and export configuration select the `Chusennote App Store`
+profile, an Apple Distribution identity, and team `D8H3TBWH7P`. This keeps
+archive/export reproducible without relying on an Xcode account while leaving
+Debug signing automatic. A successful archive alone is not distribution proof:
+verify that export produces an IPA signed by an Apple Distribution identity and
+containing a production push entitlement.
