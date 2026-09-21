@@ -7,6 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -20,7 +21,7 @@ jobs:
       # Gradle version so CI matches the verified local build exactly.
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-35;google_apis;x86_64"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Validate Android variants
         working-directory: android
         run: >-
@@ -38,31 +39,16 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Start Android 15 emulator
-        run: |
-          printf 'no\n' | avdmanager create avd \
-            --force \
-            --name chusennote_ci \
-            --package 'system-images;android-35;google_apis;x86_64' \
-            --device pixel_6
-          nohup emulator @chusennote_ci \
-            -no-window \
-            -no-audio \
-            -no-boot-anim \
-            -no-snapshot \
-            -gpu swiftshader_indirect \
-            > "$RUNNER_TEMP/chusennote-emulator.log" 2>&1 &
-          adb wait-for-device
-          # The command substitution must run inside the timeout-controlled shell.
-          # shellcheck disable=SC2016
-          timeout 180 bash -c \
-            'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 2; done'
-          adb shell settings put global window_animation_scale 0
-          adb shell settings put global transition_animation_scale 0
-          adb shell settings put global animator_duration_scale 0
       - name: Run Android device tests
-        working-directory: android
-        run: ./gradlew :app:connectedDebugAndroidTest --no-daemon
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
+          script: cd android && ./gradlew :app:connectedDebugAndroidTest --no-daemon
       - name: Upload Android validation reports
         if: always()
         uses: actions/upload-artifact@v4
