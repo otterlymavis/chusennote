@@ -15,6 +15,8 @@ from .models import APP_BUILD, APP_VERSION, DB_SCHEMA_VERSION
 
 SMOKE_ENDPOINTS = (
     ("home", "/", "html"),
+    ("privacy", "/privacy", "privacy"),
+    ("support", "/support", "support"),
     ("health", "/api/health", "health"),
     ("watchlist", "/api/watchlist?include_muted=1", "list"),
     ("events", "/api/events", "list"),
@@ -68,6 +70,16 @@ def _validate_smoke_payload(kind: str, payload: bytes, *, require_postgres: bool
     if kind == "html":
         if "chusennote" not in payload.decode("utf-8", errors="replace").lower():
             raise ValueError("home page does not identify chusennote")
+        return
+    if kind in {"privacy", "support"}:
+        text = payload.decode("utf-8", errors="replace").lower()
+        required = (
+            ("privacy policy", "does not sell personal information", "/support")
+            if kind == "privacy"
+            else ("chusennote support", "github.com/otterlymavis/chusennote/issues/new", "/privacy")
+        )
+        if not all(marker in text for marker in required):
+            raise ValueError(f"{kind} page is missing required content")
         return
     if kind == "calendar":
         if b"BEGIN:VCALENDAR" not in payload or b"END:VCALENDAR" not in payload:

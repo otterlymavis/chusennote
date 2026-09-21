@@ -1392,6 +1392,90 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
     """
 
 
+def render_information_page(title: str, content: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)} · Chusennote</title>
+  <style>
+    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent: #9b2446; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--paper); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; }}
+    header {{ border-bottom: 1px solid var(--line); background: var(--panel); }}
+    header div, main, footer {{ width: min(760px, calc(100% - 32px)); margin: 0 auto; }}
+    header div {{ display: flex; align-items: center; justify-content: space-between; min-height: 64px; gap: 16px; }}
+    main {{ padding: 36px 0 48px; }}
+    article {{ padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }}
+    h1 {{ margin: 0 0 8px; line-height: 1.2; }}
+    h2 {{ margin-top: 28px; line-height: 1.3; }}
+    p, li {{ color: #3f4653; }}
+    a {{ color: var(--accent); font-weight: 750; }}
+    .effective {{ margin-top: 0; color: var(--muted); }}
+    footer {{ padding: 0 0 36px; color: var(--muted); }}
+    footer a {{ margin-right: 16px; }}
+    @media (max-width: 600px) {{ article {{ padding: 21px; }} main {{ padding-top: 22px; }} }}
+  </style>
+</head>
+<body>
+  <header><div><a href="/">Chusennote</a><strong>{html.escape(title)}</strong></div></header>
+  <main><article>{content}</article></main>
+  <footer><a href="/privacy">Privacy</a><a href="/support">Support</a></footer>
+</body>
+</html>"""
+
+
+def render_privacy_page() -> str:
+    return render_information_page(
+        "Privacy Policy",
+        """
+        <h1>Privacy Policy</h1>
+        <p class="effective">Effective September 22, 2026</p>
+        <p>Chusennote helps people track public event and ticket information and receive reminders. This notice describes the information the hosted service processes.</p>
+        <h2>Information you provide</h2>
+        <ul>
+          <li>If you create an account, the service stores your email address and a one-way password hash.</li>
+          <li>The service stores the artists, events, public source links, regions, venues, tags, and reminder preferences that you choose to track.</li>
+          <li>If you enable push notifications, the service stores a Firebase device token and the device platform so it can address notifications to that installation.</li>
+          <li>Session, API, and calendar-feed tokens are used to authenticate access to your account. Mobile credentials are stored by the operating system's secure credential store.</li>
+        </ul>
+        <h2>Information collected automatically</h2>
+        <p>The hosting platform may process standard request information such as IP address, user agent, request time, and diagnostic logs. Chusennote does not include advertising SDKs or third-party behavioral analytics.</p>
+        <h2>How information is used</h2>
+        <p>Information is used to provide the watchlist, event discovery, ticket timelines, account access, calendar feeds, and notifications you request; to protect the service; and to diagnose failures. Chusennote does not sell personal information.</p>
+        <h2>Service providers</h2>
+        <p>The hosted service uses Render for application hosting, Neon for PostgreSQL storage, Tavily for public-web discovery, and Firebase Cloud Messaging for push delivery. Apple may process information under its own policies when you download or use the iOS app. Public source sites are contacted only to discover or refresh event information.</p>
+        <h2>Retention and control</h2>
+        <p>Account data is retained while the account is active or as needed to operate and secure the service. Logging out revokes the current session and detaches that installation's push registration when the server confirms the request. To request access, correction, or deletion, use the support link below. Do not include passwords, access tokens, or other secrets in a public issue.</p>
+        <h2>Security and changes</h2>
+        <p>The hosted service uses HTTPS and restricts credential transport. No internet service can guarantee absolute security. Material changes to this notice will be published at this URL with a revised effective date.</p>
+        <p><a href="/support">Contact Chusennote support</a></p>
+        """,
+    )
+
+
+def render_support_page() -> str:
+    return render_information_page(
+        "Support",
+        """
+        <h1>Chusennote Support</h1>
+        <p>Chusennote tracks public event and ticket pages, keeps application and result dates together, and can send reminders through the app.</p>
+        <h2>Before reporting a problem</h2>
+        <ul>
+          <li>Confirm the app's Base URL is <code>https://chusennote.onrender.com</code>.</li>
+          <li>Open Settings and check that the server status is healthy.</li>
+          <li>For missing notifications, confirm system notification permission is enabled and that the watch has an active push subscription.</li>
+          <li>For outdated event details, open the official source link shown on the event and include that public URL in the report.</li>
+        </ul>
+        <h2>Contact</h2>
+        <p><a href="https://github.com/otterlymavis/chusennote/issues/new">Open a support request on GitHub</a>. Do not include passwords, API tokens, private calendar links, or device tokens.</p>
+        <p>For privacy requests, state only that the request concerns Chusennote account data and ask for private follow-up instructions. Do not post an account email or other personal data in the public issue.</p>
+        <p><a href="/privacy">Read the Privacy Policy</a></p>
+        """,
+    )
+
+
 def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
     class ChusennoteHandler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:
@@ -1474,6 +1558,10 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1]), self.browser_user_id()))
             elif path == "/notifications":
                 html_response(self, render_notifications_page(db_path, self.browser_user_id()))
+            elif path == "/privacy":
+                html_response(self, render_privacy_page())
+            elif path == "/support":
+                html_response(self, render_support_page())
             elif path == "/api/health":
                 json_response(self, api_health(db_path))
             elif path == "/api/auth/me":

@@ -3173,7 +3173,7 @@ def test_notify_cli_and_device_registration(tmp_path, capsys):
 def test_notify_cli_reports_retryable_external_delivery_failure(tmp_path, capsys, monkeypatch):
     db_path = str(tmp_path / "notify-cli-failure.sqlite3")
     watch = lm.add_watch(db_path, "CLI Failure", kind=lm.WATCH_KIND_EVENT, now="2026-06-01T00:00:00+00:00")
-    due_date = (dt.date.today() + dt.timedelta(days=7)).isoformat()
+    due_date = (dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=7)).isoformat()
     lm.save_blocks(
         db_path,
         _subscription_event_blocks(
@@ -3325,6 +3325,32 @@ def test_web_api_registers_device_and_serves_notifications(tmp_path):
         assert register["platform"] == "ios"
         feed = json.loads(urllib.request.urlopen(f"{base}/api/notifications", timeout=5).read().decode("utf-8"))
         assert any(item["label"] == "Lottery application opens" for item in feed)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_web_serves_public_privacy_and_support_pages(tmp_path):
+    server = lm.create_web_server(str(tmp_path / "public-pages.sqlite3"), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urllib.request.urlopen(f"{base}/privacy", timeout=5) as response:
+            privacy = response.read().decode("utf-8")
+            assert response.headers.get_content_type() == "text/html"
+        with urllib.request.urlopen(f"{base}/support", timeout=5) as response:
+            support = response.read().decode("utf-8")
+            assert response.headers.get_content_type() == "text/html"
+
+        assert "Privacy Policy" in privacy
+        assert "does not sell personal information" in privacy
+        assert "Firebase device token" in privacy
+        assert 'href="/support"' in privacy
+        assert "Chusennote Support" in support
+        assert "https://chusennote.onrender.com" in support
+        assert "github.com/otterlymavis/chusennote/issues/new" in support
+        assert 'href="/privacy"' in support
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -311,9 +311,10 @@ server that has silently fallen back to SQLite.
 The PowerShell helper delegates to this same checker, so both commands validate
 the identical endpoint and security contract.
 
-It verifies the home page, release- and schema-aware health, watchlist, events, upcoming
-rows, alerts, notification feed, subscriptions, devices, sources, and calendar
-feed. Redirects and responses larger than 1 MB are rejected. For an
+It verifies the home, privacy, and support pages; release- and schema-aware
+health; watchlist; events; upcoming rows; alerts; notification feed;
+subscriptions; devices; sources; and calendar feed. Redirects and responses
+larger than 1 MB are rejected. For an
 authenticated deployment, provide the bearer token through the temporary
 `CHUSENNOTE_SMOKE_API_TOKEN` environment variable; the command never includes
 that value in its output. Token-authenticated public smoke checks require HTTPS;
