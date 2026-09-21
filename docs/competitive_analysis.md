@@ -75,9 +75,12 @@ debug/release lint pass in the local Android SDK; all ten instrumentation
 tests also pass on an Android 15 Google APIs emulator. The backend container
 also builds from a secret-sentinel context, imports the packaged application,
 launches bundled Chromium, serves schema-v16 health as a non-root user, and
-reaches Docker's healthy state. Firebase/APNs, SMTP, chat-provider,
-physical-device delivery, production signing, and deployed-service acceptance
-remain environment-specific release gates rather than unfinished roadmap code.
+reaches Docker's healthy state. The deployed Render service at
+`https://chusennote.onrender.com` passes the PostgreSQL-required smoke suite,
+and its dashboard tabs and notifications page have been exercised against the
+live schema-v16 backend. Firebase/APNs, SMTP, chat-provider, physical-device
+delivery, and App Store distribution signing remain environment-specific
+release gates rather than unfinished roadmap code.
 Live public-source acceptance also covers manually attached Shiki, Horipro, and
 Toho official pages plus Rakuten Ticket, Ticket Board, and CN Playguide pages.
 The observed evidence includes image-alt schedules, regional dates and venues,
