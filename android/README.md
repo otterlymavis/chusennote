@@ -81,10 +81,15 @@ silently producing an unsigned release.
 
 ## Connecting to the backend
 
-Run the backend on your machine (`python lottery_monitor.py web --port 8877`)
-and set the app's **API base URL**:
+The distribution build connects to the hosted production service by default:
 
-- Emulator → host machine: `http://10.0.2.2:8877` (the default)
+- Production: `https://chusennote.onrender.com`
+
+For local development, run the backend on your machine
+(`python lottery_monitor.py web --port 8877`) and override the app's **API base
+URL**:
+
+- Emulator → host machine: `http://10.0.2.2:8877`
 - Physical device on the same network: `http://<your-PC-LAN-IP>:8877`
 
 Account credentials and FCM device tokens are sent only to HTTPS, localhost,

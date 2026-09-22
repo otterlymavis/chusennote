@@ -45,6 +45,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
+    static final String DEFAULT_BASE_URL = "https://chusennote.onrender.com";
     private static final String PREFS_NAME = "chusennote";
     private static final String PREF_BASE_URL = "base_url";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -169,14 +170,14 @@ public class MainActivity extends Activity {
         TextView title = heading("chusennote");
         root.addView(title);
 
-        statusText = body("Connect to the local chusennote server.");
+        statusText = body("Connect to the Chusennote service.");
         statusText.setId(R.id.status_text);
         root.addView(statusText);
 
         baseUrlInput = new EditText(this);
         baseUrlInput.setId(R.id.base_url_input);
         baseUrlInput.setSingleLine(true);
-        apiBaseUrl = normalizeBaseUrl(preferences().getString(PREF_BASE_URL, "http://10.0.2.2:8877"));
+        apiBaseUrl = normalizeBaseUrl(preferences().getString(PREF_BASE_URL, DEFAULT_BASE_URL));
         baseUrlInput.setText(apiBaseUrl);
         baseUrlInput.setHint("API base URL");
         baseUrlInput.addTextChangedListener(new TextWatcher() {
