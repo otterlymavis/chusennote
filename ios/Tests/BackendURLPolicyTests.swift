@@ -8,6 +8,13 @@ final class BackendURLPolicyTests: XCTestCase {
         XCTAssertTrue(BackendURLPolicy.permitsCredentialTransport(ChusennoteSettings.defaultBaseURL))
     }
 
+    func testExportComplianceDeclaresOnlyExemptEncryption() {
+        XCTAssertEqual(
+            Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption") as? Bool,
+            false
+        )
+    }
+
     func testFirebaseMessagingMatchesBundledConfiguration() {
         let configuration = Bundle.main.url(forResource: "GoogleService-Info", withExtension: "plist")
         XCTAssertEqual(DeviceRegistration.firebaseMessagingConfigured, configuration != nil)
