@@ -12,11 +12,12 @@ Event detail includes organizer and cast/lineup sections when an official page
 publishes those facts under explicit labels. The app does not infer people or
 companies from unlabeled prose.
 
-The app has three tabs: Alerts, Watch, and Settings. In Watch, tap Add and
-choose Keyword or Official Page; filters and reminder choices stay collapsed
-until needed. Settings contains Account, notifications, and the calendar feed.
-Artist watches and manual source links are under More Tracking Options. Their
-Add actions open a separate editor, leaving saved items visible first.
+The app has three tabs: Home (upcoming ticket deadlines and recent updates),
+Watching, and Settings. In Watching, tap + and choose Keyword or Official Page;
+filters and reminder choices stay collapsed until needed. Swipe an event to edit
+or remove it. Settings contains Account, notifications, the calendar feed, and,
+under More, artist watches and your own sources. Their Add actions open a
+separate editor, leaving saved items visible first.
 
 Debug builds also include Settings → Developer Tools for the server override,
 release/schema diagnostics, push-device tokens, and Send Due Reminders. These

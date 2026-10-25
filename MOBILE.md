@@ -72,12 +72,16 @@ settings screen displays all three so operators can confirm which server
 release the app is using; older servers remain decodable and show the release
 as unavailable.
 
-They display the same two product lanes as the web app:
+The web app and both mobile clients share one layout:
 
-- **Tracked Artists**: basic artist/event discovery watches with saved date and venue clues.
-- **Tracked Events**: ticket and lottery timeline watches.
+- **Home** (web: Upcoming): ticket deadlines that need action, then recent updates.
+- **Watching**: event watches, each shown as its found event, or as the keyword until one is found.
+- **Settings**: account, reminders, calendar feed, and, under More, artist watches and manual sources.
 
-Both mobile clients can add and remove tracked artists, add and remove tracked events, set and show tags plus preferred regions/venues, set and show event alert filters, restore muted tracked artists/events, add and remove manual public sources, store private source notes, open official event pages, web source URLs, and urgent ticket URLs, refresh current data, run tracked event checks, show server health, open the calendar feed, show “Needs Attention” ticket dates, show ticket evidence snippets, show event-detail manual sources where available, show official-resale windows, show organizer and cast/lineup sections from explicitly labeled public-page facts, and show recent alerts with watch context from the configured server. The iOS client additionally provides dedicated official-resale alert toggles; the additive API fields remain safe for older clients. The Python server still performs the actual scraping, persistence, and alert generation. The apps remember the API base URL locally after you change it.
+Rows use the same short wording everywhere: status · date · place, with dates
+such as `Oct 26, 23:59` (the year is shown only when it differs from this year).
+
+Both mobile clients can add and remove tracked artists, add and remove tracked events, set and show tags plus preferred regions/venues, set and show event alert filters, restore muted tracked artists/events, add and remove manual public sources, store private source notes, open official event pages, web source URLs, and urgent ticket URLs, refresh current data, run tracked event checks, show server health, open the calendar feed, show upcoming ticket dates, show ticket evidence snippets, show event-detail manual sources where available, show official-resale windows, show organizer and cast/lineup sections from explicitly labeled public-page facts, and show recent alerts with watch context from the configured server. The iOS client additionally provides dedicated official-resale alert toggles; the additive API fields remain safe for older clients. The Python server still performs the actual scraping, persistence, and alert generation. The apps remember the API base URL locally after you change it.
 
 `/api/events` and `/api/upcoming` retain machine-readable `status` codes and
 also expose `status_label` for display. `/api/alerts` likewise retains `type`

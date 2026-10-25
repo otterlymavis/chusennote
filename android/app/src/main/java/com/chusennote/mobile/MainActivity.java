@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -126,7 +127,6 @@ public class MainActivity extends Activity {
     private CheckBox sourcePrivateNoteInput;
     private KeyedRowList artistList;
     private KeyedRowList eventList;
-    private KeyedRowList watchList;
     private TextView mutedWatchHeading;
     private KeyedRowList mutedWatchList;
     private KeyedRowList needsAttentionList;
@@ -416,11 +416,11 @@ public class MainActivity extends Activity {
     }
 
     private void buildAlertsPage(LinearLayout page) {
-        page.addView(section("Needs Attention"));
+        page.addView(section("Upcoming"));
         needsAttentionList = rowList();
         page.addView(needsAttentionList.container());
 
-        page.addView(section("Recent Alerts"));
+        page.addView(section("Recent Updates"));
         alertList = rowList();
         page.addView(alertList.container());
     }
@@ -496,14 +496,11 @@ public class MainActivity extends Activity {
         eventList = rowList();
         eventList.container().setId(R.id.event_list);
         page.addView(eventList.container());
-        page.addView(section("Keyword Watches"));
-        watchList = rowList();
-        page.addView(watchList.container());
         Button checkNow = textButton(getString(R.string.check_now), () -> runWatches("event"));
         checkButtons.add(checkNow);
         page.addView(checkNow);
 
-        mutedWatchHeading = section("Removed Watches");
+        mutedWatchHeading = section("Removed");
         page.addView(mutedWatchHeading);
         mutedWatchList = rowList();
         page.addView(mutedWatchList.container());
@@ -935,9 +932,9 @@ public class MainActivity extends Activity {
             if (result == null) {
                 continue;
             }
-            String title = result.optString("title", "").trim();
-            String url = result.optString("url", "").trim();
-            String snippet = result.optString("snippet", "").trim();
+            String title = text(result, "title").trim();
+            String url = text(result, "url").trim();
+            String snippet = text(result, "snippet").trim();
             String detail = url + (snippet.isEmpty() ? "" : "\n" + snippet);
             exactEventResultList.addView(row(
                     title.isEmpty() ? url : title,
@@ -1405,6 +1402,13 @@ public class MainActivity extends Activity {
         List<KeyedRowList.Row> mutedWatchRows = new ArrayList<>();
         int artistCount = 0;
         int eventCount = 0;
+        Set<Integer> watchIdsWithEvents = new HashSet<>();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event != null && !"artist".equals(event.optString("watch_kind"))) {
+                watchIdsWithEvents.add(event.optInt("watch_id"));
+            }
+        }
 
         for (int i = 0; i < watches.length(); i++) {
             JSONObject watch = watches.optJSONObject(i);
@@ -1418,23 +1422,25 @@ public class MainActivity extends Activity {
             if (watch.optBoolean("muted")) {
                 mutedWatchRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
                         keyword,
-                        kind + "\n" + watchPreferences(watch, "event".equals(kind)),
+                        watchCheckedText(watch),
                         new Action("Restore", () -> restoreWatch(id)))));
                 continue;
             }
             if ("artist".equals(kind)) {
                 artistRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
                         keyword,
-                        watchPreferences(watch, false),
+                        watchCheckedText(watch),
                         new Action("Notify Me", () -> addSubscription(id, "artist_all")),
                         new Action("Remove", () -> removeWatch(id)))));
                 artistCount++;
             } else {
-                watchRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
-                        keyword,
-                        watchPreferences(watch, true),
-                        new Action("Notify Me", () -> addSubscription(id, "event_all")),
-                        new Action("Remove", () -> removeWatch(id)))));
+                // A watch that found an event is shown as that event below.
+                if (!watchIdsWithEvents.contains(id)) {
+                    watchRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
+                            keyword,
+                            watchCheckedText(watch),
+                            new Action("Remove", () -> removeWatch(id)))));
+                }
                 eventCount++;
             }
         }
@@ -1447,7 +1453,7 @@ public class MainActivity extends Activity {
                 continue;
             }
             String title = event.optString("title", "Untitled event");
-            String officialUrl = event.optString("official_url", "");
+            String officialUrl = text(event, "official_url");
             if ("artist".equals(event.optString("watch_kind"))) {
                 artistRows.add(new KeyedRowList.Row(
                         "artist-event:" + event.optInt("id", i), event.toString(), () -> row(
@@ -1463,18 +1469,19 @@ public class MainActivity extends Activity {
             String eventKey = key;
             eventsByKey.put(eventKey, event);
             // The list shows a summary; everything else is on the detail page.
+            int watchId = event.optInt("watch_id");
             eventRows.add(new KeyedRowList.Row(eventKey, event.toString(), () -> row(
                     title,
                     eventSummary(event),
                     new Action("Details", () -> showEventDetail(eventKey)),
-                    openAction("Official Page", officialUrl))));
+                    new Action("Remove", () -> removeWatch(watchId)))));
         }
         if (openEventKey != null) {
             showEventDetail(openEventKey);
         }
         showRows(artistList, artistRows, "No tracked artists yet.");
-        showRows(watchList, watchRows, "No keyword watches. Add one to discover matching events.");
-        showRows(eventList, eventRows, "Add an event to keep its ticket dates and updates here.");
+        eventRows.addAll(watchRows);
+        showRows(eventList, eventRows, "Add an event to keep its ticket dates here.");
         showRows(mutedWatchList, mutedWatchRows, null);
 
         List<KeyedRowList.Row> needsAttentionRows = new ArrayList<>();
@@ -1485,7 +1492,9 @@ public class MainActivity extends Activity {
             }
             needsAttentionRows.add(new KeyedRowList.Row("upcoming:" + i, item.toString(), () -> upcomingRow(item)));
         }
-        showRows(needsAttentionList, needsAttentionRows, "No upcoming ticket dates. Follow an event in Watch to get started.");
+        showRows(needsAttentionList, needsAttentionRows, eventCount == 0
+                ? "Watch an event to see its ticket deadlines here."
+                : "Nothing needs your attention right now.");
 
         List<KeyedRowList.Row> sourceRows = new ArrayList<>();
         List<KeyedRowList.Row> mutedSourceRows = new ArrayList<>();
@@ -1512,11 +1521,11 @@ public class MainActivity extends Activity {
             }
             alertRows.add(new KeyedRowList.Row("alert:" + i, alert.toString(), () -> alertRow(alert)));
         }
-        showRows(alertList, alertRows, "New ticket updates will appear here.");
+        showRows(alertList, alertRows, "Ticket updates will appear here.");
         renderNotificationFeed(notificationFeed);
         renderSubscriptions(subscriptions, watches);
         renderDevices(devices);
-        String version = health.optString("version", "").trim();
+        String version = text(health, "version").trim();
         int build = health.optInt("build", -1);
         int schemaVersion = health.optInt("schema_version", -1);
         String release = version.isEmpty() || build < 0
@@ -1532,7 +1541,7 @@ public class MainActivity extends Activity {
                 R.plurals.event_count, trackedEvents, trackedEvents);
         String alertSummary = getResources().getQuantityString(
                 R.plurals.alert_count, alertCount, alertCount);
-        statusText.setText("ok".equalsIgnoreCase(health.optString("status", ""))
+        statusText.setText("ok".equalsIgnoreCase(text(health, "status"))
                 ? R.string.updated_just_now : R.string.updates_may_be_delayed);
         if (BuildConfig.DEBUG) {
             debugStatusText.setText(getString(
@@ -1554,52 +1563,61 @@ public class MainActivity extends Activity {
         list.render(rows);
     }
 
+    /** Status, first date, and venue on one line, as on the web and iOS. */
     private String eventSummary(JSONObject event) {
-        JSONArray rounds = event.optJSONArray("rounds");
-        StringBuilder detail = new StringBuilder(EventStatusText.label(
-                event.optString("status_label", ""),
-                event.optString("status", "watching")));
-        detail.append(" - ").append(rounds == null ? 0 : rounds.length()).append(" ticket rounds");
-        appendNonEmptyLine(detail, eventClues(event));
-        appendLabeledLine(detail, "Why", joinFirst(event.optJSONArray("match_reasons")));
-        return detail.toString();
+        JSONArray dates = event.optJSONArray("event_dates");
+        // Prefer the backend's honest venue_label (real venues, "Multiple cities"
+        // for a tour, or a dash) over the raw venues array, which is empty for tours.
+        String venue = text(event, "venue_label");
+        if (venue.isEmpty()) {
+            venue = joinFirst(event.optJSONArray("venues"));
+        }
+        return FriendlyDate.meta(
+                EventStatusText.label(text(event, "status_label"), event.optString("status", "watching")),
+                dates == null || dates.length() == 0 ? "" : FriendlyDate.format(dates.optString(0)),
+                venue);
     }
 
     private String artistEventSummary(JSONObject event) {
-        StringBuilder detail = new StringBuilder(EventStatusText.label(
-                event.optString("status_label", ""),
-                event.optString("status", "watching")));
-        appendNonEmptyLine(detail, eventClues(event));
-        appendLabeledLine(detail, "Why", joinFirst(event.optJSONArray("match_reasons")));
-        return detail.toString();
+        return eventSummary(event);
+    }
+
+    private String watchCheckedText(JSONObject watch) {
+        String checked = watch.isNull("last_checked_at") ? "" : text(watch, "last_checked_at");
+        return checked.isEmpty() ? "Not checked yet" : "Checked " + FriendlyDate.day(checked);
     }
 
     private View upcomingRow(JSONObject item) {
-        String statusText = item.optString("status_label", "");
-        if (statusText.isEmpty()) {
-            statusText = item.optString("status", "unknown");
-        }
-        String detail = statusText
-                + " - " + item.optString("platform", "unknown")
-                + " - " + item.optString("round_name", "Ticket round")
-                + " - " + item.optString("relevant_date", "date unknown");
-        String reasons = joinFirst(item.optJSONArray("match_reasons"));
-        if (!reasons.isEmpty()) {
-            detail = detail + "\nWhy: " + reasons;
-        }
+        StringBuilder detail = new StringBuilder(FriendlyDate.meta(
+                text(item, "status_label"),
+                FriendlyDate.format(text(item, "relevant_date")),
+                text(item, "platform")));
+        appendNonEmptyLine(detail, text(item, "round_name"));
+        String eventKey = eventKeyForId(item.optInt("event_id", -1));
         return row(
                 item.optString("event_title", "Untitled event"),
-                detail,
-                openAction("Open", item.optString("url", "")));
+                detail.toString(),
+                eventKey == null
+                        ? openAction("Open", text(item, "url"))
+                        : new Action("Details", () -> showEventDetail(eventKey)));
+    }
+
+    private String eventKeyForId(int eventId) {
+        for (Map.Entry<String, JSONObject> entry : eventsByKey.entrySet()) {
+            if (entry.getValue().optInt("id", -2) == eventId) {
+                return entry.getKey();
+            }
+        }
+        return null;
     }
 
     private View sourceRow(JSONObject source, int id, boolean muted) {
         String mode = source.optBoolean("private_note") ? "private note" : source.optString("platform", "manual");
-        String detail = "Watch #" + source.optInt("watch_id") + " - " + mode + "\n" + source.optString("url", "");
+        String detail = mode;
         return row(
                 source.optString("label", "Source"),
                 detail,
-                openAction("Open", source.optString("url", "")),
+                openAction("Open", text(source, "url")),
                 muted
                         ? new Action("Restore", () -> restoreSource(id))
                         : new Action("Remove", () -> removeSource(id)));
@@ -1607,20 +1625,17 @@ public class MainActivity extends Activity {
 
     private View alertRow(JSONObject alert) {
         String title = AlertTypeText.label(
-                alert.optString("type_label", ""),
+                text(alert, "type_label"),
                 alert.optString("type", "alert"));
-        String detail = alert.optString("event", alert.optString("event_title", alert.optString("keyword", ""))) + " " + alert.optString("round", "");
-        if (alert.has("event_id")) {
-            detail = detail.trim() + "\nEvent #" + alert.optInt("event_id");
+        String event = alert.optString("event_title", text(alert, "event"));
+        if (event.isEmpty()) {
+            event = alert.optString("watch_keyword", text(alert, "keyword"));
         }
-        String watchKeyword = alert.optString("watch_keyword", "");
-        if (!watchKeyword.isEmpty()) {
-            String muted = alert.optBoolean("watch_muted") ? " muted" : "";
-            detail = detail.trim() + "\n" + alert.optString("watch_kind", "watch") + " " + watchKeyword + muted;
-        } else if (alert.has("watch_id")) {
-            detail = detail.trim() + "\nWatch #" + alert.optInt("watch_id");
-        }
-        return row(title, detail.trim());
+        String round = text(alert, "round");
+        return row(title, FriendlyDate.meta(
+                event,
+                round.equals(event) ? "" : round,
+                FriendlyDate.day(text(alert, "created_at"))));
     }
 
     private void renderNotificationFeed(JSONArray notificationFeed) {
@@ -1632,16 +1647,16 @@ public class MainActivity extends Activity {
             }
             rows.add(new KeyedRowList.Row("reminder:" + i, item.toString(), () -> {
                 StringBuilder detail = new StringBuilder();
-                appendNonEmptyLine(detail, item.optString("body", ""));
-                appendNonEmptyLine(detail, item.optString("event_title", ""));
-                appendLabeledLine(detail, "Location", item.optString("location", ""));
-                appendLabeledLine(detail, "Date", item.optString("date", ""));
-                appendLabeledLine(detail, "Channel", item.optString("channel", ""));
-                appendNonEmptyLine(detail, item.optString("created_at", ""));
+                appendNonEmptyLine(detail, text(item, "body"));
+                appendNonEmptyLine(detail, FriendlyDate.meta(
+                        text(item, "event_title"),
+                        text(item, "location"),
+                        FriendlyDate.format(text(item, "date")),
+                        FriendlyDate.day(text(item, "created_at"))));
                 return row(
                         item.optString("title", item.optString("label", "Reminder")),
                         detail.toString(),
-                        openAction("Open", item.optString("url", "")));
+                        openAction("Open", text(item, "url")));
             }));
         }
         showRows(notificationFeedList, rows, "No delivered reminders.");
@@ -1657,18 +1672,17 @@ public class MainActivity extends Activity {
             int id = subscription.optInt("id");
             int watchId = subscription.optInt("watch_id");
             String keyword = watchKeyword(watches, watchId);
-            String title = keyword.isEmpty() ? "Watch #" + watchId : keyword;
+            String title = keyword.isEmpty() ? "Removed watch" : keyword;
             // The title comes from the watch list, so it is part of what this row shows.
             rows.add(new KeyedRowList.Row("subscription:" + id, title + "\n" + subscription, () -> {
-                StringBuilder detail = new StringBuilder();
-                appendLabeledLine(detail, "Scope", subscription.optString("scope", ""));
-                appendLabeledLine(detail, "Location", subscription.optString("location", ""));
-                appendLabeledLine(detail, "Round", subscription.optString("round_key", ""));
-                appendLabeledLine(detail, "Channels", subscription.optString("channels", ""));
-                appendLabeledLine(detail, "Lead days", subscription.optString("lead_days", ""));
+                String leadDays = text(subscription, "lead_days");
                 return row(
                         title,
-                        detail.toString(),
+                        FriendlyDate.meta(
+                                subscriptionScopeLabel(text(subscription, "scope")),
+                                text(subscription, "location"),
+                                text(subscription, "channels").replace(",", ", "),
+                                leadDays.isEmpty() ? "" : leadDays + " days before"),
                         new Action("Remove", () -> removeSubscription(id)));
             }));
         }
@@ -1683,16 +1697,31 @@ public class MainActivity extends Activity {
                 continue;
             }
             rows.add(new KeyedRowList.Row("device:" + device.optInt("id", i), device.toString(), () -> {
-                String title = device.optString("label", "").trim();
+                String title = text(device, "label").trim();
                 if (title.isEmpty()) {
                     title = device.optString("platform", "Device");
                 }
                 String detail = device.optString("platform", "unknown")
-                        + "\nToken: " + abbreviatedToken(device.optString("token", ""));
+                        + "\nToken: " + abbreviatedToken(text(device, "token"));
                 return row(title, detail);
             }));
         }
         showRows(deviceList, rows, "No push devices registered.");
+    }
+
+    private static String subscriptionScopeLabel(String scope) {
+        switch (scope) {
+            case "artist_all":
+                return "All shows";
+            case "event_all":
+                return "All rounds";
+            case "event_location":
+                return "One location";
+            case "round":
+                return "One round";
+            default:
+                return scope;
+        }
     }
 
     private String abbreviatedToken(String token) {
@@ -1709,7 +1738,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < watches.length(); i++) {
             JSONObject watch = watches.optJSONObject(i);
             if (watch != null && watch.optInt("id") == watchId) {
-                return watch.optString("keyword", "");
+                return text(watch, "keyword");
             }
         }
         return "";
@@ -1732,49 +1761,15 @@ public class MainActivity extends Activity {
         appendNonEmptyLine(detail, label + ": " + value.trim());
     }
 
-    /** Only the preferences that are set, so an unconfigured watch stays a single line. */
-    private String watchPreferences(JSONObject watch, boolean includeAlerts) {
-        StringBuilder detail = new StringBuilder();
-        appendLabeledLine(detail, "Tags", watch.optString("tags", ""));
-        appendLabeledLine(detail, "Regions", watch.optString("preferred_regions", ""));
-        appendLabeledLine(detail, "Venues", watch.optString("preferred_venues", ""));
-        if (includeAlerts) {
-            appendLabeledLine(detail, "Alerts", AlertTypeText.labels(watch.optString("alert_preferences", "")));
-        }
-        appendLabeledLine(
-                detail,
-                "Last checked",
-                watch.isNull("last_checked_at") ? "never" : watch.optString("last_checked_at", "never"));
-        return detail.toString();
-    }
-
-    private String eventClues(JSONObject event) {
-        StringBuilder detail = new StringBuilder();
-        String dates = joinFirst(event.optJSONArray("event_dates"));
-        // Prefer the backend's honest venue_label (real venues, "Multiple cities"
-        // for a tour, or a dash) over the raw venues array, which is empty for
-        // tour listings and read as missing data.
-        String venue = event.optString("venue_label", "");
-        if (venue.isEmpty()) {
-            venue = joinFirst(event.optJSONArray("venues"));
-        }
-        appendLabeledLine(detail, "Dates", dates);
-        appendLabeledLine(detail, "Venue", venue);
-        return detail.toString();
-    }
-
     /** One event is one block in the list: a summary row followed by indented detail rows. */
     private View trackedEventBlock(JSONObject event, String summaryDetail) {
         int watchId = event.optInt("watch_id");
-        StringBuilder overview = new StringBuilder(summaryDetail);
-        appendLabeledLine(overview, "Summary", shortened(event.optString("summary", "")));
-        appendLabeledText(event, "Updated", "updated_at", overview);
         LinearLayout block = new LinearLayout(this);
         block.setOrientation(LinearLayout.VERTICAL);
         block.addView(row(
                 event.optString("title", "Untitled event"),
-                overview.toString(),
-                openAction("Official Page", event.optString("official_url", "")),
+                summaryDetail,
+                openAction("Official Page", text(event, "official_url")),
                 new Action("Notify Me", () -> addSubscription(watchId, "event_all"))));
 
         JSONArray rounds = event.optJSONArray("rounds");
@@ -1808,38 +1803,46 @@ public class MainActivity extends Activity {
     }
 
     private void addTicketRoundRow(LinearLayout block, int watchId, JSONObject round) {
-        StringBuilder detail = new StringBuilder();
-        appendLabeledText(round, "Status", "status_label", detail);
-        appendLabeledText(round, "Platform", "platform", detail);
-        appendLabeledText(round, "Type", "round_type_label", detail);
-        appendLabeledText(round, "Access", "membership_label", detail);
-        appendLabeledText(round, "Schedule", "schedule_label", detail);
-        if (round.has("confidence")) {
-            appendNonEmptyLine(detail, "Confidence: " + round.optInt("confidence") + "%");
-        }
-        appendLabeledLine(detail, "Evidence", shortened(round.optString("evidence", "")));
-        String roundKey = round.optString("round_key", "");
+        StringBuilder detail = new StringBuilder(FriendlyDate.meta(
+                text(round, "status_label"),
+                text(round, "platform"),
+                text(round, "membership_label")));
+        // Only dates the source published; many lotteries never list results or payment.
+        String schedule = FriendlyDate.meta(
+                labeled("Apply", FriendlyDate.range(text(round, "application_start_at"), text(round, "application_end_at"))),
+                labeled("Results", FriendlyDate.format(text(round, "results_date"))),
+                labeled("Payment due", FriendlyDate.format(text(round, "payment_end_at"))),
+                labeled("On sale", FriendlyDate.format(text(round, "general_sale_date"))),
+                labeled("Resale", FriendlyDate.range(text(round, "trade_start_at"), text(round, "trade_end_at"))));
+        appendNonEmptyLine(detail, schedule.isEmpty() ? text(round, "schedule_label") : schedule);
+        String roundKey = text(round, "round_key");
         block.addView(subRow(
                 round.optString("name", "Ticket round"),
                 detail.toString(),
                 roundKey.isEmpty()
                         ? null
                         : new Action("Notify Me", () -> addSubscription(watchId, "round", "", roundKey)),
-                openAction("Ticket Page", round.optString("url", ""))));
+                openAction("Source", text(round, "url"))));
+    }
+
+    /** {@code optString} turns a JSON null into the text "null"; this returns "" instead. */
+    private static String text(JSONObject object, String key) {
+        return object == null || object.isNull(key) ? "" : object.optString(key, "");
+    }
+
+    private static String labeled(String label, String value) {
+        return value == null || value.isEmpty() ? "" : label + " " + value;
     }
 
     private void addEventLocationRow(LinearLayout block, int watchId, JSONObject location) {
-        String locationKey = location.optString("location", "").trim();
+        String locationKey = text(location, "location").trim();
         if (locationKey.isEmpty()) {
             return;
         }
-        StringBuilder detail = new StringBuilder();
-        appendLabeledText(location, "City", "city", detail);
-        appendLabeledText(location, "Venue", "venue", detail);
-        appendLabeledText(location, "Date", "date", detail);
+        String venue = text(location, "venue");
         block.addView(subRow(
-                "Location: " + locationKey,
-                detail.toString(),
+                locationKey,
+                FriendlyDate.meta(venue.equals(locationKey) ? "" : venue, FriendlyDate.format(text(location, "date"))),
                 new Action("Notify Me", () -> addSubscription(watchId, "event_location", locationKey, ""))));
     }
 
@@ -1852,16 +1855,10 @@ public class MainActivity extends Activity {
             if (link == null) {
                 continue;
             }
-            StringBuilder detail = new StringBuilder();
-            appendLabeledText(link, "Platform", "platform", detail);
-            appendLabeledText(link, "Source", "provenance", detail);
-            if (link.has("confidence")) {
-                appendNonEmptyLine(detail, "Confidence: " + link.optInt("confidence") + "%");
-            }
             block.addView(subRow(
                     link.optString("label", "Ticket link"),
-                    detail.toString(),
-                    openAction("Ticket Link", link.optString("url", ""))));
+                    text(link, "platform"),
+                    openAction("Open", text(link, "url"))));
         }
     }
 
@@ -1892,7 +1889,7 @@ public class MainActivity extends Activity {
             block.addView(subRow(
                     source.optString("label", "Manual source"),
                     mode,
-                    openAction("Source", source.optString("url", ""))));
+                    openAction("Source", text(source, "url"))));
         }
     }
 
@@ -1905,26 +1902,18 @@ public class MainActivity extends Activity {
             if (related == null) {
                 continue;
             }
-            StringBuilder detail = new StringBuilder("Related saved event");
-            appendLabeledText(related, "Date", "event_date", detail);
-            appendLabeledText(related, "Venue", "venue_label", detail);
-            String reasons = joinFirst(related.optJSONArray("recommendation_reasons"));
-            appendLabeledLine(detail, "Why", reasons);
             block.addView(subRow(
                     related.optString("title", "Related event"),
-                    detail.toString(),
-                    openAction("Official Page", related.optString("official_url", ""))));
+                    FriendlyDate.meta(
+                            FriendlyDate.format(text(related, "event_date")),
+                            text(related, "venue_label"),
+                            joinFirst(related.optJSONArray("recommendation_reasons"))),
+                    openAction("Official Page", text(related, "official_url"))));
         }
     }
 
     private void appendLabeledText(JSONObject object, String label, String key, StringBuilder detail) {
         appendLabeledLine(detail, label, object.optString(key, ""));
-    }
-
-    /** Scraped page text can run to paragraphs; a row only needs enough to recognize it. */
-    private String shortened(String value) {
-        String text = value == null ? "" : value.trim();
-        return text.length() <= 160 ? text : text.substring(0, 160).trim() + "…";
     }
 
     private String joinFirst(JSONArray values) {
