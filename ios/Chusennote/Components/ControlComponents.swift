@@ -186,20 +186,3 @@ struct AlertPreferenceToggles: View {
         AlertPresetToggle(title: "Watch failed", key: "watch_failed", alerts: $alerts)
     }
 }
-
-/// A collapsed list of plain text facts. Renders nothing when there are none.
-struct DetailDisclosure: View {
-    let title: String
-    let items: [String]
-
-    var body: some View {
-        if !items.isEmpty {
-            DisclosureGroup("\(title) (\(items.count))") {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    Text(item)
-                        .font(Typography.rowSubtitle)
-                }
-            }
-        }
-    }
-}

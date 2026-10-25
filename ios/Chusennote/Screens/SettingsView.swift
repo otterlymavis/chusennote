@@ -26,27 +26,33 @@ struct SettingsView: View {
             Section("Notifications") {
                 NotificationPermissionRows(permission: notificationPermission)
 
-                NavigationLink("Subscriptions") {
+                NavigationLink("Reminders") {
                     SubscriptionsScreen(store: store)
                 }
                 .badge(store.subscriptions.count)
 
-                NavigationLink("Delivered Reminders") {
+                NavigationLink("Recent Reminders") {
                     DeliveredRemindersScreen(store: store)
                 }
                 .badge(store.notificationFeed.count)
-            }
 
-            Section("Calendar") {
                 CalendarFeedButton(store: store)
             }
 
             Section {
-                NavigationLink {
-                    TrackingOptionsScreen(store: store, sourceDraft: $sourceDraft)
-                } label: {
-                    Label("More Tracking Options", systemImage: "slider.horizontal.3")
+                NavigationLink("Artists") {
+                    ArtistsScreen(store: store)
                 }
+                .badge(store.trackedArtists.count)
+
+                NavigationLink("Your Sources") {
+                    SourcesScreen(store: store, draft: $sourceDraft)
+                }
+                .badge(store.activeSources.count)
+            } header: {
+                Text("More")
+            } footer: {
+                Text("Follow artists to discover new shows, or add a ticket page a watch has missed.")
             }
 
             #if DEBUG
@@ -76,31 +82,6 @@ private struct CalendarFeedButton: View {
                 }
             }
         }
-    }
-}
-
-private struct TrackingOptionsScreen: View {
-    let store: ChusennoteStore
-    @Binding var sourceDraft: SourceDraft
-
-    var body: some View {
-        List {
-            Section {
-                NavigationLink("Artists") {
-                    ArtistsScreen(store: store)
-                }
-                .badge(store.trackedArtists.count)
-
-                NavigationLink("Manual Sources") {
-                    SourcesScreen(store: store, draft: $sourceDraft)
-                }
-                .badge(store.activeSources.count)
-            } footer: {
-                Text("Discover shows by artist, or add a source that a watch has missed.")
-            }
-        }
-        .navigationTitle("More Tracking")
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -283,7 +264,7 @@ private struct SubscriptionsScreen: View {
                 }
             }
         }
-        .navigationTitle("Subscriptions")
+        .navigationTitle("Reminders")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -307,7 +288,7 @@ private struct DeliveredRemindersScreen: View {
                 }
             }
         }
-        .navigationTitle("Delivered Reminders")
+        .navigationTitle("Recent Reminders")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -466,7 +447,7 @@ private struct SourcesScreen: View {
                 }
             }
         }
-        .navigationTitle("Manual Sources")
+        .navigationTitle("Your Sources")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

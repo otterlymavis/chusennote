@@ -11,61 +11,70 @@ struct WatchView: View {
         List {
             ErrorSection(store: store)
 
-            if store.ticketEvents.isEmpty && store.trackedEvents.isEmpty {
+            if store.trackedEvents.isEmpty && store.ticketEvents.isEmpty {
                 ContentUnavailableView(
                     "Watch an event",
                     systemImage: "ticket",
-                    description: Text("Tap Add to follow a keyword or find a specific event page.")
+                    description: Text("Tap + to follow an event name or find its official page.")
                 )
             } else {
-                Section("Saved Events") {
-                    if store.ticketEvents.isEmpty {
-                        EmptyRow("No events found yet. Tap Check Now to search your watches.")
-                    } else {
-                    ForEach(store.ticketEvents) { event in
-                        NavigationLink {
-                            EventDetailView(store: store, event: event)
-                        } label: {
-                            EventRow(event: event)
-                        }
-                    }
-                    }
-                }
-
-                if !store.trackedEvents.isEmpty {
-                    Section("Watches") {
+                Section {
                     ForEach(store.trackedEvents) { watch in
-                        MenuRow(title: watch.keyword, subtitle: chusennoteWatchText(watch)) {
+                        let events = store.ticketEvents.filter { $0.watchId == watch.id }
+                        Group {
+                            if events.isEmpty {
+                                TextRow(title: watch.keyword, subtitle: chusennoteWatchText(watch))
+                            } else {
+                                ForEach(events) { event in
+                                    NavigationLink {
+                                        EventDetailView(store: store, event: event)
+                                    } label: {
+                                        EventRow(event: event)
+                                    }
+                                }
+                            }
+                        }
+                        .swipeActions {
+                            Button("Remove", role: .destructive) {
+                                Task { await store.removeWatch(id: watch.id) }
+                            }
+                            Button("Edit") {
+                                draft = WatchDraft(editing: watch)
+                                showsEditor = true
+                            }
+                        }
+                        .contextMenu {
                             Button {
                                 draft = WatchDraft(editing: watch)
                                 showsEditor = true
                             } label: {
-                                Label("Edit", systemImage: "pencil")
+                                Label("Edit Filters", systemImage: "slider.horizontal.3")
                             }
                             Button(role: .destructive) {
                                 Task { await store.removeWatch(id: watch.id) }
                             } label: {
-                                Label("Remove", systemImage: "trash")
+                                Label("Stop Watching", systemImage: "trash")
                             }
                         }
                     }
-                    }
+                } footer: {
+                    Text("Swipe a row to edit or remove it.")
                 }
             }
 
             if !store.mutedEventWatches.isEmpty {
                 Section {
-                    DisclosureGroup("Removed Watches (\(store.mutedEventWatches.count))") {
-                    ForEach(store.mutedEventWatches) { watch in
-                        ActionRow(title: watch.keyword, subtitle: chusennoteWatchText(watch), actionTitle: "Restore") {
-                            Task { await store.restoreWatch(id: watch.id) }
+                    DisclosureGroup("Removed (\(store.mutedEventWatches.count))") {
+                        ForEach(store.mutedEventWatches) { watch in
+                            ActionRow(title: watch.keyword, subtitle: chusennoteWatchText(watch), actionTitle: "Restore") {
+                                Task { await store.restoreWatch(id: watch.id) }
+                            }
                         }
-                    }
                     }
                 }
             }
         }
-        .navigationTitle("Watch")
+        .navigationTitle("Watching")
         .refreshable {
             await store.refresh()
         }

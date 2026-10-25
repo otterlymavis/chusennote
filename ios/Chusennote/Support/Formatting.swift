@@ -38,16 +38,40 @@ func alertCount(_ value: String) -> Int {
 }
 
 func chusennoteWatchText(_ watch: Watch) -> String {
-    let reminders = alertCount(watch.alertPreferences ?? "")
-    return [
-        watch.preferredRegions,
-        watch.preferredVenues,
-        reminders == 1 ? "1 reminder" : "\(reminders) reminders",
-        watch.lastCheckedAt.map { "checked \($0)" } ?? "not checked yet"
-    ]
-        .compactMap { $0 }
-        .filter { !$0.isEmpty }
-        .joined(separator: " · ")
+    watch.lastCheckedAt.map { "Checked \(friendlyDate($0))" } ?? "Not checked yet"
+}
+
+/// Shows `2026-10-26T23:59` as `Oct 26, 23:59`, adding the year only when it
+/// is not this year. Free-text date clues such as `10月下旬` pass through.
+func friendlyDate(_ value: String?, today: Date = Date()) -> String {
+    let text = trimmed(value ?? "")
+    let parts = text.prefix(16).split(whereSeparator: { "-T :".contains($0) }).compactMap { Int($0) }
+    guard text.range(of: #"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?([+-]\d{2}:?\d{2}|Z)?)?$"#, options: .regularExpression) != nil,
+          parts.count >= 3,
+          let date = Calendar(identifier: .gregorian).date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    else { return text }
+    let calendar = Calendar(identifier: .gregorian)
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = calendar.component(.year, from: date) == calendar.component(.year, from: today) ? "MMM d" : "MMM d, yyyy"
+    var label = formatter.string(from: date)
+    if parts.count >= 5 {
+        label += String(format: ", %02d:%02d", parts[3], parts[4])
+    }
+    return label
+}
+
+func friendlyDateRange(_ start: String?, _ end: String?) -> String {
+    let startText = friendlyDate(start)
+    let endText = friendlyDate(end)
+    if !startText.isEmpty, !endText.isEmpty {
+        return "\(startText) – \(endText)"
+    }
+    return startText.isEmpty ? (endText.isEmpty ? "" : "until \(endText)") : startText
+}
+
+func joinedMeta(_ parts: [String?]) -> String {
+    parts.compactMap { $0 }.filter { !$0.isEmpty && $0 != "—" }.joined(separator: " · ")
 }
 
 func eventStatusText(statusLabel: String?, status: String?) -> String {
@@ -69,20 +93,7 @@ func eventStatusText(_ event: EventSummary) -> String {
 }
 
 func eventRowText(_ event: EventSummary) -> String {
-    let rounds = event.rounds.count == 1 ? "1 round" : "\(event.rounds.count) rounds"
-    var lines = ["\(eventStatusText(event)) · \(rounds)"]
-    let details = [event.eventDates?.first, event.venueLabel]
-        .compactMap { $0 }
-        .filter { !$0.isEmpty }
-        .joined(separator: " · ")
-    if !details.isEmpty {
-        lines.append(details)
-    }
-    if let round = sortTicketRoundsNewestFirst(event.rounds).first,
-       let date = ticketRoundDateItems(round).first {
-        lines.append("\(ticketRoundTitle(round)): \(date.label.lowercased()) \(date.value)")
-    }
-    return lines.joined(separator: "\n")
+    joinedMeta([eventStatusText(event), friendlyDate(event.eventDates?.first), event.venueLabel])
 }
 
 func alertTypeText(typeLabel: String?, type: String) -> String {
@@ -119,28 +130,7 @@ func ticketRoundTitle(_ round: TicketRound) -> String {
 }
 
 func ticketRoundStatusText(_ round: TicketRound) -> String {
-    [
-        round.platform?.isEmpty == false ? round.platform : "unknown",
-        round.statusLabel?.isEmpty == false ? round.statusLabel : round.status
-    ]
-        .compactMap { $0 }
-        .filter { !$0.isEmpty }
-        .joined(separator: " - ")
-}
-
-func ticketRoundGroups(_ rounds: [TicketRound]) -> [TicketRoundGroup] {
-    let grouped = Dictionary(grouping: rounds, by: ticketRoundWebsite)
-    return grouped.map { website, rounds in
-        TicketRoundGroup(website: website, rounds: sortTicketRoundsNewestFirst(rounds))
-    }
-    .sorted { first, second in
-        let firstDate = first.rounds.map(ticketRoundSortKey).max() ?? ""
-        let secondDate = second.rounds.map(ticketRoundSortKey).max() ?? ""
-        if firstDate == secondDate {
-            return first.website.localizedCaseInsensitiveCompare(second.website) == .orderedAscending
-        }
-        return firstDate > secondDate
-    }
+    joinedMeta([round.statusLabel, ticketRoundWebsite(round), round.membershipLabel])
 }
 
 func sortTicketRoundsNewestFirst(_ rounds: [TicketRound]) -> [TicketRound] {
@@ -161,7 +151,7 @@ func ticketRoundWebsite(_ round: TicketRound) -> String {
     if let url = chusennoteWebURL(round.url), let host = url.host, !host.isEmpty {
         return host.replacingOccurrences(of: "www.", with: "")
     }
-    return "Unknown website"
+    return ""
 }
 
 func ticketRoundSortKey(_ round: TicketRound) -> String {
@@ -184,13 +174,11 @@ func ticketRoundDateValues(_ round: TicketRound) -> [String] {
 
 func ticketRoundDateItems(_ round: TicketRound) -> [TicketRoundDateItem] {
     [
-        ticketRoundDateItem("Apply opens", round.applicationStartAt),
-        ticketRoundDateItem("Apply closes", round.applicationEndAt),
-        ticketRoundDateItem("Results", round.resultsDate),
-        ticketRoundDateItem("Payment due", round.paymentEndAt),
-        ticketRoundDateItem("General sale", round.generalSaleDate),
-        ticketRoundDateItem("Resale opens", round.tradeStartAt),
-        ticketRoundDateItem("Resale closes", round.tradeEndAt)
+        ticketRoundDateItem("Apply", friendlyDateRange(round.applicationStartAt, round.applicationEndAt)),
+        ticketRoundDateItem("Results", friendlyDate(round.resultsDate)),
+        ticketRoundDateItem("Payment due", friendlyDate(round.paymentEndAt)),
+        ticketRoundDateItem("On sale", friendlyDate(round.generalSaleDate)),
+        ticketRoundDateItem("Resale", friendlyDateRange(round.tradeStartAt, round.tradeEndAt))
     ]
         .compactMap { $0 }
 }
@@ -205,11 +193,6 @@ func ticketRoundScheduleText(_ round: TicketRound) -> String {
     return schedule
 }
 
-func labeledRoundDate(_ label: String, _ value: String?) -> String? {
-    guard let value, !value.isEmpty else { return nil }
-    return "\(label): \(value)"
-}
-
 func sourceMode(_ source: WatchSource) -> String {
     source.privateNote ? "private note" : source.platform
 }
@@ -219,34 +202,19 @@ func sourceText(_ source: WatchSource) -> String {
 }
 
 func chusennoteAlertText(_ alert: AlertPayload) -> String {
-    var parts: [String] = []
-    for value in [alert.event, alert.eventTitle, alert.keyword, alert.round].compactMap({ $0 }).filter({ !$0.isEmpty }) {
-        if !parts.contains(value) {
-            parts.append(value)
-        }
+    var titles: [String] = []
+    for value in [alert.eventTitle ?? alert.event, alert.round].compactMap({ $0 }) where !value.isEmpty && !titles.contains(value) {
+        titles.append(value)
     }
-    if let eventId = alert.eventId {
-        parts.append("Event #\(eventId)")
+    if titles.isEmpty, let keyword = alert.watchKeyword ?? alert.keyword {
+        titles.append(keyword)
     }
-    if let watchKeyword = alert.watchKeyword, !watchKeyword.isEmpty {
-        let kind = alert.watchKind ?? "watch"
-        let muted = alert.watchMuted == true ? " muted" : ""
-        parts.append("\(kind) \(watchKeyword)\(muted)")
-    } else if let watchId = alert.watchId {
-        parts.append("Watch #\(watchId)")
-    }
-    return parts.joined(separator: " ")
+    return joinedMeta([titles.joined(separator: " · "), friendlyDate(alert.createdAt.map { String($0.prefix(10)) })])
 }
 
 func upcomingStatusText(_ item: UpcomingItem) -> String {
-    [
-        item.statusLabel?.isEmpty == false ? item.statusLabel : item.status,
-        item.roundName,
-        item.relevantDate
-    ]
-        .compactMap { $0 }
-        .filter { !$0.isEmpty }
-        .joined(separator: " - ")
+    let summary = joinedMeta([item.statusLabel, friendlyDate(item.relevantDate), item.platform])
+    return [summary, item.roundName ?? ""].filter { !$0.isEmpty }.joined(separator: "\n")
 }
 
 func watchForSubscription(_ subscription: NotificationSubscription, in watches: [Watch]) -> Watch? {
@@ -254,32 +222,29 @@ func watchForSubscription(_ subscription: NotificationSubscription, in watches: 
 }
 
 func subscriptionTitle(_ subscription: NotificationSubscription, watch: Watch?) -> String {
-    let keyword = watch?.keyword ?? "Watch #\(subscription.watchId)"
-    return "\(subscriptionScopeLabel(subscription.scope)) - \(keyword)"
+    watch?.keyword ?? "Removed watch"
 }
 
 func subscriptionText(_ subscription: NotificationSubscription) -> String {
-    [
-        subscription.location.isEmpty ? nil : "Location: \(subscription.location)",
-        subscription.roundKey.isEmpty ? nil : "Round: \(subscription.roundKey)",
-        "Channels: \(subscription.channels)",
-        "Lead days: \(subscription.leadDays)",
-        subscription.enabled ? "Enabled" : "Disabled"
-    ]
-        .compactMap { $0 }
-        .joined(separator: "\n")
+    joinedMeta([
+        subscriptionScopeLabel(subscription.scope),
+        subscription.location,
+        subscription.channels.split(separator: ",").map { $0.capitalized }.joined(separator: ", "),
+        "\(subscription.leadDays) days before",
+        subscription.enabled ? nil : "Paused"
+    ])
 }
 
 func subscriptionScopeLabel(_ scope: String) -> String {
     switch scope {
     case "artist_all":
-        return "Artist"
+        return "All shows"
     case "event_all":
-        return "Event"
+        return "All rounds"
     case "event_location":
-        return "Location"
+        return "One location"
     case "round":
-        return "Round"
+        return "One round"
     default:
         return scope
     }
@@ -287,14 +252,9 @@ func subscriptionScopeLabel(_ scope: String) -> String {
 
 func notificationFeedText(_ item: NotificationFeedItem) -> String {
     [
-        item.body,
-        item.eventTitle,
-        item.location?.isEmpty == false ? "Location: \(item.location!)" : nil,
-        item.date?.isEmpty == false ? "Date: \(item.date!)" : nil,
-        item.channel?.isEmpty == false ? "Channel: \(item.channel!)" : nil,
-        item.createdAt
+        item.body ?? "",
+        joinedMeta([item.eventTitle, item.location, friendlyDate(item.date), friendlyDate(item.createdAt.map { String($0.prefix(10)) })])
     ]
-        .compactMap { $0 }
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
 }
@@ -310,23 +270,11 @@ func eventLocationTitle(_ location: EventLocation) -> String {
 }
 
 func relatedEventText(_ related: RelatedEventSummary) -> String {
-    let detail = [related.eventDate, related.venueLabel]
-        .compactMap { $0 }
-        .filter { !$0.isEmpty }
-        .joined(separator: " · ")
-    let reasons = (related.recommendationReasons ?? []).prefix(3).joined(separator: "; ")
-    return [detail, reasons].filter { !$0.isEmpty }.joined(separator: "\n")
+    joinedMeta([friendlyDate(related.eventDate), related.venueLabel] + (related.recommendationReasons ?? []).prefix(2).map { Optional($0) })
 }
 
 func ticketLinkText(_ link: TicketLink) -> String {
-    [
-        link.platform?.isEmpty == false ? "Platform: \(link.platform!)" : nil,
-        link.confidence.map { "Confidence: \($0)" },
-        link.provenance?.isEmpty == false ? "Source: \(link.provenance!)" : nil,
-        link.url
-    ]
-        .compactMap { $0 }
-        .joined(separator: "\n")
+    link.platform ?? ""
 }
 
 func maskedToken(_ token: String) -> String {

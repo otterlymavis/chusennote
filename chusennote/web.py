@@ -613,7 +613,7 @@ def render_settings_page(db_path: str, user_id: int = 0, account_email: str = ""
         <li>
           <span><span class="title">{html.escape(str(item.get('title') or ''))}</span>
           <small>{html.escape(str(item.get('body') or ''))}</small>
-          {meta_line(html.escape(friendly_date(item.get('created_at'))))}</span>
+          {meta_line(html.escape(friendly_date(str(item.get('created_at') or '')[:10])))}</span>
         </li>
         """
         for item in feed[:20]

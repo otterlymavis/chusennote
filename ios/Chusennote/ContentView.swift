@@ -19,7 +19,7 @@ struct ContentView: View {
                 NotificationsView(store: store, notificationPermission: notificationPermission, selectedTab: $selectedTab)
             }
             .tabItem {
-                Label("Alerts", systemImage: "bell.badge")
+                Label("Home", systemImage: "house")
             }
             .tag(AppTab.notifications)
 
@@ -27,7 +27,7 @@ struct ContentView: View {
                 WatchView(store: store)
             }
             .tabItem {
-                Label("Watch", systemImage: "ticket")
+                Label("Watching", systemImage: "ticket")
             }
             .tag(AppTab.watch)
 

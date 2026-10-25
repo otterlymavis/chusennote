@@ -1,11 +1,5 @@
 import SwiftUI
 
-struct TicketRoundGroup: Identifiable {
-    var id: String { website }
-    let website: String
-    let rounds: [TicketRound]
-}
-
 struct TicketRoundRow: View {
     let round: TicketRound
     var subscribeAction: ((TicketRound) -> Void)? = nil
@@ -15,6 +9,8 @@ struct TicketRoundRow: View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             TextRow(title: ticketRoundTitle(round), subtitle: ticketRoundStatusText(round))
 
+            // Only dates the source published are listed; a general-sale round
+            // often has just one, and many lotteries never publish results.
             let dates = ticketRoundDateItems(round)
             if dates.isEmpty {
                 EmptyRow(ticketRoundScheduleText(round).isEmpty ? "No dates found yet" : ticketRoundScheduleText(round))
@@ -33,17 +29,6 @@ struct TicketRoundRow: View {
                 }
             }
 
-            if let membership = round.membershipLabel, !membership.isEmpty {
-                EmptyRow(membership)
-            }
-
-            if let evidence = round.evidence, !evidence.isEmpty {
-                Text("Evidence: \(evidence)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-
             HStack(spacing: Spacing.lg) {
                 if let subscribeAction, round.roundKey?.isEmpty == false {
                     Button("Notify Me") {
@@ -51,7 +36,7 @@ struct TicketRoundRow: View {
                     }
                 }
                 if let url = chusennoteWebURL(round.url) {
-                    Button("Open Source") {
+                    Button("Source") {
                         openURL(url)
                     }
                 }
