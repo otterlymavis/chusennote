@@ -74,7 +74,7 @@ alerts.
 Temporary failures checking account status also preserve the saved login.
 
 In the app, tap **Notify** on a tracked artist or event to subscribe to feed and
-push reminders with the default 7/1/0-day lead times. **Run Due Reminders**
+push reminders with the default 7/1/0-day lead times. **Send Due Reminders**
 performs an immediate delivery pass, and the app shows both the delivered feed
 and active subscriptions for the current account or local workspace.
 

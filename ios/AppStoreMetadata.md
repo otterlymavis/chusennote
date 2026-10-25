@@ -69,6 +69,8 @@ The listing should describe data used for app functionality, not tracking:
 - User Content → Other User Content: watches, tags, regions, venues, manual
   public source links, and reminder preferences; linked to identity when signed
   in; app functionality.
+- Identifiers → User ID: the account identifier used to scope signed-in data;
+  linked to identity, app functionality.
 - Identifiers → Device ID: Firebase device token; linked to identity when
   signed in; app functionality.
 - Diagnostics: disclose only if production logging is changed to retain crash,

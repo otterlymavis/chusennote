@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 enum ChusennoteSettings {
     static let baseURLKey = "baseURL"
@@ -86,8 +87,15 @@ enum APIClientError: LocalizedError {
 }
 
 @MainActor
-final class ChusennoteStore: ObservableObject {
-    @Published var baseURL = ChusennoteSettings.baseURL {
+@Observable
+final class ChusennoteStore {
+    @ObservationIgnored private let session: URLSession
+
+    init(session: URLSession = BackendSession.shared) {
+        self.session = session
+    }
+
+    var baseURL = ChusennoteSettings.baseURL {
         didSet {
             ChusennoteSettings.baseURL = baseURL
             if baseURL != oldValue {
@@ -95,7 +103,7 @@ final class ChusennoteStore: ObservableObject {
             }
         }
     }
-    @Published var apiToken = ChusennoteSettings.apiToken {
+    var apiToken = ChusennoteSettings.apiToken {
         didSet {
             ChusennoteSettings.apiToken = apiToken
             // The cached calendar token belongs to whichever account was
@@ -104,49 +112,65 @@ final class ChusennoteStore: ObservableObject {
             calendarToken = ""
         }
     }
-    @Published var calendarToken = ChusennoteSettings.calendarToken {
+    var calendarToken = ChusennoteSettings.calendarToken {
         didSet {
             ChusennoteSettings.calendarToken = calendarToken
         }
     }
-    @Published var watches: [Watch] = []
-    @Published var events: [EventSummary] = []
-    @Published var upcoming: [UpcomingItem] = []
-    @Published var alerts: [AlertPayload] = []
-    @Published var notificationFeed: [NotificationFeedItem] = []
-    @Published var subscriptions: [NotificationSubscription] = []
-    @Published var devices: [DeviceToken] = []
-    @Published var sources: [WatchSource] = []
-    @Published var health: HealthSummary?
-    @Published var errorMessage: String?
-    @Published var signedInEmail = ""
-    @Published var isRefreshing = false
-    @Published var isRunningChecks = false
-    @Published var isRunningNotifications = false
-    @Published var isAccountTransitioning = false
+    var watches: [Watch] = [] {
+        didSet { partitionWatches() }
+    }
+    var events: [EventSummary] = [] {
+        didSet { partitionEvents() }
+    }
+    var upcoming: [UpcomingItem] = []
+    var alerts: [AlertPayload] = []
+    var notificationFeed: [NotificationFeedItem] = []
+    var subscriptions: [NotificationSubscription] = []
+    var devices: [DeviceToken] = []
+    var sources: [WatchSource] = [] {
+        didSet { partitionSources() }
+    }
+    var health: HealthSummary?
+    var errorMessage: String?
+    var signedInEmail = ""
+    var isRefreshing = false
+    var isRunningChecks = false
+    var isRunningNotifications = false
+    var isAccountTransitioning = false
 
     var isSignedIn: Bool {
         !apiToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var trackedArtists: [Watch] {
-        watches.filter { !$0.muted && ($0.kind ?? "event") == "artist" }
+    // Filtered views of the fetched lists, computed once per refresh rather
+    // than on every view render.
+    private(set) var trackedArtists: [Watch] = []
+    private(set) var trackedEvents: [Watch] = []
+    private(set) var mutedEventWatches: [Watch] = []
+    private(set) var mutedOtherWatches: [Watch] = []
+    private(set) var ticketEvents: [EventSummary] = []
+    private(set) var artistEvents: [EventSummary] = []
+    private(set) var activeSources: [WatchSource] = []
+    private(set) var mutedSources: [WatchSource] = []
+
+    private func partitionWatches() {
+        let active = watches.filter { !$0.muted }
+        let muted = watches.filter { $0.muted }
+        trackedArtists = active.filter { ($0.kind ?? "event") == "artist" }
+        trackedEvents = active.filter { ($0.kind ?? "event") == "event" }
+        mutedEventWatches = muted.filter { ($0.kind ?? "event") == "event" }
+        mutedOtherWatches = muted.filter { ($0.kind ?? "event") != "event" }
     }
 
-    var trackedEvents: [Watch] {
-        watches.filter { !$0.muted && ($0.kind ?? "event") == "event" }
+    private func partitionEvents() {
+        ticketEvents = events.filter { ($0.watchKind ?? "event") == "event" }
+        artistEvents = events.filter { ($0.watchKind ?? "event") == "artist" }
     }
 
-    var mutedWatches: [Watch] {
-        watches.filter { $0.muted }
-    }
-
-    var activeSources: [WatchSource] {
-        sources.filter { !$0.muted }
-    }
-
-    var mutedSources: [WatchSource] {
-        sources.filter { $0.muted }
+    private func partitionSources() {
+        activeSources = sources.filter { !$0.muted }
+        mutedSources = sources.filter { $0.muted }
     }
 
     /// The calendar subscription URL, authorized with a calendar-only token
@@ -185,32 +209,51 @@ final class ChusennoteStore: ObservableObject {
         return components.url
     }
 
-    func refresh() async {
+    /// One server collection the app mirrors. Actions refresh only the
+    /// collections they can change instead of refetching everything.
+    enum Resource: CaseIterable {
+        case watches, events, upcoming, alerts, notificationFeed, subscriptions, devices, sources, health
+
+        /// What adding, removing, or restoring a watch can change: muted watches
+        /// drop out of events, deadlines, and alert context.
+        static let watchChanges: Set<Resource> = [.watches, .events, .upcoming, .alerts, .subscriptions, .health]
+        /// Manual sources also appear inside event details.
+        static let sourceChanges: Set<Resource> = [.sources, .events]
+        static let checkResults: Set<Resource> = [.watches, .events, .upcoming, .alerts, .health]
+    }
+
+    /// Refetches `resources` concurrently. The default refreshes everything and
+    /// re-registers this device for push.
+    func refresh(_ resources: Set<Resource> = Set(Resource.allCases)) async {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            async let fetchedWatches: [Watch] = fetch("/api/watchlist?include_muted=1")
-            async let fetchedEvents: [EventSummary] = fetch("/api/events")
-            async let fetchedUpcoming: [UpcomingItem] = fetch("/api/upcoming")
-            async let fetchedAlerts: [AlertPayload] = fetch("/api/alerts")
-            async let fetchedNotificationFeed: [NotificationFeedItem] = fetch("/api/notifications?limit=100")
-            async let fetchedSubscriptions: [NotificationSubscription] = fetch("/api/subscriptions")
-            async let fetchedDevices: [DeviceToken] = fetch("/api/devices")
-            async let fetchedSources: [WatchSource] = fetch("/api/sources?include_muted=1")
-            async let fetchedHealth: HealthSummary = fetch("/api/health")
-            watches = try await fetchedWatches
-            events = try await fetchedEvents
-            upcoming = try await fetchedUpcoming
-            alerts = try await fetchedAlerts
-            notificationFeed = try await fetchedNotificationFeed
-            subscriptions = try await fetchedSubscriptions
-            devices = try await fetchedDevices
-            sources = try await fetchedSources
-            health = try await fetchedHealth
-            await DeviceRegistration.shared.registerSavedTokenIfPossible()
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for resource in resources {
+                    group.addTask { try await self.load(resource) }
+                }
+                try await group.waitForAll()
+            }
+            if resources.count == Resource.allCases.count {
+                await DeviceRegistration.shared.registerSavedTokenIfPossible()
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func load(_ resource: Resource) async throws {
+        switch resource {
+        case .watches: watches = try await fetch("/api/watchlist?include_muted=1")
+        case .events: events = try await fetch("/api/events")
+        case .upcoming: upcoming = try await fetch("/api/upcoming")
+        case .alerts: alerts = try await fetch("/api/alerts")
+        case .notificationFeed: notificationFeed = try await fetch("/api/notifications?limit=100")
+        case .subscriptions: subscriptions = try await fetch("/api/subscriptions")
+        case .devices: devices = try await fetch("/api/devices")
+        case .sources: sources = try await fetch("/api/sources?include_muted=1")
+        case .health: health = try await fetch("/api/health")
         }
     }
 
@@ -375,10 +418,21 @@ final class ChusennoteStore: ObservableObject {
                 URLQueryItem(name: "alerts", value: alerts)
             ]
             let _: Watch = try await post("/api/watchlist", body: formBody(fields))
-            await refresh()
+            await refresh(Resource.watchChanges)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func addWatch(_ draft: WatchDraft, kind: String) async {
+        await addWatch(
+            keyword: trimmed(draft.keyword),
+            kind: kind,
+            tags: trimmed(draft.tags),
+            regions: trimmed(draft.regions),
+            venues: trimmed(draft.venues),
+            alerts: trimmed(draft.alerts)
+        )
     }
 
     func runWatches(kind: String) async {
@@ -386,7 +440,7 @@ final class ChusennoteStore: ObservableObject {
         defer { isRunningChecks = false }
         do {
             let _: [AlertPayload] = try await post("/api/run", body: formBody([URLQueryItem(name: "kind", value: kind)]))
-            await refresh()
+            await refresh(Resource.checkResults)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -405,7 +459,7 @@ final class ChusennoteStore: ObservableObject {
         defer { isRunningNotifications = false }
         do {
             let _: [NotificationFeedItem] = try await post("/api/notifications/run", body: "")
-            await refresh()
+            await refresh([.notificationFeed])
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -423,7 +477,7 @@ final class ChusennoteStore: ObservableObject {
                 fields.queryItems?.append(URLQueryItem(name: "private_note", value: "1"))
             }
             let _: WatchSource = try await post("/api/sources", body: formBody(fields))
-            await refresh()
+            await refresh(Resource.sourceChanges)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -432,7 +486,7 @@ final class ChusennoteStore: ObservableObject {
     func removeWatch(id: Int) async {
         do {
             let _: RemoveResponse = try await post("/api/watchlist/remove", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
-            await refresh()
+            await refresh(Resource.watchChanges)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -441,7 +495,7 @@ final class ChusennoteStore: ObservableObject {
     func restoreWatch(id: Int) async {
         do {
             let _: UnmuteResponse = try await post("/api/watchlist/unmute", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
-            await refresh()
+            await refresh(Resource.watchChanges)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -450,7 +504,7 @@ final class ChusennoteStore: ObservableObject {
     func removeSource(id: Int) async {
         do {
             let _: RemoveResponse = try await post("/api/sources/remove", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
-            await refresh()
+            await refresh(Resource.sourceChanges)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -459,7 +513,7 @@ final class ChusennoteStore: ObservableObject {
     func restoreSource(id: Int) async {
         do {
             let _: UnmuteResponse = try await post("/api/sources/unmute", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
-            await refresh()
+            await refresh(Resource.sourceChanges)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -485,7 +539,7 @@ final class ChusennoteStore: ObservableObject {
                     URLQueryItem(name: "lead_days", value: leadDays)
                 ])
             )
-            await refresh()
+            await refresh([.subscriptions])
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -494,7 +548,7 @@ final class ChusennoteStore: ObservableObject {
     func removeSubscription(id: Int) async {
         do {
             let _: RemoveResponse = try await post("/api/subscriptions/remove", body: formBody([URLQueryItem(name: "identifier", value: "\(id)")]))
-            await refresh()
+            await refresh([.subscriptions])
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -512,9 +566,9 @@ final class ChusennoteStore: ObservableObject {
         }
     }
 
-    func addExactEvent(keyword: String, title: String, url: String, snippet: String) async {
+    func addExactEvent(keyword: String, title: String, url: String, snippet: String) async -> Bool {
         do {
-            let _: AddedEventResponse = try await post(
+            let response: AddedEventResponse = try await post(
                 "/api/event/add",
                 body: formBody([
                     URLQueryItem(name: "keyword", value: keyword),
@@ -523,9 +577,15 @@ final class ChusennoteStore: ObservableObject {
                     URLQueryItem(name: "snippet", value: snippet)
                 ])
             )
-            await refresh()
+            guard response.added else {
+                errorMessage = "The server did not add this event page."
+                return false
+            }
+            await refresh(Resource.watchChanges)
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -533,7 +593,7 @@ final class ChusennoteStore: ObservableObject {
         guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
             throw APIClientError.invalidBaseURL
         }
-        let (data, response) = try await BackendSession.shared.data(for: try request(url: url))
+        let (data, response) = try await session.data(for: try request(url: url))
         try validate(response: response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -554,7 +614,7 @@ final class ChusennoteStore: ObservableObject {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         try applyAuthorization(to: &request)
         request.httpBody = body.data(using: .utf8)
-        let (data, response) = try await BackendSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }

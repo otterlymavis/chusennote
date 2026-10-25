@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="space_xs">2dp</dimen>
+    <dimen name="space_sm">8dp</dimen>
+    <dimen name="space_md">16dp</dimen>
+    <dimen name="space_lg">24dp</dimen>
+    <dimen name="space_xl">32dp</dimen>
+    <dimen name="page_padding">16dp</dimen>
+    <dimen name="row_inset">16dp</dimen>
+    <dimen name="row_inset_nested">32dp</dimen>
+    <dimen name="row_vertical">12dp</dimen>
+    <dimen name="row_vertical_nested">6dp</dimen>
+    <dimen name="surface_radius">12dp</dimen>
+    <dimen name="hairline">1dp</dimen>
+    <dimen name="busy_indicator_height">3dp</dimen>
+</resources>

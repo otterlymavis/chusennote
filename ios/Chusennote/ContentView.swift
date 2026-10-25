@@ -9,18 +9,9 @@ enum AppTab {
 }
 
 struct ContentView: View {
-    @StateObject private var store = ChusennoteStore()
-    @StateObject private var notificationPermission = NotificationPermission()
+    @State private var store = ChusennoteStore()
+    @State private var notificationPermission = NotificationPermission()
     @State private var selectedTab: AppTab = .notifications
-    @State private var eventKeyword = ""
-    @State private var eventTags = ""
-    @State private var eventRegions = ""
-    @State private var eventVenues = ""
-    @State private var eventAlerts = defaultAlertPreferenceText()
-    @State private var sourceWatch = ""
-    @State private var sourceURL = ""
-    @State private var sourceLabel = ""
-    @State private var sourcePrivateNote = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -33,14 +24,7 @@ struct ContentView: View {
             .tag(AppTab.notifications)
 
             NavigationStack {
-                WatchView(
-                    store: store,
-                    eventKeyword: $eventKeyword,
-                    eventTags: $eventTags,
-                    eventRegions: $eventRegions,
-                    eventVenues: $eventVenues,
-                    eventAlerts: $eventAlerts
-                )
+                WatchView(store: store)
             }
             .tabItem {
                 Label("Watch", systemImage: "ticket")
@@ -48,14 +32,7 @@ struct ContentView: View {
             .tag(AppTab.watch)
 
             NavigationStack {
-                SettingsView(
-                    store: store,
-                    notificationPermission: notificationPermission,
-                    sourceWatch: $sourceWatch,
-                    sourceURL: $sourceURL,
-                    sourceLabel: $sourceLabel,
-                    sourcePrivateNote: $sourcePrivateNote
-                )
+                SettingsView(store: store, notificationPermission: notificationPermission)
             }
             .tabItem {
                 Label("Settings", systemImage: "gearshape")

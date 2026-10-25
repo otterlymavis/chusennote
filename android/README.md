@@ -15,7 +15,7 @@ workspace.
 Use **Notify** on a tracked artist or event to create a feed-and-push reminder
 subscription with the default 7/1/0-day lead times. The app lists subscriptions
 and delivered reminders, shows the push devices registered to the current
-account or local workspace, and **Run Due Reminders** triggers an immediate
+account or local workspace, and **Send Due Reminders** triggers an immediate
 delivery pass. Saved event details expose every ticket round, location, ticket
 link, rule, price note, explicitly labeled organizer and cast/lineup fact, and
 manual source returned by the backend. Official-resale windows appear in each
@@ -50,10 +50,12 @@ With an Android 13+ device or emulator connected, run:
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-The instrumentation suite uses an in-process HTTP server. It verifies that the
-entire form remains scroll-reachable and that adding an event sends the real
-form request and renders the refreshed watch without requiring a backend.
-The current suite passes 10/10 on an Android 15 Google APIs emulator; this is
+The app is split into Alerts, Watch, and Settings tabs, matching the iOS client;
+each tab is its own scrolling page. The instrumentation suite uses an
+in-process HTTP server. It verifies that every control remains reachable from
+its tab and that adding an event sends the real form request and renders the
+refreshed watch without requiring a backend.
+The current suite passes 12/12 on an Android 15 Google APIs emulator; this is
 local emulator proof, not physical-device or production Firebase delivery
 proof.
 

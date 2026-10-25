@@ -38,32 +38,16 @@ func alertCount(_ value: String) -> Int {
 }
 
 func chusennoteWatchText(_ watch: Watch) -> String {
-    [
-        emptyFallback(watch.preferredRegions),
-        emptyFallback(watch.preferredVenues),
-        readableAlertText(watch.alertPreferences),
-        watch.lastCheckedAt ?? "never"
-    ].joined(separator: "\n")
-}
-
-func readableAlertText(_ value: String?) -> String {
-    let labels = [
-        "new_official_page": "official page",
-        "new_ticket_link": "ticket link",
-        "new_lottery_round": "new rounds",
-        "ticket_field_changed": "ticket changes",
-        "lottery_opened": "lottery opened",
-        "lottery_closing_soon": "closing soon",
-        "results_today": "results today",
-        "payment_due_soon": "payment due",
-        "general_sale_soon": "general sale",
-        "trade_opened": "resale opened",
-        "trade_closing_soon": "resale closing",
-        "watch_failed": "watch failed"
+    let reminders = alertCount(watch.alertPreferences ?? "")
+    return [
+        watch.preferredRegions,
+        watch.preferredVenues,
+        reminders == 1 ? "1 reminder" : "\(reminders) reminders",
+        watch.lastCheckedAt.map { "checked \($0)" } ?? "not checked yet"
     ]
-    let keys = orderedAlertKeys(alertKeys(value ?? ""))
-    guard !keys.isEmpty else { return "none" }
-    return keys.map { labels[$0] ?? $0 }.joined(separator: ", ")
+        .compactMap { $0 }
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
 }
 
 func eventStatusText(statusLabel: String?, status: String?) -> String {
@@ -82,6 +66,23 @@ func eventStatusText(statusLabel: String?, status: String?) -> String {
 
 func eventStatusText(_ event: EventSummary) -> String {
     eventStatusText(statusLabel: event.statusLabel, status: event.status)
+}
+
+func eventRowText(_ event: EventSummary) -> String {
+    let rounds = event.rounds.count == 1 ? "1 round" : "\(event.rounds.count) rounds"
+    var lines = ["\(eventStatusText(event)) · \(rounds)"]
+    let details = [event.eventDates?.first, event.venueLabel]
+        .compactMap { $0 }
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
+    if !details.isEmpty {
+        lines.append(details)
+    }
+    if let round = sortTicketRoundsNewestFirst(event.rounds).first,
+       let date = ticketRoundDateItems(round).first {
+        lines.append("\(ticketRoundTitle(round)): \(date.label.lowercased()) \(date.value)")
+    }
+    return lines.joined(separator: "\n")
 }
 
 func alertTypeText(typeLabel: String?, type: String) -> String {
@@ -142,11 +143,6 @@ func ticketRoundGroups(_ rounds: [TicketRound]) -> [TicketRoundGroup] {
     }
 }
 
-func limitedTicketRounds(_ rounds: [TicketRound], max: Int?) -> [TicketRound] {
-    guard let max else { return rounds }
-    return Array(rounds.prefix(max))
-}
-
 func sortTicketRoundsNewestFirst(_ rounds: [TicketRound]) -> [TicketRound] {
     rounds.sorted { first, second in
         let firstDate = ticketRoundSortKey(first)
@@ -188,51 +184,20 @@ func ticketRoundDateValues(_ round: TicketRound) -> [String] {
 
 func ticketRoundDateItems(_ round: TicketRound) -> [TicketRoundDateItem] {
     [
-        ticketRoundDateItem("Apply opens", round.applicationStartAt, kind: .apply),
-        ticketRoundDateItem("Apply closes", round.applicationEndAt, kind: .apply),
-        ticketRoundDateItem("Results", round.resultsDate, kind: .result),
-        ticketRoundDateItem("Payment due", round.paymentEndAt, kind: .payment),
-        ticketRoundDateItem("General sale", round.generalSaleDate, kind: .sale),
-        ticketRoundDateItem("Resale opens", round.tradeStartAt, kind: .trade),
-        ticketRoundDateItem("Resale closes", round.tradeEndAt, kind: .trade)
+        ticketRoundDateItem("Apply opens", round.applicationStartAt),
+        ticketRoundDateItem("Apply closes", round.applicationEndAt),
+        ticketRoundDateItem("Results", round.resultsDate),
+        ticketRoundDateItem("Payment due", round.paymentEndAt),
+        ticketRoundDateItem("General sale", round.generalSaleDate),
+        ticketRoundDateItem("Resale opens", round.tradeStartAt),
+        ticketRoundDateItem("Resale closes", round.tradeEndAt)
     ]
         .compactMap { $0 }
 }
 
-func ticketRoundDateItem(_ label: String, _ value: String?, kind: TicketRoundDateKind) -> TicketRoundDateItem? {
+func ticketRoundDateItem(_ label: String, _ value: String?) -> TicketRoundDateItem? {
     guard let value, !value.isEmpty else { return nil }
-    return TicketRoundDateItem(label: label, value: value, kind: kind)
-}
-
-func ticketRoundAccent(_ round: TicketRound) -> SemanticColor {
-    if round.paymentEndAt?.isEmpty == false {
-        return .warning
-    }
-    if round.resultsDate?.isEmpty == false {
-        return .highlight
-    }
-    if round.generalSaleDate?.isEmpty == false {
-        return .success
-    }
-    if round.tradeStartAt?.isEmpty == false || round.tradeEndAt?.isEmpty == false {
-        return .highlight
-    }
-    return .info
-}
-
-func ticketDateColor(_ kind: TicketRoundDateKind) -> SemanticColor {
-    switch kind {
-    case .apply:
-        return .info
-    case .result:
-        return .highlight
-    case .payment:
-        return .warning
-    case .sale:
-        return .success
-    case .trade:
-        return .highlight
-    }
+    return TicketRoundDateItem(label: label, value: value)
 }
 
 func ticketRoundScheduleText(_ round: TicketRound) -> String {
@@ -245,13 +210,12 @@ func labeledRoundDate(_ label: String, _ value: String?) -> String? {
     return "\(label): \(value)"
 }
 
-func emptyFallback(_ value: String?) -> String {
-    guard let value, !value.isEmpty else { return "none" }
-    return value
-}
-
 func sourceMode(_ source: WatchSource) -> String {
     source.privateNote ? "private note" : source.platform
+}
+
+func sourceText(_ source: WatchSource) -> String {
+    "Watch #\(source.watchId) · \(sourceMode(source))\n\(source.url)"
 }
 
 func chusennoteAlertText(_ alert: AlertPayload) -> String {
@@ -343,6 +307,15 @@ func eventLocationTitle(_ location: EventLocation) -> String {
         return location.location
     }
     return location.venue.isEmpty ? "Location" : location.venue
+}
+
+func relatedEventText(_ related: RelatedEventSummary) -> String {
+    let detail = [related.eventDate, related.venueLabel]
+        .compactMap { $0 }
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
+    let reasons = (related.recommendationReasons ?? []).prefix(3).joined(separator: "; ")
+    return [detail, reasons].filter { !$0.isEmpty }.joined(separator: "\n")
 }
 
 func ticketLinkText(_ link: TicketLink) -> String {

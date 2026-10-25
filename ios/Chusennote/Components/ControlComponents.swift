@@ -2,47 +2,71 @@ import SwiftUI
 
 struct ProgressLabel: View {
     let title: String
-    let systemImage: String
     let isLoading: Bool
 
     var body: some View {
         HStack(spacing: Spacing.sm) {
-            if isLoading {
-                ProgressView()
-            } else {
-                Image(systemName: systemImage)
-            }
             Text(title)
+            if isLoading {
+                Spacer(minLength: 0)
+                ProgressView()
+            }
         }
     }
 }
 
-struct IconActionButton: View {
-    let title: String
-    let systemImage: String
-    var prominent = false
+struct RunChecksButton: View {
+    let isRunning: Bool
     let action: () -> Void
 
     var body: some View {
-        if prominent {
-            Button(action: action) {
-                icon
+        Button(action: action) {
+            if isRunning {
+                ProgressView()
+            } else {
+                Text("Check Now")
             }
-            .buttonStyle(.borderedProminent)
-            .accessibilityLabel(title)
-        } else {
-            Button(action: action) {
-                icon
+        }
+        .disabled(isRunning)
+        .accessibilityLabel(isRunning ? "Checking" : "Check Now")
+    }
+}
+
+struct StatusMessage: View {
+    let text: String
+    var isError = true
+
+    var body: some View {
+        Label(text, systemImage: isError ? "exclamationmark.triangle" : "checkmark.circle")
+            .font(Typography.rowSubtitle)
+            .foregroundStyle(isError ? StatusColor.danger : StatusColor.success)
+    }
+}
+
+/// The store's latest error, at the top of a list. Renders nothing when there is none.
+struct ErrorSection: View {
+    let store: ChusennoteStore
+
+    var body: some View {
+        if let error = store.errorMessage, !error.isEmpty {
+            Section {
+                StatusMessage(text: error)
             }
-            .buttonStyle(.bordered)
-            .accessibilityLabel(title)
         }
     }
+}
 
-    private var icon: some View {
-        Image(systemName: systemImage)
-            .font(Typography.rowTitle)
-            .frame(width: IconSize.standard, height: IconSize.standard)
+/// Notification status plus, when something can be done about it, the button that does it.
+struct NotificationPermissionRows: View {
+    let permission: NotificationPermission
+
+    var body: some View {
+        TextRow(title: permission.title, subtitle: permission.detail)
+        if permission.canAct {
+            Button(permission.actionTitle) {
+                permission.performAction()
+            }
+        }
     }
 }
 
@@ -67,10 +91,57 @@ struct AppTextField: View {
         }
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 10)
-        .background(Color(.tertiarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.small, style: .continuous))
+    }
+}
+
+/// The in-progress edit of a ticket or artist watch. Held as one value so a
+/// screen owns a single piece of state instead of a field per input.
+struct WatchDraft {
+    var keyword = ""
+    var tags = ""
+    var regions = ""
+    var venues = ""
+    var alerts = defaultAlertPreferenceText()
+    /// The watch being edited, or nil when adding a new one.
+    var editingID: Int?
+
+    init() {}
+
+    init(editing watch: Watch) {
+        keyword = watch.keyword
+        tags = watch.tags ?? ""
+        regions = watch.preferredRegions ?? ""
+        venues = watch.preferredVenues ?? ""
+        alerts = watch.alertPreferences ?? defaultAlertPreferenceText()
+        editingID = watch.id
+    }
+
+    var isEditing: Bool { editingID != nil }
+    var canSubmit: Bool { !trimmed(keyword).isEmpty }
+}
+
+/// The fields shared by ticket and artist watches. Emits list rows.
+struct WatchFields: View {
+    let keywordTitle: String
+    @Binding var draft: WatchDraft
+    @State private var showsFilters = false
+    @State private var showsReminders = false
+
+    private var filterCount: Int {
+        [draft.tags, draft.regions, draft.venues].filter { !trimmed($0).isEmpty }.count
+    }
+
+    var body: some View {
+        AppTextField(keywordTitle, text: $draft.keyword)
+            .disabled(draft.isEditing)
+        DisclosureGroup(filterCount == 0 ? "Filters (optional)" : "Filters (\(filterCount))", isExpanded: $showsFilters) {
+            AppTextField("Tags", text: $draft.tags)
+            AppTextField("Preferred regions", text: $draft.regions)
+            AppTextField("Preferred venues", text: $draft.venues)
+        }
+        DisclosureGroup("\(alertCount(draft.alerts)) reminders", isExpanded: $showsReminders) {
+            AlertPreferenceToggles(alerts: $draft.alerts)
+        }
     }
 }
 
@@ -101,80 +172,33 @@ struct AlertPreferenceToggles: View {
     @Binding var alerts: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            AlertPresetToggle(title: "Official page found", key: "new_official_page", alerts: $alerts)
-            AlertPresetToggle(title: "Ticket link found", key: "new_ticket_link", alerts: $alerts)
-            AlertPresetToggle(title: "New lottery rounds", key: "new_lottery_round", alerts: $alerts)
-            AlertPresetToggle(title: "Ticket details changed", key: "ticket_field_changed", alerts: $alerts)
-            AlertPresetToggle(title: "Lottery opened", key: "lottery_opened", alerts: $alerts)
-            AlertPresetToggle(title: "Closing soon", key: "lottery_closing_soon", alerts: $alerts)
-            AlertPresetToggle(title: "Results today", key: "results_today", alerts: $alerts)
-            AlertPresetToggle(title: "Payment due soon", key: "payment_due_soon", alerts: $alerts)
-            AlertPresetToggle(title: "General sale soon", key: "general_sale_soon", alerts: $alerts)
-            AlertPresetToggle(title: "Official resale opened", key: "trade_opened", alerts: $alerts)
-            AlertPresetToggle(title: "Official resale closing soon", key: "trade_closing_soon", alerts: $alerts)
-            AlertPresetToggle(title: "Watch failed", key: "watch_failed", alerts: $alerts)
-        }
+        AlertPresetToggle(title: "Official page found", key: "new_official_page", alerts: $alerts)
+        AlertPresetToggle(title: "Ticket link found", key: "new_ticket_link", alerts: $alerts)
+        AlertPresetToggle(title: "New lottery rounds", key: "new_lottery_round", alerts: $alerts)
+        AlertPresetToggle(title: "Ticket details changed", key: "ticket_field_changed", alerts: $alerts)
+        AlertPresetToggle(title: "Lottery opened", key: "lottery_opened", alerts: $alerts)
+        AlertPresetToggle(title: "Closing soon", key: "lottery_closing_soon", alerts: $alerts)
+        AlertPresetToggle(title: "Results today", key: "results_today", alerts: $alerts)
+        AlertPresetToggle(title: "Payment due soon", key: "payment_due_soon", alerts: $alerts)
+        AlertPresetToggle(title: "General sale soon", key: "general_sale_soon", alerts: $alerts)
+        AlertPresetToggle(title: "Official resale opened", key: "trade_opened", alerts: $alerts)
+        AlertPresetToggle(title: "Official resale closing soon", key: "trade_closing_soon", alerts: $alerts)
+        AlertPresetToggle(title: "Watch failed", key: "watch_failed", alerts: $alerts)
     }
 }
 
-struct CollapsibleTextSection: View {
+/// A collapsed list of plain text facts. Renders nothing when there are none.
+struct DetailDisclosure: View {
     let title: String
-    var icon: String = "sparkle.magnifyingglass"
-    var accent: SemanticColor = .info
-    @Binding var isExpanded: Bool
-    let emptyTitle: String
-    let emptyDetail: String
     let items: [String]
-    let systemImage: String
 
     var body: some View {
-        NotificationSection(title: title, icon: icon, accent: accent) {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                VStack(alignment: .leading, spacing: Spacing.md) {
-                    if items.isEmpty {
-                        EmptyStateRow(title: emptyTitle, detail: emptyDetail)
-                    } else {
-                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                            InfoTextRow(text: item, systemImage: systemImage)
-                        }
-                    }
+        if !items.isEmpty {
+            DisclosureGroup("\(title) (\(items.count))") {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    Text(item)
+                        .font(Typography.rowSubtitle)
                 }
-                .padding(.top, Spacing.sm)
-            } label: {
-                Label("\(items.count)", systemImage: systemImage)
-                    .font(Typography.sectionHeader)
-            }
-        }
-    }
-}
-
-struct CollapsibleEventListSection<Item: Identifiable, Content: View>: View {
-    let title: String
-    var icon: String = "sparkle.magnifyingglass"
-    var accent: SemanticColor = .info
-    @Binding var isExpanded: Bool
-    let emptyTitle: String
-    let emptyDetail: String
-    let items: [Item]
-    @ViewBuilder var content: (Item) -> Content
-
-    var body: some View {
-        NotificationSection(title: title, icon: icon, accent: accent) {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                VStack(alignment: .leading, spacing: Spacing.md) {
-                    if items.isEmpty {
-                        EmptyStateRow(title: emptyTitle, detail: emptyDetail)
-                    } else {
-                        ForEach(items) { item in
-                            content(item)
-                        }
-                    }
-                }
-                .padding(.top, Spacing.sm)
-            } label: {
-                Label("\(items.count)", systemImage: icon)
-                    .font(Typography.sectionHeader)
             }
         }
     }

@@ -1,14 +1,18 @@
 package com.chusennote.mobile;
 
 import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.Espresso.pressBack;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.action.ViewActions.closeSoftKeyboard;
 import static androidx.test.espresso.action.ViewActions.replaceText;
 import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.Visibility;
+import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
+import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -96,6 +100,7 @@ public class MainActivityTest {
 
     @Test
     public void fullFormCanScrollToRegisteredDevices() {
+        showTab(R.id.tab_settings);
         onView(withId(R.id.registered_devices_heading))
                 .perform(scrollTo())
                 .check(matches(isDisplayed()));
@@ -103,6 +108,7 @@ public class MainActivityTest {
 
     @Test
     public void accountDeletionControlIsVisibleInAccountSection() {
+        showTab(R.id.tab_settings);
         onView(withId(R.id.delete_account_button))
                 .perform(scrollTo())
                 .check(matches(isDisplayed()));
@@ -115,6 +121,8 @@ public class MainActivityTest {
 
     @Test
     public void addEventPostsFormAndRendersRefreshedWatch() throws Exception {
+        showTab(R.id.tab_watch);
+        int deviceFetchesBefore = dispatcher.deviceFetches.get();
         onView(withId(R.id.event_keyword_input))
                 .perform(scrollTo(), replaceText("Runtime Musical"), closeSoftKeyboard());
         onView(withId(R.id.add_event_button)).perform(scrollTo(), click());
@@ -127,10 +135,13 @@ public class MainActivityTest {
         assertEquals("Runtime Musical", form.get("keyword"));
         assertEquals("event", form.get("kind"));
         assertEventuallyDisplayed("Runtime Musical");
+        // Adding a watch cannot change registered devices, so they are not refetched.
+        assertEquals(deviceFetchesBefore, dispatcher.deviceFetches.get());
     }
 
     @Test
     public void exactEventSearchAndAddUseSelectedResult() throws Exception {
+        showTab(R.id.tab_watch);
         onView(withId(R.id.exact_event_input))
                 .perform(scrollTo(), replaceText("Runtime Musical"), closeSoftKeyboard());
         onView(withId(R.id.exact_event_search_button)).perform(scrollTo(), click());
@@ -150,22 +161,23 @@ public class MainActivityTest {
 
     @Test
     public void publicCleartextServerCannotReceiveAccountCredentials() {
-        onView(withId(R.id.base_url_input)).perform(replaceText("http://tickets.example"));
+        showTab(R.id.tab_settings);
+        onView(withId(R.id.base_url_input))
+                .perform(scrollTo(), replaceText("http://tickets.example"), closeSoftKeyboard());
         onView(withId(R.id.email_input))
                 .perform(scrollTo(), replaceText("person@example.com"), closeSoftKeyboard());
         onView(withId(R.id.password_input))
                 .perform(scrollTo(), replaceText("not-sent"), closeSoftKeyboard());
         onView(withId(R.id.register_button)).perform(scrollTo(), click());
 
-        onView(withText(BackendUrlPolicy.CREDENTIAL_TRANSPORT_MESSAGE))
-                .perform(scrollTo())
-                .check(matches(isDisplayed()));
+        assertEventuallyDisplayed(BackendUrlPolicy.CREDENTIAL_TRANSPORT_MESSAGE);
         assertEquals(0, dispatcher.accountRequests.get());
     }
 
     @Test
     public void accountCredentialsAreNotForwardedThroughRedirects() throws Exception {
         dispatcher.redirectAccount.set(true);
+        showTab(R.id.tab_settings);
         onView(withId(R.id.email_input))
                 .perform(scrollTo(), replaceText("person@example.com"), closeSoftKeyboard());
         onView(withId(R.id.password_input))
@@ -235,6 +247,9 @@ public class MainActivityTest {
         scenario.close();
         scenario = ActivityScenario.launch(MainActivity.class);
         drainMainThread();
+        showTab(R.id.tab_watch);
+        assertEventuallyDisplayed("Ticket rounds found");
+        onView(visible(withText("Details"))).perform(click());
 
         assertEventuallyDisplayed("Example Productions");
         assertEventuallyDisplayed("Example Lead");
@@ -242,6 +257,23 @@ public class MainActivityTest {
         assertEventuallyDisplayed("Shared venue: Example Hall");
         assertEventuallyDisplayed("Ticket rounds found");
         assertEventuallyDisplayed("Resale 2026-07-01 – 2026-07-03");
+    }
+
+    @Test
+    public void backLeavesEventDetailsForTheEventList() {
+        dispatcher.eventsResponse.set("[{\"watch_id\":41,\"title\":\"Runtime Stage\","
+                + "\"organizers\":[\"Example Productions\"]}]");
+        scenario.close();
+        scenario = ActivityScenario.launch(MainActivity.class);
+        drainMainThread();
+        showTab(R.id.tab_watch);
+        assertEventuallyDisplayed("Runtime Stage");
+
+        onView(visible(withText("Details"))).perform(click());
+        assertEventuallyDisplayed("Example Productions");
+        pressBack();
+
+        onView(withId(R.id.event_list)).check(matches(isDisplayed()));
     }
 
     @Test
@@ -255,6 +287,16 @@ public class MainActivityTest {
         drainMainThread();
 
         assertEventuallyDisplayed("Official resale opened");
+    }
+
+    /** Only views on the page being shown; hidden pages keep their views. */
+    private static org.hamcrest.Matcher<android.view.View> visible(
+            org.hamcrest.Matcher<android.view.View> matcher) {
+        return allOf(matcher, withEffectiveVisibility(Visibility.VISIBLE));
+    }
+
+    private void showTab(int tabId) {
+        onView(withId(tabId)).perform(click());
     }
 
     private void drainMainThread() {
@@ -273,9 +315,14 @@ public class MainActivityTest {
         Throwable lastFailure = null;
         while (SystemClock.elapsedRealtime() < deadline) {
             try {
-                onView(withText(containsString(text)))
-                        .perform(scrollTo())
-                        .check(matches(isDisplayed()));
+                // The fixed header is outside any ScrollView; page content needs scrolling to.
+                try {
+                    onView(visible(withText(containsString(text)))).check(matches(isDisplayed()));
+                } catch (AssertionError offScreen) {
+                    onView(visible(withText(containsString(text))))
+                            .perform(scrollTo())
+                            .check(matches(isDisplayed()));
+                }
                 return;
             } catch (RuntimeException | AssertionError failure) {
                 lastFailure = failure;
@@ -312,6 +359,7 @@ public class MainActivityTest {
         final AtomicReference<String> alertsResponse = new AtomicReference<>("[]");
         private final AtomicBoolean watchAdded = new AtomicBoolean();
         private final AtomicInteger healthRequests = new AtomicInteger();
+        final AtomicInteger deviceFetches = new AtomicInteger();
 
         @Override
         public MockResponse dispatch(RecordedRequest request) {
@@ -369,6 +417,10 @@ public class MainActivityTest {
             }
             if (path != null && path.startsWith("/api/alerts")) {
                 return json(alertsResponse.get());
+            }
+            if ("GET".equals(request.getMethod()) && "/api/devices".equals(path)) {
+                deviceFetches.incrementAndGet();
+                return json("[]");
             }
             if (path != null && (path.startsWith("/api/upcoming")
                     || path.startsWith("/api/notifications")

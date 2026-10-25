@@ -6789,6 +6789,30 @@ def test_web_responses_apply_security_headers(tmp_path, monkeypatch):
         server.server_close()
 
 
+def test_web_pages_link_a_cacheable_versioned_stylesheet(tmp_path):
+    server = lm.create_web_server(str(tmp_path / "stylesheet.sqlite3"), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urllib.request.urlopen(f"{base}/privacy", timeout=5) as response:
+            page = response.read().decode("utf-8")
+        assert f'<link rel="stylesheet" href="{lm.web.PAGE_CSS_URL}">' in page
+        assert "<style>" not in page
+        assert lm.web.PAGE_CSS_URL.startswith("/static/page.css?v=")
+
+        with urllib.request.urlopen(f"{base}{lm.web.PAGE_CSS_URL}", timeout=5) as response:
+            stylesheet = response.read().decode("utf-8")
+            assert response.headers.get_content_type() == "text/css"
+            assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert stylesheet == lm.web.PAGE_CSS
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_web_rejects_oversized_and_malformed_form_bodies(tmp_path):
     server = lm.create_web_server(str(tmp_path / "bounded-forms.sqlite3"), 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
