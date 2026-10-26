@@ -317,7 +317,10 @@ public class MainActivity extends Activity {
         statusText = findViewById(R.id.status_text);
         busyIndicator = findViewById(R.id.busy_indicator);
         LinearLayout headerActions = findViewById(R.id.header_actions);
-        headerActions.addView(textButton(getString(R.string.refresh), this::refresh));
+        Button refreshButton = textButton(getString(R.string.refresh), this::refresh);
+        // The header pulls its actions out by space_sm, so keep that much at the end.
+        refreshButton.setPaddingRelative(dimen(R.dimen.space_md), 0, dimen(R.dimen.space_sm), 0);
+        headerActions.addView(refreshButton);
 
         buildAlertsPage(findViewById(R.id.alerts_content));
         buildWatchPage(findViewById(R.id.watch_content));
@@ -2122,9 +2125,7 @@ public class MainActivity extends Activity {
             }
             if (buttons == null) {
                 buttons = actionBar();
-                // Buttons carry their own inset, so pull the bar back to align labels with the text.
-                int buttonInset = dimen(R.dimen.space_sm);
-                buttons.setPadding(start - buttonInset, 0, buttonInset, 0);
+                buttons.setPadding(start, 0, end, 0);
                 row.addView(buttons);
                 row.setPadding(0, vertical, 0, 0);
             }
