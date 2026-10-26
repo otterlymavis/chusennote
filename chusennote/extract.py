@@ -71,10 +71,16 @@ LABELED_SLASH_EVENT_RANGE_RE = re.compile(
 )
 # "公演日：2027年1月16日(土) 開場16:00 … 受付期間 …": keep only the date (or range)
 # that directly follows the label, not the ticketing prose after it. Extra days
-# joined by "・" or "、" ("7月10日(金)・11日(土)") stay part of the date.
+# joined by "・" or "、" ("7月10日(金)・11日(土)") stay part of the date, but only
+# when a weekday or a break follows them: in "7月10日、18日に当選発表" the 18th
+# starts a sentence about results.
+_JOINED_DAY = (
+    r"\s*[・、]\s*(?:20\d{2}\s*年\s*)?(?:\d{1,2}\s*月\s*)?\d{1,2}\s*日"
+    r"(?:\s*[(（][^)）]{1,5}[)）]|(?=[\s・、～~〜\-]|$))"
+)
 LABELED_EVENT_DATE_RE = re.compile(
     r"(?:公演日|開催日時|開催日)\s*[：:]?\s*(?P<range>(?:20\d{2}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日"
-    r"(?:\s*[(（][^)）]{1,5}[)）])?(?:\s*[～~〜\-・、]\s*" + _PERIOD_DATE_END + r")*)"
+    r"(?:\s*[(（][^)）]{1,5}[)）])?(?:\s*[～~〜\-]\s*" + _PERIOD_DATE_END + r"|" + _JOINED_DAY + r")*)"
 )
 _PERIOD_LEAD_NOISE = ("受付", "申込", "抽選", "先行", "販売", "入金", "支払", "発売")
 REGIONAL_PERFORMANCE_RE = re.compile(

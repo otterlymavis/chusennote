@@ -1087,6 +1087,10 @@ def test_extract_event_dates_keeps_extra_days_joined_to_the_labeled_date():
     assert lm.extract_event_dates("公演日：7月10日、11日、12日 受付期間：6月1日～") == ("7月10日、11日、12日",)
 
 
+def test_extract_event_dates_does_not_join_a_day_that_starts_the_next_sentence():
+    assert lm.extract_event_dates("公演日：2026年7月10日、18日に当選発表") == ("2026年7月10日",)
+
+
 def test_extract_venues_drops_a_sale_qualifier_glued_to_the_ticket_label():
     assert lm.extract_venues("会場:京セラドーム大阪 FC先行(抽選) 受付期間") == ("京セラドーム大阪",)
     assert lm.extract_venues("会場:さいたまスーパーアリーナ オフィシャル最速先行(抽選)") == ("さいたまスーパーアリーナ",)
