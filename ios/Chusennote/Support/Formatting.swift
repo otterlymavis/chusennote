@@ -203,7 +203,7 @@ func sourceText(_ source: WatchSource) -> String {
 
 func chusennoteAlertText(_ alert: AlertPayload) -> String {
     var titles: [String] = []
-    for value in [alert.eventTitle ?? alert.event, alert.round].compactMap({ $0 }) where !value.isEmpty && !titles.contains(value) {
+    for value in [alert.eventTitle ?? alert.event, alert.round ?? alert.label].compactMap({ $0 }) where !value.isEmpty && !titles.contains(value) {
         titles.append(value)
     }
     if titles.isEmpty, let keyword = alert.watchKeyword ?? alert.keyword {
@@ -226,13 +226,16 @@ func subscriptionTitle(_ subscription: NotificationSubscription, watch: Watch?) 
 }
 
 func subscriptionText(_ subscription: NotificationSubscription) -> String {
-    joinedMeta([
+    let channels: String = subscription.channels.split(separator: ",").map { $0.capitalized }.joined(separator: ", ")
+    let paused: String? = subscription.enabled ? nil : "Paused"
+    let parts: [String?] = [
         subscriptionScopeLabel(subscription.scope),
         subscription.location,
-        subscription.channels.split(separator: ",").map { $0.capitalized }.joined(separator: ", "),
+        channels,
         "\(subscription.leadDays) days before",
-        subscription.enabled ? nil : "Paused"
-    ])
+        paused
+    ]
+    return joinedMeta(parts)
 }
 
 func subscriptionScopeLabel(_ scope: String) -> String {
@@ -270,7 +273,9 @@ func eventLocationTitle(_ location: EventLocation) -> String {
 }
 
 func relatedEventText(_ related: RelatedEventSummary) -> String {
-    joinedMeta([friendlyDate(related.eventDate), related.venueLabel] + (related.recommendationReasons ?? []).prefix(2).map { Optional($0) })
+    var parts: [String?] = [friendlyDate(related.eventDate), related.venueLabel]
+    parts.append(contentsOf: (related.recommendationReasons ?? []).prefix(2).map { Optional($0) })
+    return joinedMeta(parts)
 }
 
 func ticketLinkText(_ link: TicketLink) -> String {

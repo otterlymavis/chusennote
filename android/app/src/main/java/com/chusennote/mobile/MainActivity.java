@@ -15,6 +15,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
 
@@ -697,7 +698,14 @@ public class MainActivity extends Activity {
                 Throwable cause = error instanceof ExecutionException && error.getCause() != null
                         ? error.getCause()
                         : error;
-                postToMain(() -> statusText.setText(getString(R.string.could_not_load, cause.getMessage())));
+                postToMain(() -> {
+                    statusText.setText(getString(R.string.could_not_load, cause.getMessage()));
+                    if (data.isEmpty()) {
+                        String retry = getString(R.string.load_failed_retry);
+                        showRows(needsAttentionList, new ArrayList<>(), retry);
+                        showRows(alertList, new ArrayList<>(), retry);
+                    }
+                });
             }
         });
     }
@@ -1509,7 +1517,7 @@ public class MainActivity extends Activity {
             int watchId = event.optInt("watch_id");
             JSONObject eventWatch = watchesById.get(watchId);
             // The watch is part of what the row shows through its Edit action.
-            eventRows.add(new KeyedRowList.Row(eventKey, event + "\n" + eventWatch, () -> row(
+            eventRows.add(new KeyedRowList.Row(eventKey, event + "\n" + eventWatch, () -> summaryRow(
                     title,
                     eventSummary(event),
                     new Action("Details", () -> showEventDetail(eventKey)),
@@ -1672,6 +1680,10 @@ public class MainActivity extends Activity {
             event = alert.optString("watch_keyword", text(alert, "keyword"));
         }
         String round = text(alert, "round");
+        if (round.isEmpty()) {
+            // Ticket-link alerts carry the link's name instead of a round.
+            round = text(alert, "label");
+        }
         return row(title, FriendlyDate.meta(
                 event,
                 round.equals(event) ? "" : round,
@@ -2070,6 +2082,17 @@ public class MainActivity extends Activity {
 
     private LinearLayout row(String title, String detail, Action... actions) {
         return buildRow(title, detail, false, actions);
+    }
+
+    /** A row whose detail is cut to two lines, for lists whose rows open a full page. */
+    private LinearLayout summaryRow(String title, String detail, Action... actions) {
+        LinearLayout row = buildRow(title, detail, false, actions);
+        View detailView = row.getChildAt(1);
+        if (detailView instanceof TextView) {
+            ((TextView) detailView).setMaxLines(2);
+            ((TextView) detailView).setEllipsize(TextUtils.TruncateAt.END);
+        }
+        return row;
     }
 
     /** A row indented under the event it belongs to. */

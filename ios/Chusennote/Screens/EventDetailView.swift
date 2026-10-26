@@ -102,14 +102,18 @@ struct EventDetailView: View {
 
     /// Facts the event page actually published; unknown ones are left out.
     private var detailFacts: [(label: String, value: String)] {
-        [
-            ("Dates", (event.eventDates ?? []).prefix(3).map { friendlyDate($0) }),
-            ("Venue", Array((event.venues ?? []).prefix(3))),
+        // Typed step by step: one literal of tuples is too slow for older type checkers.
+        let dates: [String] = (event.eventDates ?? []).prefix(3).map { friendlyDate($0) }
+        let venues: [String] = Array((event.venues ?? []).prefix(3))
+        let facts: [(String, [String])] = [
+            ("Dates", dates),
+            ("Venue", venues),
             ("Organizer", event.organizers ?? []),
             ("Cast & lineup", event.lineup ?? []),
             ("Prices", event.ticketPrices ?? []),
             ("Rules", event.ticketRules ?? [])
         ]
+        return facts
             .filter { !$0.1.isEmpty }
             .map { (label: $0.0, value: $0.1.joined(separator: "\n")) }
     }

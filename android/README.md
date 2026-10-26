@@ -55,7 +55,7 @@ each tab is its own scrolling page. The instrumentation suite uses an
 in-process HTTP server. It verifies that every control remains reachable from
 its tab and that adding an event sends the real form request and renders the
 refreshed watch without requiring a backend.
-The current suite passes 12/12 on an Android 15 Google APIs emulator; this is
+The current suite passes 13/13 on an Android 15 Google APIs emulator; this is
 local emulator proof, not physical-device or production Firebase delivery
 proof.
 

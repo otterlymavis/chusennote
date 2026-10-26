@@ -207,6 +207,8 @@ struct AlertPayload: Codable, Identifiable {
     let event: String?
     let keyword: String?
     let round: String?
+    /// The link's name on a ticket-link alert, which has no round.
+    let label: String?
     let createdAt: String?
 
     enum CodingKeys: String, CodingKey {
@@ -222,6 +224,7 @@ struct AlertPayload: Codable, Identifiable {
         case event
         case keyword
         case round
+        case label
         case createdAt = "created_at"
     }
 }

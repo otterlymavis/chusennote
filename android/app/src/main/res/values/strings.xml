@@ -40,6 +40,7 @@
 
     <string name="push_disabled">Push disabled: add google-services.json to enable notifications.</string>
     <string name="loading">Loading…</string>
+    <string name="load_failed_retry">Couldn\'t reach the server. Pull down to try again.</string>
     <string name="could_not_load">Could not load chusennote: %1$s</string>
     <string name="enter_api_base_url">Enter the API base URL first.</string>
     <string name="could_not_open_calendar">Could not open calendar feed: %1$s</string>
