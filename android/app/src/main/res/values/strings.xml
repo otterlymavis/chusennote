@@ -117,6 +117,10 @@
         <item quantity="one">%1$d event</item>
         <item quantity="other">%1$d events</item>
     </plurals>
+    <string name="section_collapsed">%1$s ›</string>
+    <string name="section_expanded">%1$s ▾</string>
+    <string name="section_collapsed_description">%1$s, collapsed</string>
+    <string name="section_expanded_description">%1$s, expanded</string>
     <plurals name="alert_count">
         <item quantity="one">%1$d alert</item>
         <item quantity="other">%1$d alerts</item>

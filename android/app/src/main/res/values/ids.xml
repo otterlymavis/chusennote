@@ -6,6 +6,7 @@
     <item name="register_button" type="id" />
     <item name="delete_account_button" type="id" />
     <item name="event_keyword_input" type="id" />
+    <item name="event_tags_input" type="id" />
     <item name="add_event_button" type="id" />
     <item name="event_list" type="id" />
     <item name="exact_event_input" type="id" />

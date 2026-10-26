@@ -150,6 +150,31 @@ public class MainActivityTest {
     }
 
     @Test
+    public void editFillsSavedFiltersAndResubmitsTheSameKeyword() throws Exception {
+        dispatcher.watchlistResponse.set("[{\"id\":41,\"keyword\":\"Runtime Musical\",\"kind\":\"event\","
+                + "\"tags\":\"stage\",\"preferred_regions\":\"Tokyo\",\"preferred_venues\":\"\","
+                + "\"alert_preferences\":\"results_today\",\"muted\":false}]");
+        scenario.close();
+        scenario = ActivityScenario.launch(MainActivity.class);
+        drainMainThread();
+        showTab(R.id.tab_watch);
+        assertEventuallyDisplayed("Runtime Musical");
+        onView(visible(withText("Edit"))).perform(scrollTo(), click());
+
+        onView(withId(R.id.event_keyword_input)).check(matches(withText("Runtime Musical")));
+        onView(withId(R.id.event_tags_input)).check(matches(withText("stage")))
+                .perform(scrollTo(), replaceText("musical"), closeSoftKeyboard());
+        onView(withId(R.id.add_event_button)).perform(scrollTo(), click());
+
+        assertTrue("Edit request was not received", dispatcher.addRequest.await(10, TimeUnit.SECONDS));
+        Map<String, String> form = parseForm(dispatcher.addBody.get());
+        assertEquals("Runtime Musical", form.get("keyword"));
+        assertEquals("musical", form.get("tags"));
+        assertEquals("Tokyo", form.get("regions"));
+        assertEquals("results_today", form.get("alerts"));
+    }
+
+    @Test
     public void exactEventSearchAndAddUseSelectedResult() throws Exception {
         showTab(R.id.tab_watch);
         openSection(R.id.add_event_flow_button);
@@ -374,6 +399,7 @@ public class MainActivityTest {
         final AtomicInteger redirectedCredentialRequests = new AtomicInteger();
         final AtomicReference<String> eventsResponse = new AtomicReference<>("[]");
         final AtomicReference<String> alertsResponse = new AtomicReference<>("[]");
+        final AtomicReference<String> watchlistResponse = new AtomicReference<>();
         private final AtomicBoolean watchAdded = new AtomicBoolean();
         private final AtomicInteger healthRequests = new AtomicInteger();
         final AtomicInteger deviceFetches = new AtomicInteger();
@@ -412,6 +438,9 @@ public class MainActivityTest {
             if ("/credential-sink".equals(path)) {
                 redirectedCredentialRequests.incrementAndGet();
                 return json("{\"error\":\"credential redirect followed\"}");
+            }
+            if (path != null && path.startsWith("/api/watchlist?") && watchlistResponse.get() != null) {
+                return json(watchlistResponse.get());
             }
             if (path != null && path.startsWith("/api/watchlist?")) {
                 return json(watchAdded.get()

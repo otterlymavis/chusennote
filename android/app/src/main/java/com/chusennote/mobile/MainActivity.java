@@ -151,6 +151,11 @@ public class MainActivity extends Activity {
     private String openEventKey;
     private String openEventSignature;
     private final Map<String, JSONObject> eventsByKey = new HashMap<>();
+    private LinearLayout addEventFlow;
+    private LinearLayout exactEventForm;
+    private LinearLayout keywordEventForm;
+    private View eventPreferences;
+    private Button eventPreferencesButton;
     private Button[] tabButtons;
     private int selectedTab;
 
@@ -404,13 +409,15 @@ public class MainActivity extends Activity {
     /** A button that shows and hides {@code form}, which starts hidden. */
     private Button formToggle(String label, View form) {
         form.setVisibility(View.GONE);
-        Button toggle = textButton(label + " ›", () -> {});
-        toggle.setContentDescription(label + ", collapsed");
+        Button toggle = textButton(getString(R.string.section_collapsed, label), () -> {});
+        toggle.setContentDescription(getString(R.string.section_collapsed_description, label));
         toggle.setOnClickListener(view -> {
             boolean opening = form.getVisibility() != View.VISIBLE;
             form.setVisibility(opening ? View.VISIBLE : View.GONE);
-            toggle.setText(label + (opening ? " ▾" : " ›"));
-            toggle.setContentDescription(label + (opening ? ", expanded" : ", collapsed"));
+            toggle.setText(getString(opening ? R.string.section_expanded : R.string.section_collapsed, label));
+            toggle.setContentDescription(getString(opening
+                    ? R.string.section_expanded_description
+                    : R.string.section_collapsed_description, label));
         });
         return toggle;
     }
@@ -428,6 +435,7 @@ public class MainActivity extends Activity {
     private void buildWatchPage(LinearLayout page) {
         page.addView(body(getString(R.string.watch_intro)));
         LinearLayout addFlow = new LinearLayout(this);
+        addEventFlow = addFlow;
         addFlow.setOrientation(LinearLayout.VERTICAL);
         Button addFlowButton = primaryButton(getString(R.string.add_event), () -> {
             boolean opening = addFlow.getVisibility() != View.VISIBLE;
@@ -438,7 +446,7 @@ public class MainActivity extends Activity {
         addFlow.setVisibility(View.GONE);
         page.addView(addFlow);
 
-        LinearLayout exactEventForm = form();
+        exactEventForm = form();
         exactEventForm.addView(body(getString(R.string.exact_event_intro)));
         exactEventInput = singleLineInput("Event name");
         exactEventInput.setId(R.id.exact_event_input);
@@ -451,6 +459,7 @@ public class MainActivity extends Activity {
         exactEventForm.addView(exactEventResultList);
 
         LinearLayout eventForm = form();
+        keywordEventForm = eventForm;
         eventForm.addView(body(getString(R.string.keyword_watch_intro)));
         eventInput = singleLineInput("Event keyword");
         eventInput.setId(R.id.event_keyword_input);
@@ -458,6 +467,7 @@ public class MainActivity extends Activity {
         LinearLayout preferences = new LinearLayout(this);
         preferences.setOrientation(LinearLayout.VERTICAL);
         eventTagsInput = singleLineInput("Tags (optional)");
+        eventTagsInput.setId(R.id.event_tags_input);
         preferences.addView(eventTagsInput);
         eventRegionsInput = singleLineInput("Preferred regions (optional)");
         preferences.addView(eventRegionsInput);
@@ -467,6 +477,8 @@ public class MainActivity extends Activity {
         preferences.addView(eventAlertsInput);
         Button preferencesButton = formToggle(getString(R.string.watch_preferences), preferences);
         preferencesButton.setId(R.id.event_preferences_button);
+        eventPreferences = preferences;
+        eventPreferencesButton = preferencesButton;
         eventForm.addView(preferencesButton);
         eventForm.addView(preferences);
         Button addEvent = primaryButton(getString(R.string.watch_keyword), () ->
@@ -801,6 +813,23 @@ public class MainActivity extends Activity {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_add_watch, error.getMessage())));
             }
         });
+    }
+
+    /** Opens the keyword form filled with {@code watch}; saving the same keyword updates its filters. */
+    private void editWatch(JSONObject watch) {
+        addEventFlow.setVisibility(View.VISIBLE);
+        exactEventForm.setVisibility(View.GONE);
+        keywordEventForm.setVisibility(View.VISIBLE);
+        if (eventPreferences.getVisibility() != View.VISIBLE) {
+            eventPreferencesButton.performClick();
+        }
+        eventInput.setText(text(watch, "keyword"));
+        eventTagsInput.setText(text(watch, "tags"));
+        eventRegionsInput.setText(text(watch, "preferred_regions"));
+        eventVenuesInput.setText(text(watch, "preferred_venues"));
+        eventAlertsInput.setText(text(watch, "alert_preferences"));
+        eventInput.requestFocus();
+        eventInput.getParent().requestChildFocus(eventInput, eventInput);
     }
 
     private void runWatches(String kind) {
@@ -1403,6 +1432,13 @@ public class MainActivity extends Activity {
         int artistCount = 0;
         int eventCount = 0;
         Set<Integer> watchIdsWithEvents = new HashSet<>();
+        Map<Integer, JSONObject> watchesById = new HashMap<>();
+        for (int i = 0; i < watches.length(); i++) {
+            JSONObject watch = watches.optJSONObject(i);
+            if (watch != null) {
+                watchesById.put(watch.optInt("id"), watch);
+            }
+        }
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
             if (event != null && !"artist".equals(event.optString("watch_kind"))) {
@@ -1439,6 +1475,7 @@ public class MainActivity extends Activity {
                     watchRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
                             keyword,
                             watchCheckedText(watch),
+                            new Action("Edit", () -> editWatch(watch)),
                             new Action("Remove", () -> removeWatch(id)))));
                 }
                 eventCount++;
@@ -1470,10 +1507,13 @@ public class MainActivity extends Activity {
             eventsByKey.put(eventKey, event);
             // The list shows a summary; everything else is on the detail page.
             int watchId = event.optInt("watch_id");
-            eventRows.add(new KeyedRowList.Row(eventKey, event.toString(), () -> row(
+            JSONObject eventWatch = watchesById.get(watchId);
+            // The watch is part of what the row shows through its Edit action.
+            eventRows.add(new KeyedRowList.Row(eventKey, event + "\n" + eventWatch, () -> row(
                     title,
                     eventSummary(event),
                     new Action("Details", () -> showEventDetail(eventKey)),
+                    eventWatch == null ? null : new Action("Edit", () -> editWatch(eventWatch)),
                     new Action("Remove", () -> removeWatch(watchId)))));
         }
         if (openEventKey != null) {
