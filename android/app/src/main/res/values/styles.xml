@@ -62,9 +62,12 @@
     <style name="TextButton" parent="android:Widget.Material.Button.Borderless.Colored">
         <item name="android:textAllCaps">false</item>
         <item name="android:minWidth">0dp</item>
-        <item name="android:paddingLeft">@dimen/space_sm</item>
+        <!-- The label starts where its container's text starts; the gap to the
+             next button is on the trailing side. -->
+        <item name="android:gravity">start|center_vertical</item>
+        <item name="android:paddingStart">0dp</item>
         <item name="android:paddingTop">0dp</item>
-        <item name="android:paddingRight">@dimen/space_sm</item>
+        <item name="android:paddingEnd">@dimen/space_md</item>
         <item name="android:paddingBottom">0dp</item>
     </style>
 

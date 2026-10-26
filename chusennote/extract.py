@@ -69,6 +69,19 @@ LABELED_SLASH_EVENT_RANGE_RE = re.compile(
     r"(?P<start>(?:20\d{2}/)?\d{1,2}/\d{1,2})\s*[～~〜\-]\s*"
     r"(?P<end>(?:20\d{2}/)?\d{1,2}/\d{1,2})"
 )
+# "公演日：2027年1月16日(土) 開場16:00 … 受付期間 …": keep only the date (or range)
+# that directly follows the label, not the ticketing prose after it. Extra days
+# joined by "・" or "、" ("7月10日(金)・11日(土)") stay part of the date, but only
+# when a weekday or a break follows them: in "7月10日、18日に当選発表" the 18th
+# starts a sentence about results.
+_JOINED_DAY = (
+    r"\s*[・、]\s*(?:20\d{2}\s*年\s*)?(?:\d{1,2}\s*月\s*)?\d{1,2}\s*日"
+    r"(?:\s*[(（][^)）]{1,5}[)）]|(?=[\s・、～~〜\-]|$))"
+)
+LABELED_EVENT_DATE_RE = re.compile(
+    r"(?:公演日|開催日時|開催日)\s*[：:]?\s*(?P<range>(?:20\d{2}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日"
+    r"(?:\s*[(（][^)）]{1,5}[)）])?(?:\s*[～~〜\-]\s*" + _PERIOD_DATE_END + r"|" + _JOINED_DAY + r")*)"
+)
 _PERIOD_LEAD_NOISE = ("受付", "申込", "抽選", "先行", "販売", "入金", "支払", "発売")
 REGIONAL_PERFORMANCE_RE = re.compile(
     r"(?P<region>東京|大阪|名古屋|京都|福岡|札幌|仙台|静岡|広島|群馬|愛知|全国)\s*公演\s*"
@@ -111,13 +124,27 @@ def extract_event_dates(text: str) -> tuple[str, ...]:
             if performance_period
             else ""
         )
-        if performance_period and not any(noisy in period_lead for noisy in _PERIOD_LEAD_NOISE):
+        used_period = bool(performance_period) and not any(noisy in period_lead for noisy in _PERIOD_LEAD_NOISE)
+        if used_period:
             candidate = clean_text(performance_period.group("range")).strip(" ：:、。")
         date_match = DATE_RE.search(candidate)
         lead = candidate[: date_match.start()] if date_match else candidate
         label_before_date = any(label in lead for label in ("公演日", "公演期間", "開催日", "開催日時"))
         noise_scope = lead if label_before_date else candidate
         keep = bool(date_match) and not any(noisy in noise_scope for noisy in EVENT_DATE_NOISE)
+        labeled_dates = (
+            [clean_text(found.group("range")) for found in LABELED_EVENT_DATE_RE.finditer(candidate)]
+            if keep and not used_period
+            else []
+        )
+        if labeled_dates:
+            # A window can hold several labels (and overlaps its neighbours), so
+            # keep every labeled date in it once.
+            for labeled_date in labeled_dates:
+                if labeled_date not in seen:
+                    dates.append(labeled_date)
+                    seen.add(labeled_date)
+            continue
         if keep and candidate not in seen:
             dates.append(candidate)
             seen.add(candidate)
@@ -150,6 +177,10 @@ def extract_event_dates(text: str) -> tuple[str, ...]:
     return tuple(dates)
 
 
+_SALE_LABEL_RE = r"(?:チケット|抽選|先行|受付|申込|発売)"
+_SALE_QUALIFIER_RE = r"(?:FC|ファンクラブ|オフィシャル\S*|\S*最速|一般|会員|プレイガイド|\S*次)"
+
+
 def extract_venues(text: str) -> tuple[str, ...]:
     venues: list[str] = []
     seen: set[str] = set()
@@ -173,6 +204,15 @@ def extract_venues(text: str) -> tuple[str, ...]:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             venue = clean_text(match.group("venue")).strip(" ：:、。")
             venue = re.sub(r"^(?:のご案内|会場のご案内)\s*", "", venue).strip()
+            # "会場:京セラドーム大阪 FC先行(抽選)": a sale qualifier glued to the
+            # ticketing label ("FC先行") names the sale, not part of the venue.
+            if (
+                " " in venue
+                and not match.group("venue")[-1:].isspace()
+                and re.fullmatch(_SALE_QUALIFIER_RE, venue.rsplit(" ", 1)[1])
+                and re.match(_SALE_LABEL_RE, text[match.end("venue"):])
+            ):
+                venue = venue.rsplit(" ", 1)[0].strip()
             if not venue or venue in seen:
                 continue
             context = clean_text(text[max(0, match.start() - 24) : min(len(text), match.end() + 80)])
