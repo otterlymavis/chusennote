@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import html
 import http.cookies
 import http.server
@@ -120,9 +121,157 @@ def safe_web_redirect(value: str, fallback: str = "/") -> str:
     return value
 
 
+# One stylesheet for every page: system fonts, one accent, flat bordered lists.
+PAGE_CSS = """
+    :root { color-scheme: light dark; --ink: #1f2328; --muted: #667085; --line: #e4e7ec; --paper: #f7f7f8; --panel: #ffffff; --accent: #9b2446; --accent-soft: #fbeaf0; --on-accent: #ffffff; --danger: #b42318; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ink: #e8eaed; --muted: #9aa3b2; --line: #2d3138; --paper: #141619; --panel: #1c1f24; --accent: #f29bb3; --accent-soft: #3a2029; --on-accent: #1c1f24; --danger: #ff9b91; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header { border-bottom: 1px solid var(--line); background: var(--panel); }
+    .topbar, main { max-width: 720px; margin: 0 auto; padding: 0 20px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; }
+    .topbar nav { display: flex; align-items: center; gap: 16px; font-size: 15px; }
+    .brand { color: var(--ink); font-size: 18px; font-weight: 700; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 28px; padding-bottom: 56px; }
+    section { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    h1, h2, h3, p, dl { margin: 0; }
+    h1 { font-size: 26px; line-height: 1.2; overflow-wrap: anywhere; }
+    h2 { font-size: 17px; }
+    h3 { font-size: 16px; }
+    small, .meta, .muted { color: var(--muted); font-size: 14px; }
+    small, .meta { display: block; }
+    .meta span + span::before { content: " · "; }
+    ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; overflow-wrap: anywhere; }
+    li + li { border-top: 1px solid var(--line); }
+    li > :first-child { min-width: 0; flex: 1 1 auto; }
+    .empty-row { color: var(--muted); }
+    .title { display: block; color: var(--ink); font-weight: 600; }
+    .now { color: var(--accent); font-weight: 600; }
+    .row-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    form { margin: 0; }
+    input:not([type="checkbox"]):not([type="hidden"]) { width: 100%; min-width: 0; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; }
+    input:focus-visible, button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; font-size: 14px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+    button:hover, .button:hover { border-color: var(--muted); text-decoration: none; }
+    button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+    button.quiet { min-height: 32px; padding: 4px 8px; border-color: transparent; background: none; color: var(--muted); }
+    button.quiet:hover { border-color: transparent; color: var(--ink); }
+    button.danger { color: var(--danger); }
+    .message { color: var(--danger); }
+    summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+    details[open] > summary { margin-bottom: 10px; }
+    .panel { padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .stack { display: grid; gap: 8px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+    .inline-form { display: flex; gap: 8px; }
+    .tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--line); }
+    .tab { min-height: 40px; padding: 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); font-size: 16px; }
+    .tab:hover { border-bottom-color: var(--line); }
+    .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 600; }
+    .tab-count { margin-left: 6px; color: var(--muted); font-size: 13px; font-weight: 400; }
+    .tab-panel { display: none; }
+    .tab-panel.is-active { display: grid; }
+    .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; }
+    .facts dt { color: var(--muted); }
+    .facts dd { margin: 0; overflow-wrap: anywhere; }
+    .round { display: grid; gap: 6px; }
+    .round-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .round-links { display: flex; flex-wrap: wrap; gap: 6px; }
+    .subscription-row { flex-wrap: wrap; }
+    .subscription-editor { flex-basis: 100%; }
+    .subscription-editor form { display: grid; gap: 10px; }
+    fieldset { margin: 0; padding: 0; border: 0; }
+    legend { padding: 0; color: var(--muted); font-size: 14px; }
+    .channel-options { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+    .lead-days { display: grid; gap: 4px; font-size: 14px; }
+    .prose { line-height: 1.6; }
+    .prose h1, .prose h2, .prose p, .prose ul { margin: 0 0 12px; }
+    .prose h2 { margin-top: 24px; font-size: 18px; }
+    .prose ul { padding-left: 20px; border: 0; background: none; list-style: disc; }
+    .prose li { display: list-item; padding: 0; border: 0; }
+    footer { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 600px) {
+      .topbar, main { padding-left: 16px; padding-right: 16px; }
+      li { flex-wrap: wrap; }
+      .inline-form { flex-direction: column; }
+      .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      .facts dd { margin-bottom: 8px; }
+    }
+"""
+
+# Served as its own file so browsers fetch it once instead of with every page.
+# The URL carries a content hash, so a changed stylesheet is a new URL and the
+# old one can be cached forever.
+PAGE_CSS_PATH = "/static/page.css"
+PAGE_CSS_URL = f"{PAGE_CSS_PATH}?v={hashlib.sha256(PAGE_CSS.encode('utf-8')).hexdigest()[:12]}"
+
+# Every page shares one top bar, so there is no per-page back button to keep
+# in sync: Home and Settings are always one click away.
+TOPBAR = '<a class="brand" href="/">chusennote</a><nav><a href="/">Home</a><a href="/settings">Settings</a></nav>'
+URGENT_STATUSES = {"open", "closing_soon", "results_today", "payment_due", "trade_open", "trade_closing_soon"}
+ISO_DATE_PATTERN = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?")
+
+
+def friendly_date(value: object, today: dt.date | None = None) -> str:
+    """Show ``2026-10-26T23:59`` as ``Oct 26, 23:59``; the year only when it is not this year.
+
+    Values that are not ISO dates (free-text clues such as ``10月下旬``) pass
+    through unchanged.
+    """
+    text = clean_text(str(value or ""))
+    match = ISO_DATE_PATTERN.fullmatch(text[:16])
+    if not match:
+        return text
+    try:
+        date = dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return text
+    label = f"{date:%b} {date.day}"
+    if date.year != (today or dt.date.today()).year:
+        label += f", {date.year}"
+    if match.group(4):
+        label += f", {match.group(4)}:{match.group(5)}"
+    return label
+
+
+def status_html(status: object, label: object) -> str:
+    text = clean_text(str(label or ""))
+    if not text:
+        return ""
+    css_class = "now" if str(status or "") in URGENT_STATUSES else ""
+    return f'<span class="{css_class}">{html.escape(text)}</span>' if css_class else f"<span>{html.escape(text)}</span>"
+
+
+def meta_line(*parts: str) -> str:
+    """Join already-escaped fragments with middots, dropping empty ones."""
+    spans = "".join(part if part.startswith("<span") else f"<span>{part}</span>" for part in parts if part)
+    return f'<span class="meta">{spans}</span>' if spans else ""
+
+
+def render_page(title: str, main: str, script: str = "") -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <link rel="stylesheet" href="{PAGE_CSS_URL}">
+</head>
+<body>
+  <header><div class="topbar">{TOPBAR}</div></header>
+  <main>{main}</main>
+{script}</body>
+</html>"""
+
 def web_source_link(url: object, label: str = "Open") -> str:
     return (
-        f'<a class="action-link" href="{html.escape(str(url))}">{html.escape(label)}</a>'
+        f'<a class="button" href="{html.escape(str(url))}">{html.escape(label)}</a>'
         if is_web_url(url)
         else "<span>Source unavailable</span>"
     )
@@ -153,72 +302,28 @@ def render_artist_detail_page(db_path: str, artist_id: int, user_id: int = 0) ->
     def render_artist_event_item(event: dict[str, object]) -> str:
         event_date = first_event_sort_date(event)
         venue_label = artist_venue_label(event)
-        ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
-        round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
         return f"""
-        <li class="watch-row">
+        <li>
           <span>
-            <a class="watch-title" href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a>
-            <span class="watch-meta">
-              <span class="mini-stat" title="Date">Date {html.escape(str(event_date or 'unknown'))}</span>
-              <span class="mini-stat wide" title="Venue">Venue {html.escape(venue_label)}</span>
-              <span class="mini-stat" title="Ticket links">Tickets {ticket_count}</span>
-              <span class="mini-stat" title="Lottery rounds">Rounds {round_count}</span>
-            </span>
+            <a class="title" href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or 'Untitled event'))}</a>
+            {meta_line(html.escape(friendly_date(event_date.isoformat())) if event_date else "Date TBA", html.escape(venue_label) if venue_label != "—" else "")}
           </span>
-          <a class="action-link" href="/events/{html.escape(str(event.get('id')))}" title="Open event" aria-label="Open event">Open</a>
         </li>
         """
 
-    event_items = "".join(render_artist_event_item(event) for event in artist_events) or "<li>No discovered events yet.</li>"
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(artist.keyword)}</title>
-  <style>
-    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent-strong: #9b2446; --green: #13795b; --blue: #315c9b; --shadow: 0 10px 28px rgba(28, 36, 52, 0.08); }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }}
-    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    header {{ background: rgba(255, 255, 255, 0.96); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
-    .topbar, main {{ max-width: 900px; margin: 0 auto; }}
-    .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
-    main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
-    .back, .action-link {{ display: inline-flex; align-items: center; justify-content: center; min-width: 55px; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; }}
-    .back {{ min-width: 38px; width: 38px; padding: 0; }}
-    section {{ border-top: 1px solid var(--line); padding: 18px 0 0; }}
-    h1, h2 {{ margin-top: 0; letter-spacing: 0; }}
-    small {{ display: block; color: var(--muted); line-height: 1.45; }}
-    ul {{ min-width: 0; list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }}
-    li {{ min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
-    li span, li strong, li small {{ min-width: 0; overflow-wrap: anywhere; }}
-    .watch-title {{ color: var(--ink); }}
-    .watch-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }}
-    .mini-stat {{ display: inline-flex; align-items: center; max-width: 100%; min-height: 24px; padding: 4px 8px; border-radius: 8px; background: #fff3f6; border: 1px solid #efc2cd; color: #6d263a; font-size: 12px; font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: var(--green); }}
-    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: var(--blue); }}
-    .mini-stat.wide {{ max-width: min(100%, 360px); }}
-    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} li {{ flex-direction: column; }} }}
-  </style>
-</head>
-<body>
-  <header><div class="topbar"><a class="back" href="/" title="Back" aria-label="Back">‹</a><strong>{html.escape(artist.keyword)}</strong></div></header>
-  <main>
+    event_items = "".join(render_artist_event_item(event) for event in artist_events) or '<li class="empty-row">No events found yet.</li>'
+    return render_page(
+        artist.keyword,
+        f"""
     <section>
-      <h1>{html.escape(artist.keyword)}</h1>
-      <small>{len(artist_events)} discovered events sorted by date</small>
-      <div class="round-actions">{subscribe_button(artist.id, NOTIFY_SCOPE_ARTIST_ALL, "Notify me for all shows", redirect=f"/artists/{artist.id}")}</div>
-    </section>
-    <section>
-      <h2>Events</h2>
+      <div class="section-head">
+        <h1>{html.escape(artist.keyword)}</h1>
+        {subscribe_button(artist.id, NOTIFY_SCOPE_ARTIST_ALL, "Notify me", redirect=f"/artists/{artist.id}")}
+      </div>
       <ul>{event_items}</ul>
     </section>
-  </main>
-</body>
-</html>"""
+  """,
+    )
 
 
 def infer_event_location(venues: Sequence[str]) -> str:
@@ -257,9 +362,6 @@ def render_event_detail_page(db_path: str, event_id: int, user_id: int = 0) -> s
         return "<!doctype html><title>Not found</title><h1>Event not found</h1>"
     event_dates = [clean_text(str(item)) for item in event.get("event_dates", []) if clean_text(str(item))]
     venues = [clean_text(str(item)) for item in event.get("venues", []) if clean_text(str(item))]
-    time_label = "; ".join(event_dates[:3]) if event_dates else "Unknown"
-    venue_label = "; ".join(venues[:3]) if venues else "Unknown"
-    location_label = infer_event_location(venues) or "Unknown"
     summary_text = str(event.get("summary") or "")
     ticket_rules = tuple(
         clean_text(str(item)) for item in event.get("ticket_rules", []) if clean_text(str(item))
@@ -269,234 +371,146 @@ def render_event_detail_page(db_path: str, event_id: int, user_id: int = 0) -> s
     ) or extract_ticket_price_items(summary_text)
     organizers = tuple(clean_text(str(item)) for item in event.get("organizers", []) if clean_text(str(item)))
     lineup = tuple(clean_text(str(item)) for item in event.get("lineup", []) if clean_text(str(item)))
-    ticket_rule_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_rules) or "<li>Ticket rules not captured yet.</li>"
-    ticket_price_items = "".join(f"<li>{html.escape(item)}</li>" for item in ticket_prices) or "<li>Ticket prices not captured yet.</li>"
-    ticket_link_items = "".join(
-        f"""
+    redirect = f"/events/{event_id}"
+
+    def date_range(start: object, end: object) -> str:
+        start_text, end_text = friendly_date(start), friendly_date(end)
+        if start_text and end_text:
+            return f"{start_text} – {end_text}"
+        return start_text or (f"until {end_text}" if end_text else "")
+
+    def render_round(ticket: dict[str, object]) -> str:
+        # Only dates that exist are shown: a general-sale round carries just a
+        # sale date, and many lotteries never publish result or payment dates.
+        schedule = [
+            (label, value)
+            for label, value in (
+                ("Apply", date_range(ticket.get("application_start_at"), ticket.get("application_end_at"))),
+                ("Results", friendly_date(ticket.get("results_date"))),
+                ("Payment due", friendly_date(ticket.get("payment_end_at"))),
+                ("On sale", friendly_date(ticket.get("general_sale_date"))),
+                ("Resale", date_range(ticket.get("trade_start_at"), ticket.get("trade_end_at"))),
+            )
+            if value
+        ]
+        schedule_line = meta_line(*(f"{label} {html.escape(value)}" for label, value in schedule))
+        evidence = format_evidence_snippet(ticket.get("evidence"))
+        evidence_line = f"<details><summary>Source text</summary><small>{html.escape(evidence)}</small></details>" if evidence != "none" else ""
+        return f"""
         <li>
-          <span><strong>{html.escape(str(link.get('label') or link.get('platform') or 'Ticket link'))}</strong>
-          <small>{html.escape(str(link.get('platform') or 'unknown'))} · confidence {html.escape(str(link.get('confidence') or 'unknown'))}</small></span>
+          <span class="round">
+            <span class="title">{html.escape(str(ticket.get('name') or 'Ticket round'))}</span>
+            {meta_line(status_html(ticket.get("status"), ticket.get("status_label")), html.escape(clean_text(str(ticket.get("platform") or ticket.get("source") or ""))), html.escape(clean_text(str(ticket.get("membership_label") or ""))))}
+            {schedule_line}
+            {evidence_line}
+          </span>
+          <span class="row-actions">
+            {web_source_link(ticket.get('url'), 'Source')}
+            {subscribe_button(event.get('watch_id'), NOTIFY_SCOPE_ROUND, 'Notify', round_key=str(ticket.get('round_key') or ''), redirect=redirect)}
+          </span>
+        </li>
+        """
+
+    rounds = [ticket for ticket in event.get("rounds", []) if isinstance(ticket, dict)]
+    rounds.sort(key=lambda ticket: -round_latest_date_ordinal(ticket))
+    round_items = "".join(render_round(ticket) for ticket in rounds) or '<li class="empty-row">No ticket rounds found yet.</li>'
+
+    stops = tour_stops(venues, event_dates)
+    tour_section = ""
+    if len(stops) > 1:
+        tour_items = "".join(
+            f"""
+        <li>
+          <span><span class="title">{html.escape(city or venue or 'Venue TBA')}</span>
+          {meta_line(*(html.escape(part) for part in (venue if venue != city else "", friendly_date(date) or "Dates TBA")))}</span>
+          {subscribe_button(event.get('watch_id'), NOTIFY_SCOPE_EVENT_LOCATION, 'Notify', location=(city or venue), redirect=redirect)}
+        </li>
+        """
+            for city, venue, date in stops
+        )
+        tour_section = f'<section><h2>Locations &amp; Tour Dates</h2><ul class="tour-list">{tour_items}</ul></section>'
+
+    def list_section(title: str, items: Iterable[str]) -> str:
+        rows = "".join(items)
+        return f"<section><h2>{title}</h2><ul>{rows}</ul></section>" if rows else ""
+
+    ticket_link_section = list_section(
+        "Ticket Links",
+        (
+            f"""
+        <li>
+          <span class="title">{html.escape(str(link.get('label') or link.get('platform') or 'Ticket link'))}</span>
           {web_source_link(link.get('url'), 'Open')}
         </li>
         """
-        for link in event.get("ticket_links", [])
-    ) or "<li>No ticket links saved yet.</li>"
-    def render_round_card(ticket: dict[str, object]) -> str:
-        # Render only the facts that have a value: a general-sale round carries
-        # just a sale date, and many lottery rounds never publish result/payment
-        # dates, so a fixed grid would be mostly "unknown".
-        facts: list[tuple[str, str]] = [("Platform", str(ticket.get("platform") or ticket.get("source") or "unknown"))]
-        for label, key in (
-            ("Lottery opens", "application_start_at"),
-            ("Lottery closes", "application_end_at"),
-            ("Results", "results_date"),
-            ("Payment due", "payment_end_at"),
-            ("On sale", "general_sale_date"),
-            ("Resale opens", "trade_start_at"),
-            ("Resale closes", "trade_end_at"),
-        ):
-            value = clean_text(str(ticket.get(key) or ""))
-            if value:
-                facts.append((label, value))
-        fact_grid = "".join(
-            f"<div><small>{html.escape(label)}</small><strong>{html.escape(value)}</strong></div>"
-            for label, value in facts
-        )
-        meta_parts: list[str] = []
-        round_type = clean_text(str(ticket.get("round_type_label") or ""))
-        if round_type:
-            meta_parts.append(f"Type: {html.escape(round_type)}")
-        membership = clean_text(str(ticket.get("membership_label") or ""))
-        if membership:
-            meta_parts.append(html.escape(membership))
-        if ticket.get("confidence"):
-            meta_parts.append(f"confidence {html.escape(str(ticket.get('confidence')))}")
-        meta_line = f"<p><small>{' · '.join(meta_parts)}</small></p>" if meta_parts else ""
-        evidence_snippet = format_evidence_snippet(ticket.get("evidence"))
-        evidence_line = f"<p><small>Evidence: {html.escape(evidence_snippet)}</small></p>" if evidence_snippet != "none" else ""
-        status = clean_text(str(ticket.get("status_label") or ticket.get("status") or ""))
-        status_badge = f'<span class="status">{html.escape(status)}</span>' if status and status != "unknown" else ""
-        return f"""
-        <article class="round-card">
-          <div class="round-head">
-            <h3>{html.escape(str(ticket.get('name') or 'Ticket round'))}</h3>
-            {status_badge}
-          </div>
-          <div class="fact-grid">{fact_grid}</div>
-          {meta_line}
-          {evidence_line}
-          <div class="round-actions">
-            {web_source_link(ticket.get('url'), 'Open source')}
-            {subscribe_button(event.get('watch_id'), NOTIFY_SCOPE_ROUND, 'Notify me', round_key=str(ticket.get('round_key') or ''), redirect=f"/events/{event_id}")}
-          </div>
-        </article>
-        """
-
-    stops = tour_stops(venues, event_dates)
-    # Group rounds by ticket website so membership-specific rounds stay attached
-    # to the platform that publishes them.
-    rounds_by_platform: dict[str, list[dict[str, object]]] = {}
-    for ticket in event.get("rounds", []):
-        if not isinstance(ticket, dict):
-            continue
-        platform = clean_text(str(ticket.get("platform") or ticket.get("source") or "unknown")) or "unknown"
-        rounds_by_platform.setdefault(platform, []).append(ticket)
-
-    platform_links: dict[str, list[dict[str, object]]] = {}
-    for link in event.get("ticket_links", []):
-        if not isinstance(link, dict):
-            continue
-        platform = clean_text(str(link.get("platform") or "unknown")) or "unknown"
-        platform_links.setdefault(platform, []).append(link)
-        rounds_by_platform.setdefault(platform, [])
-
-    def platform_sort_key(platform: str) -> tuple[int, str]:
-        latest = max((round_latest_date_ordinal(ticket) for ticket in rounds_by_platform.get(platform, [])), default=0)
-        return (-latest, platform)
-
-    def render_platform_links(platform: str) -> str:
-        links = platform_links.get(platform, [])
-        if not links:
-            return ""
-        return '<div class="round-platform-links">' + "".join(web_source_link(link.get("url"), "Open tickets") for link in links[:3]) + "</div>"
-
-    round_items = "".join(
-        f"""
-        <div class="round-group">
-          <div class="round-group-head">
-            <h3>{html.escape(platform)}</h3>
-            <small>{len(tickets)} round{'s' if len(tickets) != 1 else ''}</small>
-          </div>
-          {render_platform_links(platform)}
-          <div class="round-group-list">{''.join(render_round_card(ticket) for ticket in tickets) or '<p>No parsed ticket rounds from this website yet.</p>'}</div>
-        </div>
-        """
-        for platform in sorted(rounds_by_platform, key=platform_sort_key)
-        for tickets in (rounds_by_platform[platform],)
-    ) or "<p>No ticket rounds saved yet.</p>"
-    tour_items = "".join(
-        f"""
+            for link in event.get("ticket_links", [])
+            if isinstance(link, dict)
+        ),
+    )
+    related_section = list_section(
+        "Related Saved Events",
+        (
+            f"""
         <li>
-          <span><strong>{html.escape(city or venue or 'Venue TBA')}</strong>
-          <small>{html.escape(venue)}</small></span>
-          <span class="mini-stat wide">{html.escape(date or 'dates TBA')}</span>
-          {subscribe_button(event.get('watch_id'), NOTIFY_SCOPE_EVENT_LOCATION, 'Notify', location=(city or venue), redirect=f"/events/{event_id}")}
+          <span><a class="title" href="/events/{html.escape(str(related.get('id')))}">{html.escape(str(related.get('title') or 'Related event'))}</a>
+          <small>{html.escape(' · '.join(str(reason) for reason in related.get('recommendation_reasons', [])[:3]))}</small></span>
         </li>
         """
-        for city, venue, date in stops
+            for related in event.get("related_events", [])
+            if isinstance(related, dict)
+        ),
     )
-    tour_section = (
-        f'<section><h2>Locations &amp; Tour Dates</h2><ul class="tour-list">{tour_items}</ul></section>'
-        if len(stops) > 1
-        else ""
-    )
-    event_subscribe = subscribe_button(
-        event.get("watch_id"), NOTIFY_SCOPE_EVENT_ALL, "Notify me for all rounds", redirect=f"/events/{event_id}"
-    )
-    manual_source_items = "".join(
-        f"""
+    manual_source_section = list_section(
+        "Your Sources",
+        (
+            f"""
         <li>
-          <span><strong>{html.escape(str(source.get('label')))}</strong>
-          <small>{html.escape('private note' if source.get('private_note') else str(source.get('platform')))}</small></span>
+          <span><span class="title">{html.escape(str(source.get('label')))}</span>
+          <small>{html.escape('Private note' if source.get('private_note') else str(source.get('platform')))}</small></span>
           {web_source_link(source.get('url'))}
         </li>
         """
-        for source in event.get("manual_sources", [])
-    ) or "<li>No manual sources.</li>"
-    related_items = "".join(
-        f"""
-        <li>
-          <span><strong><a href="/events/{html.escape(str(related.get('id')))}">{html.escape(str(related.get('title') or 'Related event'))}</a></strong>
-          <small>{html.escape(' · '.join(str(reason) for reason in related.get('recommendation_reasons', [])[:3]))}</small></span>
-          {web_source_link(related.get('official_url'), 'Official')}
-        </li>
-        """
-        for related in event.get("related_events", [])
-        if isinstance(related, dict)
+            for source in event.get("manual_sources", [])
+        ),
     )
-    related_section = (
-        f'<section><h2>Related Saved Events</h2><ul>{related_items}</ul></section>'
-        if related_items
+    facts = [
+        (label, "<br>".join(html.escape(item) for item in values))
+        for label, values in (
+            ("Dates", [friendly_date(item) for item in event_dates[:3]]),
+            ("Venue", venues[:3]),
+            ("Organizer", organizers),
+            ("Cast &amp; lineup", lineup),
+            ("Prices", ticket_prices),
+            ("Rules", ticket_rules),
+        )
+        if values
+    ]
+    facts_section = (
+        '<section><h2>Details</h2><dl class="facts panel">'
+        + "".join(f"<dt>{label}</dt><dd>{value}</dd>" for label, value in facts)
+        + "</dl></section>"
+        if facts
         else ""
     )
     official = event.get("official_url") or ""
-    official_link = web_source_link(official, "Open") if is_web_url(official) else "<span>Unavailable</span>"
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(str(event.get('title') or 'Event'))}</title>
-  <style>
-    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent-strong: #9b2446; --green: #13795b; --blue: #315c9b; --shadow: 0 10px 28px rgba(28, 36, 52, 0.08); }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }}
-    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    header {{ background: rgba(255, 255, 255, 0.96); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
-    .topbar, main {{ max-width: 1040px; margin: 0 auto; }}
-    .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
-    main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
-    .back, .action-link {{ display: inline-flex; align-items: center; justify-content: center; min-width: 55px; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; }}
-    .back {{ min-width: 38px; width: 38px; padding: 0; }}
-    .hero {{ border-bottom: 1px solid var(--line); padding-bottom: 18px; }}
-    section {{ min-width: 0; border-top: 1px solid var(--line); padding-top: 18px; }}
-    h1, h2, h3, p {{ margin-top: 0; letter-spacing: 0; }}
-    h1 {{ margin-bottom: 10px; font-size: clamp(28px, 4vw, 40px); line-height: 1.08; }}
-    h2 {{ margin-bottom: 12px; font-size: 22px; }}
-    .status {{ display: inline-block; padding: 4px 8px; border-radius: 8px; background: #e9f9f1; color: var(--green); font-size: 12px; font-weight: 900; }}
-    .summary-grid, .fact-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }}
-    .summary-grid > div, .fact-grid > div {{ min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }}
-    .summary-grid strong, .fact-grid strong {{ display: block; min-width: 0; overflow-wrap: anywhere; }}
-    small {{ display: block; color: var(--muted); line-height: 1.45; }}
-    ul {{ min-width: 0; list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }}
-    li {{ min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); }}
-    li span, li strong, li small {{ min-width: 0; overflow-wrap: anywhere; }}
-    .rounds {{ display: grid; gap: 12px; }}
-    .round-group {{ display: grid; gap: 10px; }}
-    .round-group-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 2px; }}
-    .round-group-head h3 {{ margin: 0; font-size: 16px; }}
-    .round-platform-links {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-    .round-group-list {{ display: grid; gap: 10px; }}
-    .round-card {{ border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; box-shadow: var(--shadow); }}
-    .round-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }}
-    .subscribe-form {{ margin: 0; }}
-    button.action-link {{ cursor: pointer; }}
-    .round-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }}
-    @media (max-width: 720px) {{ header {{ padding: 12px 16px; }} main {{ padding: 18px 16px 42px; }} .summary-grid, .fact-grid {{ grid-template-columns: 1fr; }} li {{ align-items: flex-start; flex-direction: column; }} }}
-  </style>
-</head>
-<body>
-  <header><div class="topbar"><a class="back" href="/" title="Back" aria-label="Back">‹</a><span class="status">{html.escape(str(event.get('status_label') or event.get('status') or 'watching'))}</span></div></header>
-  <main>
-    <div class="hero">
-      <h1>{html.escape(str(event.get('title') or 'Untitled event'))}</h1>
-      <div class="summary-grid">
-        <div><small>Official page</small>{official_link}</div>
-        <div><small>Updated</small><strong>{html.escape(str(event.get('updated_at') or 'unknown'))}</strong></div>
-        <div><small>Watch keyword</small><strong>{html.escape(str(event.get('keyword') or 'unknown'))}</strong></div>
-      </div>
-    </div>
+    official_button = web_source_link(official, "Official page") if is_web_url(official) else ""
+    first_date = friendly_date(event_dates[0]) if event_dates else ""
+    return render_page(
+        str(event.get("title") or "Event"),
+        f"""
     <section>
-      <h2>General Info</h2>
-      <div class="summary-grid">
-        <div><small>Location</small><strong>{html.escape(location_label)}</strong></div>
-        <div><small>Time</small><strong>{html.escape(time_label)}</strong></div>
-        <div><small>Venue</small><strong>{html.escape(venue_label)}</strong></div>
-        <div><small>Organizer</small><strong>{html.escape('; '.join(organizers) or 'Unknown')}</strong></div>
-        <div><small>Cast &amp; lineup</small><strong>{html.escape('; '.join(lineup) or 'Unknown')}</strong></div>
-      </div>
+      <h1>{html.escape(str(event.get('title') or 'Untitled event'))}</h1>
+      {meta_line(html.escape(str(event.get('status_label') or '')), html.escape(first_date), html.escape(infer_event_location(venues)))}
+      <div class="round-links">{official_button}{subscribe_button(event.get("watch_id"), NOTIFY_SCOPE_EVENT_ALL, "Notify me for all rounds", redirect=redirect)}</div>
     </section>
+    <section><h2>Ticket Rounds</h2><ul>{round_items}</ul></section>
     {tour_section}
-    <section><h2>Ticket Rules</h2><ul>{ticket_rule_items}</ul></section>
-    <section><h2>Ticket Price</h2><ul>{ticket_price_items}</ul></section>
-    <section><h2>Ticket Links</h2><ul>{ticket_link_items}</ul></section>
-    <section><h2>Ticket Rounds</h2><div class="round-actions">{event_subscribe}</div><div class="rounds">{round_items}</div></section>
+    {facts_section}
+    {ticket_link_section}
     {related_section}
-    <section><h2>Manual Sources</h2><ul>{manual_source_items}</ul></section>
-  </main>
-</body>
-</html>"""
+    {manual_source_section}
+  """,
+    )
 
 
 NOTIFY_CHANNEL_PRESET = "feed,push"
@@ -526,7 +540,7 @@ def subscribe_button(
       <input type="hidden" name="round_key" value="{html.escape(round_key)}">
       <input type="hidden" name="channels" value="{html.escape(channels)}">
       <input type="hidden" name="redirect" value="{html.escape(redirect)}">
-      <button class="action-link" type="submit" title="Notify me">{html.escape(label)}</button>
+      <button class="button" type="submit" title="Notify me">{html.escape(label)}</button>
     </form>
     """
 
@@ -538,8 +552,10 @@ def notification_channels_from_form(form: dict[str, str], default: str) -> str:
     return ",".join(selected) or DEFAULT_NOTIFY_CHANNELS
 
 
-def render_notifications_page(db_path: str, user_id: int = 0) -> str:
-    watches = {watch.id: watch.keyword for watch in list_watches(db_path, include_muted=True, user_id=user_id)}
+def render_settings_page(db_path: str, user_id: int = 0, account_email: str = "", account_error: str = "") -> str:
+    all_watches = list_watches(db_path, include_muted=True, user_id=user_id)
+    watches = {watch.id: watch.keyword for watch in all_watches}
+    artists = [watch for watch in all_watches if watch.kind == WATCH_KIND_ARTIST and not watch.muted]
     subscriptions = list_subscriptions(db_path, user_id=user_id)
     feed = notification_feed(db_path, limit=100, user_id=user_id)
     def render_subscription_item(subscription: NotificationSubscription) -> str:
@@ -558,99 +574,116 @@ def render_notifications_page(db_path: str, user_id: int = 0) -> str:
                 channel_controls.append(
                     f'<label><input type="checkbox" name="channel_{channel}" value="1"{checked}> {label}</label>'
                 )
-        location_text = f" · {html.escape(subscription.location)}" if subscription.location else ""
         account_note = (
             "Account subscriptions support private feed and push delivery."
             if user_id > 0
             else "Slack, Discord, and LINE use the server's local-workspace credentials."
         )
+        channels = ", ".join(channel.title() for channel in parsed_notification_channels(subscription.channels))
         return f"""
         <li class="subscription-row">
-          <div class="subscription-copy"><strong>{html.escape(watches.get(subscription.watch_id, str(subscription.watch_id)))}</strong>
-          <small>{html.escape(NOTIFY_SCOPE_LABELS.get(subscription.scope, subscription.scope))}{location_text} · {html.escape(subscription.channels)} · lead {html.escape(subscription.lead_days)}</small></div>
+          <span><span class="title">{html.escape(watches.get(subscription.watch_id, "Removed watch"))}</span>
+          {meta_line(html.escape(NOTIFY_SCOPE_LABELS.get(subscription.scope, subscription.scope)), html.escape(subscription.location), html.escape(channels), f"{html.escape(subscription.lead_days)} days before")}</span>
+          <form method="post" action="/subscribe/remove">
+            <input type="hidden" name="identifier" value="{subscription.id}">
+            <input type="hidden" name="redirect" value="/settings">
+            <button class="quiet danger" type="submit">Remove</button>
+          </form>
           <details class="subscription-editor">
-            <summary>Edit delivery</summary>
+            <summary>Change delivery</summary>
             <form method="post" action="/subscribe">
               <input type="hidden" name="channel_editor" value="1">
               <input type="hidden" name="watch" value="{subscription.watch_id}">
               <input type="hidden" name="scope" value="{html.escape(subscription.scope)}">
               <input type="hidden" name="location" value="{html.escape(subscription.location, quote=True)}">
               <input type="hidden" name="round_key" value="{html.escape(subscription.round_key, quote=True)}">
-              <input type="hidden" name="redirect" value="/notifications">
+              <input type="hidden" name="redirect" value="/settings">
               <fieldset><legend>Channels</legend><div class="channel-options">{''.join(channel_controls)}</div></fieldset>
-              <label class="lead-days">Reminder days before <input name="lead_days" value="{html.escape(subscription.lead_days, quote=True)}" inputmode="numeric" pattern="[0-9, ]+" required></label>
+              <label class="lead-days">Remind me this many days before <input name="lead_days" value="{html.escape(subscription.lead_days, quote=True)}" inputmode="numeric" pattern="[0-9, ]+" required></label>
               <small>{account_note}</small>
-              <button class="action-link" type="submit">Save delivery</button>
+              <span><button type="submit">Save</button></span>
             </form>
           </details>
-          <form method="post" action="/subscribe/remove">
-            <input type="hidden" name="identifier" value="{subscription.id}">
-            <input type="hidden" name="redirect" value="/notifications">
-            <button class="action-link" type="submit">Remove</button>
-          </form>
         </li>
         """
 
-    subscription_items = "".join(render_subscription_item(subscription) for subscription in subscriptions) or "<li>No subscriptions yet. Open an event and tap “Notify me”.</li>"
+    subscription_items = "".join(render_subscription_item(subscription) for subscription in subscriptions) or '<li class="empty-row">Nothing yet. Open an event and choose “Notify me”.</li>'
     feed_items = "".join(
         f"""
         <li>
-          <span><strong>{html.escape(str(item.get('title') or ''))}</strong>
+          <span><span class="title">{html.escape(str(item.get('title') or ''))}</span>
           <small>{html.escape(str(item.get('body') or ''))}</small>
-          <small>{html.escape(str(item.get('created_at') or ''))} · {html.escape(','.join(channel for channel, ok in (item.get('delivered') or {}).items() if ok))}</small></span>
+          {meta_line(html.escape(friendly_date(str(item.get('created_at') or '')[:10])))}</span>
         </li>
         """
-        for item in feed
-    ) or "<li>No reminders yet. They appear here as ticket dates approach.</li>"
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Notifications</title>
-  <style>
-    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent-strong: #9b2446; --shadow: 0 10px 28px rgba(28, 36, 52, 0.08); }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--paper); color: var(--ink); }}
-    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
-    header {{ background: rgba(255,255,255,0.96); border-bottom: 1px solid var(--line); padding: 16px 24px; }}
-    .topbar, main {{ max-width: 900px; margin: 0 auto; }}
-    .topbar {{ display: flex; align-items: center; gap: 12px; }}
-    main {{ padding: 28px 24px 56px; display: grid; gap: 18px; }}
-    .back {{ display: inline-flex; align-items: center; min-height: 36px; padding: 7px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-weight: 850; }}
-    section {{ border-top: 1px solid var(--line); padding-top: 18px; }}
-    h1, h2 {{ margin-top: 0; }}
-    ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; box-shadow: var(--shadow); overflow-wrap: anywhere; }}
-    small {{ display: block; color: var(--muted); line-height: 1.45; }}
-    .action-link {{ display: inline-flex; align-items: center; min-height: 32px; padding: 6px 10px; border-radius: 8px; background: white; border: 1px solid var(--line); color: var(--ink); font-size: 13px; font-weight: 850; cursor: pointer; }}
-    form {{ margin: 0; }}
-    .subscription-copy {{ min-width: 180px; flex: 1 1 240px; }}
-    .subscription-editor {{ flex: 2 1 360px; }}
-    .subscription-editor summary {{ cursor: pointer; font-weight: 850; }}
-    .subscription-editor form {{ margin-top: 10px; display: grid; gap: 10px; }}
-    fieldset {{ margin: 0; border: 1px solid var(--line); border-radius: 8px; }}
-    legend {{ color: var(--muted); font-size: 13px; font-weight: 800; }}
-    .channel-options {{ display: flex; flex-wrap: wrap; gap: 8px 14px; }}
-    .channel-options label, .lead-days {{ font-size: 14px; font-weight: 700; }}
-    .lead-days {{ display: grid; gap: 5px; }}
-    .lead-days input {{ min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }}
-    @media (max-width: 680px) {{ li.subscription-row {{ flex-direction: column; }} .subscription-editor {{ width: 100%; }} }}
-  </style>
-</head>
-<body>
-  <header><div class="topbar"><a class="back" href="/" title="Back">‹</a><strong>Notifications</strong></div></header>
-  <main>
-    <section><h1>Subscriptions</h1><ul>{subscription_items}</ul></section>
+        for item in feed[:20]
+    ) or '<li class="empty-row">Reminders appear here as ticket dates approach.</li>'
+    artist_items = "".join(
+        f"""
+        <li>
+          <a class="title" href="/artists/{watch.id}">{html.escape(watch.keyword)}</a>
+          <form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><input type="hidden" name="redirect" value="/settings">
+          <button class="quiet danger" title="Remove artist" aria-label="Remove {html.escape(watch.keyword)}">Remove</button></form>
+        </li>
+        """
+        for watch in artists
+    ) or '<li class="empty-row">Follow an artist to discover new shows.</li>'
+    if account_email:
+        account_section = f"""
+        <ul><li>
+          <span><span class="title">{html.escape(account_email)}</span><small>Signed in</small></span>
+          <form method="post" action="/account/logout"><button type="submit">Log out</button></form>
+        </li></ul>"""
+    else:
+        account_section = f"""
+        <form class="panel stack" method="post" action="/account/login">
+          <small>Sign in to see the same watches as the app.</small>
+          {f'<p class="message">{html.escape(account_error)}</p>' if account_error else ''}
+          <div class="form-grid">
+            <input name="email" type="email" autocomplete="username" placeholder="Email" maxlength="{MAX_EMAIL_LENGTH}" required>
+            <input name="password" type="password" autocomplete="current-password" placeholder="Password" minlength="8" maxlength="{MAX_PASSWORD_LENGTH}" required>
+          </div>
+          <span class="round-links">
+            <button class="primary" type="submit">Log in</button>
+            <button type="submit" formaction="/account/register">Create account</button>
+          </span>
+        </form>"""
+    return render_page(
+        "Settings",
+        f"""
+    <h1>Settings</h1>
+    <section><h2>Account</h2>{account_section}</section>
+    <section><h2>Reminders</h2><ul>{subscription_items}</ul></section>
     <section><h2>Recent reminders</h2><ul>{feed_items}</ul></section>
-  </main>
-</body>
-</html>"""
+    <section>
+      <div class="section-head"><h2>Artists</h2>
+        <form method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="quiet" title="Check artists now">Check now</button></form>
+      </div>
+      <form class="inline-form" method="post" action="/watch/add">
+        <input type="hidden" name="kind" value="artist">
+        <input name="keyword" placeholder="Artist or production company" aria-label="Artist or production company" maxlength="{MAX_KEYWORD_LENGTH}" required>
+        <button class="primary" title="Follow artist">Follow</button>
+      </form>
+      <ul>{artist_items}</ul>
+    </section>
+    <footer>
+      <span title="Server release">Version {html.escape(APP_VERSION)} ({APP_BUILD}) · schema {DB_SCHEMA_VERSION}</span>
+      <a href="/privacy">Privacy</a>
+      <a href="/support">Support</a>
+    </footer>
+  """,
+    )
 
 
-def send_security_headers(handler: http.server.BaseHTTPRequestHandler) -> None:
+render_notifications_page = render_settings_page
+
+
+def send_security_headers(
+    handler: http.server.BaseHTTPRequestHandler,
+    cache_control: str = "no-store",
+) -> None:
     """Apply browser/API protections consistently to every response shape."""
-    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Cache-Control", cache_control)
     handler.send_header("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
     handler.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
     handler.send_header("Referrer-Policy", "no-referrer")
@@ -670,10 +703,16 @@ def json_response(handler: http.server.BaseHTTPRequestHandler, payload: object, 
     handler.wfile.write(body)
 
 
-def text_response(handler: http.server.BaseHTTPRequestHandler, body: str, content_type: str, status: int = 200) -> None:
+def text_response(
+    handler: http.server.BaseHTTPRequestHandler,
+    body: str,
+    content_type: str,
+    status: int = 200,
+    cache_control: str = "no-store",
+) -> None:
     data = body.encode("utf-8")
     handler.send_response(status)
-    send_security_headers(handler)
+    send_security_headers(handler, cache_control)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
@@ -774,16 +813,34 @@ def add_watch_from_form(db_path: str, form: dict[str, str], user_id: int | None 
     )
 
 
-def render_watch_preferences(watch: Watch, include_alerts: bool = False) -> str:
-    parts = [
-        f"tags {watch.tags or 'none'}",
-        f"regions {watch.preferred_regions or 'none'}",
-        f"venues {watch.preferred_venues or 'none'}",
-    ]
-    if include_alerts:
-        parts.append(f"alerts {human_alert_preferences(watch.alert_preferences)}")
-    parts.append(f"last checked {watch.last_checked_at or 'never'}")
-    return " | ".join(parts)
+DASHBOARD_SCRIPT = """  <script>
+    const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
+    const tabPanels = Array.from(document.querySelectorAll('[data-tab-panel]'));
+    function showDashboardTab(name) {
+      tabButtons.forEach((button) => {
+        button.setAttribute('aria-selected', String(button.dataset.tabTarget === name));
+      });
+      tabPanels.forEach((panel) => {
+        panel.classList.toggle('is-active', panel.dataset.tabPanel === name);
+      });
+    }
+    tabButtons.forEach((button) => {
+      button.addEventListener('click', () => showDashboardTab(button.dataset.tabTarget));
+    });
+    document.querySelectorAll('[data-edit-watch]').forEach((button) => {
+      button.addEventListener('click', () => {
+        showDashboardTab('watching');
+        const filters = document.getElementById('watch-filters');
+        if (filters) filters.open = true;
+        ['keyword', 'tags', 'regions', 'venues', 'alerts'].forEach((field) => {
+          const input = document.getElementById(`watch-${field}`);
+          if (input) input.value = button.dataset[field] || '';
+        });
+        document.getElementById('watch-keyword')?.focus();
+      });
+    });
+  </script>
+"""
 
 
 def render_watch_edit_button(watch: Watch) -> str:
@@ -800,8 +857,8 @@ def render_watch_edit_button(watch: Watch) -> str:
         for name, value in attributes.items()
     )
     return (
-        f'<button class="action-link" type="button" data-edit-watch {encoded} '
-        'title="Edit watch preferences" aria-label="Edit watch preferences">Edit</button>'
+        f'<button class="quiet" type="button" data-edit-watch {encoded} '
+        'title="Edit filters" aria-label="Edit filters">Edit</button>'
     )
 
 
@@ -827,72 +884,54 @@ def render_web_page(
 ) -> str:
     watches = list_watches(db_path, include_muted=True, user_id=user_id)
     events = recent_events(db_path, user_id=user_id, source_user_id=user_id)
-    upcoming_rows = upcoming_priority_rows(db_path, limit=6, user_id=user_id)
+    upcoming_rows = upcoming_priority_rows(db_path, limit=8, user_id=user_id)
     latest_event_by_watch_id = {
         int(event["watch_id"]): event
         for event in reversed(events)
         if event.get("watch_kind") == WATCH_KIND_EVENT and event.get("watch_id")
     }
-    active_artist_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_ARTIST]
     active_event_watches = [watch for watch in watches if not watch.muted and watch.kind == WATCH_KIND_EVENT]
-    event_count_by_artist_id: dict[int, int] = {}
-    for event in events:
-        if event.get("watch_kind") != WATCH_KIND_ARTIST or not event.get("watch_id"):
-            continue
-        artist_id = int(event["watch_id"])
-        event_count_by_artist_id[artist_id] = event_count_by_artist_id.get(artist_id, 0) + 1
-    artist_items = "\n".join(
-        f"""
-        <li class="watch-row">
-          <span class="watch-copy"><a class="watch-title" href="/artists/{watch.id}" title="Open artist events">{html.escape(watch.keyword)}</a> <small>#{watch.id} | {html.escape(render_watch_preferences(watch))} | {event_count_by_artist_id.get(watch.id, 0)} results</small></span>
-          <span class="row-actions"><a class="action-link" href="/artists/{watch.id}" title="Open artist events" aria-label="Open artist events">Open</a>{render_watch_edit_button(watch)}<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove artist" aria-label="Remove artist"><span aria-hidden="true">x</span></button></form></span>
-        </li>
-        """
-        for watch in active_artist_watches
-    ) or '<li class="empty-row">No tracked artists.</li>'
+
     def render_tracked_event_item(watch: Watch) -> str:
         event = latest_event_by_watch_id.get(watch.id)
+        row_actions = (
+            f'<span class="row-actions">{render_watch_edit_button(watch)}'
+            f'<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}">'
+            f'<button class="quiet danger" title="Stop watching" aria-label="Stop watching {html.escape(watch.keyword)}">Remove</button></form></span>'
+        )
         if not event:
             return f"""
-        <li class="watch-row">
-          <span class="watch-copy"><strong>{html.escape(watch.keyword)}</strong> <small>#{watch.id} | not searched yet | {html.escape(render_watch_preferences(watch, include_alerts=True))}</small></span>
-          <span class="row-actions">{render_watch_edit_button(watch)}<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
+        <li>
+          <span><span class="title">{html.escape(watch.keyword)}</span>
+          <small>{"Nothing found yet" if watch.last_checked_at else "Not checked yet"}</small></span>
+          {row_actions}
         </li>
         """
-        detail_url = f"/events/{html.escape(str(event.get('id')))}"
-        ticket_count = len(event.get("ticket_links", [])) if isinstance(event.get("ticket_links"), list) else 0
-        round_count = len(event.get("rounds", [])) if isinstance(event.get("rounds"), list) else 0
         date_items = event.get("event_dates", [])
-        date_label = str(date_items[0]) if isinstance(date_items, list) and date_items else "no date"
-        official_label = "Official" if is_web_url(event.get("official_url")) else "No official"
+        venue_items = [str(item) for item in event.get("venues", [])] if isinstance(event.get("venues"), list) else []
+        first_date = friendly_date(date_items[0]) if isinstance(date_items, list) and date_items else ""
         return f"""
-        <li class="watch-row event-row">
-          <span class="watch-copy">
-            <a class="watch-title event-title" href="{detail_url}" title="Open event details">{html.escape(str(event.get('title') or watch.keyword))}</a>
-            <small>{html.escape(watch.keyword)} | {html.escape(render_watch_preferences(watch, include_alerts=True))}</small>
-            <span class="watch-meta">
-              <span class="mini-stat" title="Official page">{html.escape(official_label)}</span>
-              <span class="mini-stat" title="Ticket links">Tickets {ticket_count}</span>
-              <span class="mini-stat" title="Lottery rounds">Rounds {round_count}</span>
-              <span class="mini-stat wide" title="First date clue">Date {html.escape(date_label)}</span>
-            </span>
+        <li>
+          <span>
+            <a class="title" href="/events/{html.escape(str(event.get('id')))}">{html.escape(str(event.get('title') or watch.keyword))}</a>
+            {meta_line(html.escape(str(event.get('status_label') or '')), html.escape(first_date), html.escape(infer_event_location(venue_items)))}
           </span>
-          <span class="row-actions"><a class="action-link" href="{detail_url}" title="Open event details" aria-label="Open event details">Open</a>{render_watch_edit_button(watch)}<form method="post" action="/watch/remove"><input type="hidden" name="identifier" value="{watch.id}"><button class="icon-button danger" title="Remove event" aria-label="Remove event"><span aria-hidden="true">x</span></button></form></span>
+          {row_actions}
         </li>
         """
 
     active_event_watches.sort(key=lambda watch: tracked_event_display_key(watch, latest_event_by_watch_id.get(watch.id)))
-    tracked_event_items = "\n".join(render_tracked_event_item(watch) for watch in active_event_watches) or '<li class="empty-row">No tracked events.</li>'
+    tracked_event_items = "\n".join(render_tracked_event_item(watch) for watch in active_event_watches) or '<li class="empty-row">You are not watching any events yet.</li>'
     event_result_items = "\n".join(
         f"""
-        <li class="watch-row">
-          <span class="watch-copy"><strong>{html.escape(result.title or result.url)}</strong><small>{html.escape(result.url)}</small></span>
+        <li>
+          <span><span class="title">{html.escape(result.title or result.url)}</span><small>{html.escape(result.url)}</small></span>
           <form method="post" action="/event/add">
             <input type="hidden" name="keyword" value="{html.escape(event_search_keyword)}">
             <input type="hidden" name="title" value="{html.escape(result.title)}">
             <input type="hidden" name="url" value="{html.escape(result.url)}">
             <input type="hidden" name="snippet" value="{html.escape(result.snippet)}">
-            <button class="secondary-button" title="Add exact event" aria-label="Add exact event">Add</button>
+            <button class="primary" title="Watch this page" aria-label="Watch this page">Watch</button>
           </form>
         </li>
         """
@@ -903,423 +942,84 @@ def render_web_page(
         event_search_panel = f'<p class="message">{html.escape(event_search_error)}</p>'
     elif event_search_keyword:
         event_search_panel = f"""
-        <div class="results-panel">
-          <div class="subhead"><span>Results</span><small>{html.escape(event_search_keyword)}</small></div>
-          <ul>{event_result_items or '<li class="empty-row">No matching event pages found.</li>'}</ul>
-        </div>
+        <small>Pages matching “{html.escape(event_search_keyword)}”</small>
+        <ul>{event_result_items or '<li class="empty-row">No matching event pages found.</li>'}</ul>
         """
     upcoming_items = "\n".join(
         f"""
-        <li class="watch-row attention-row">
-          <span class="watch-copy">
-            <a class="watch-title" href="/events/{html.escape(str(row.get('event_id')))}">{html.escape(str(row.get('event_title') or 'Untitled event'))}</a>
-            <small>{html.escape(str(row.get('keyword') or 'unknown'))}</small>
-            <span class="watch-meta">
-              <span class="mini-stat" title="Ticket status">{html.escape(str(row.get('status_label') or row.get('status') or 'unknown'))}</span>
-              <span class="mini-stat" title="Relevant date">Date {html.escape(str(row.get('relevant_date') or 'unknown'))}</span>
-              <span class="mini-stat" title="Platform">{html.escape(str(row.get('platform') or 'unknown'))}</span>
-              <span class="mini-stat wide" title="Round">{html.escape(str(row.get('round_name') or 'Ticket round'))}</span>
-            </span>
+        <li>
+          <span>
+            <a class="title" href="/events/{html.escape(str(row.get('event_id')))}">{html.escape(str(row.get('event_title') or 'Untitled event'))}</a>
+            {meta_line(status_html(row.get('status'), row.get('status_label')), html.escape(friendly_date(row.get('relevant_date'))), html.escape(str(row.get('platform') or '')))}
+            <small>{html.escape(str(row.get('round_name') or ''))}</small>
           </span>
-          <span class="row-actions"><a class="action-link" href="/events/{html.escape(str(row.get('event_id')))}" title="Open event details" aria-label="Open event details">Open</a></span>
         </li>
         """
         for row in upcoming_rows
-    ) or '<li class="empty-row">No ticket rounds need attention.</li>'
-    upcoming_label = "round" if len(upcoming_rows) == 1 else "rounds"
-    active_dashboard_tab = selected_tab if selected_tab in {"attention", "artists", "events"} else "events" if event_search_keyword or event_search_error else "attention"
-    if account_email:
-        account_panel = f"""
-        <div class="account-panel signed-in">
-          <span>Signed in as <strong>{html.escape(account_email)}</strong></span>
-          <form method="post" action="/account/logout"><button class="secondary-button" type="submit">Log out</button></form>
-        </div>
-        """
-    else:
-        account_panel = f"""
-        <details class="account-panel"{' open' if account_error else ''}>
-          <summary>Sign in or create an account</summary>
-          {f'<p class="message">{html.escape(account_error)}</p>' if account_error else ''}
-          <form method="post" action="/account/login">
-            <input name="email" type="email" autocomplete="username" placeholder="Email" maxlength="{MAX_EMAIL_LENGTH}" required>
-            <input name="password" type="password" autocomplete="current-password" placeholder="Password" minlength="8" maxlength="{MAX_PASSWORD_LENGTH}" required>
-            <button class="secondary-button" type="submit">Log in</button>
-            <button class="secondary-button" type="submit" formaction="/account/register">Register</button>
-          </form>
-        </details>
-        """
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>chusennote</title>
-  <style>
-    :root {{
-      --ink: #202126;
-      --muted: #667085;
-      --line: #d9dee8;
-      --paper: #f6f7fb;
-      --panel: #ffffff;
-      --accent: #d94f70;
-      --accent-strong: #9b2446;
-      --green: #13795b;
-      --blue: #315c9b;
-      --shadow: 0 10px 28px rgba(28, 36, 52, 0.08);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--paper);
-      color: var(--ink);
-    }}
-    a {{ color: var(--accent-strong); font-weight: 850; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .watch-title {{ color: var(--ink); }}
-    header {{
-      background: rgba(255, 255, 255, 0.96);
-      border-bottom: 1px solid var(--line);
-      padding: 16px 24px;
-    }}
-    .topbar {{
-      max-width: 1180px;
-      margin: 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }}
-    .brand {{ display: flex; gap: 10px; align-items: center; color: var(--ink); font-size: 22px; font-weight: 950; }}
-    .brand:hover {{ text-decoration: none; }}
-    .brand-mark {{
-      width: 36px;
-      height: 36px;
-      display: grid;
-      place-items: center;
-      border-radius: 8px;
-      background: var(--accent);
-      color: white;
-      box-shadow: 0 8px 20px rgba(155, 36, 70, 0.2);
-    }}
-    main {{ max-width: 1180px; margin: 0 auto; padding: 28px 24px 56px; }}
-    .dashboard-intro {{
-      display: flex;
-      justify-content: space-between;
-      gap: 18px;
-      align-items: flex-end;
-      margin-bottom: 22px;
-    }}
-    .dashboard-intro h1 {{ margin: 0; font-size: 30px; line-height: 1.1; }}
-    .dashboard-intro p {{ margin: 6px 0 0; color: var(--muted); font-weight: 650; }}
-    .summary-strip {{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }}
-    .summary-pill {{
-      display: inline-flex;
-      align-items: center;
-      min-height: 32px;
-      padding: 6px 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-      color: var(--ink);
-      font-size: 13px;
-      font-weight: 850;
-      white-space: nowrap;
-    }}
-    .account-panel {{ margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: var(--shadow); }}
-    .account-panel summary {{ cursor: pointer; color: var(--ink); font-weight: 900; }}
-    .account-panel form {{ margin-top: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; }}
-    .account-panel.signed-in {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
-    .account-panel.signed-in form {{ display: block; margin: 0; }}
-    .dashboard-tabs {{
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin: 0 0 18px;
-    }}
-    .tab-button {{
-      min-height: 54px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--ink);
-      box-shadow: var(--shadow);
-      text-align: left;
-    }}
-    .tab-button:hover {{ transform: translateY(-1px); }}
-    .tab-button[aria-selected="true"] {{
-      border-color: #e7b6c5;
-      background: #fff3f6;
-      color: var(--accent-strong);
-    }}
-    .tab-button .tab-label {{ font-weight: 950; }}
-    .tab-button .tab-count {{
-      min-width: 28px;
-      min-height: 28px;
-      display: inline-grid;
-      place-items: center;
-      padding: 3px 8px;
-      border-radius: 8px;
-      background: var(--paper);
-      color: var(--ink);
-      font-size: 12px;
-      font-weight: 950;
-    }}
-    .dashboard-panel {{ display: none; }}
-    .dashboard-panel.is-active {{ display: block; }}
-    section {{
-      min-width: 0;
-      padding: 0;
-    }}
-    .section-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }}
-    h1, h2 {{ margin: 0; letter-spacing: 0; }}
-    h2 {{ font-size: 20px; }}
-    .status {{ display: inline-block; padding: 4px 8px; border-radius: 8px; background: #e9f9f1; color: var(--green); font-size: 12px; font-weight: 900; white-space: nowrap; }}
-    form {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 8px; align-items: center; }}
-    input {{
-      min-width: 0;
-      min-height: 42px;
-      padding: 10px 12px;
-      border: 1px solid #cfd6e3;
-      border-radius: 8px;
-      background: #fff;
-      color: var(--ink);
-      font: inherit;
-    }}
-    input:focus {{ border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217, 79, 112, 0.16); outline: none; }}
-    input[name="keyword"] {{ grid-column: 1 / -2; }}
-    button {{
-      min-height: 40px;
-      padding: 10px 14px;
-      border: 1px solid var(--accent-strong);
-      border-radius: 8px;
-      background: var(--accent-strong);
-      color: white;
-      cursor: pointer;
-      font-weight: 850;
-      font: inherit;
-    }}
-    button:hover {{ transform: translateY(-1px); }}
-    .secondary-button {{
-      min-width: 64px;
-      background: #fff;
-      color: var(--accent-strong);
-      border-color: #e7b6c5;
-      box-shadow: none;
-    }}
-    .icon-button {{
-      width: 42px;
-      min-width: 42px;
-      padding: 0;
-      display: inline-grid;
-      place-items: center;
-      font-size: 22px;
-      line-height: 1;
-    }}
-    .icon-button.soft {{ background: #fff; border-color: #cfd6e3; color: var(--ink); }}
-    .icon-button.danger {{ background: #fff; border-color: #efc2cd; color: #b9284a; box-shadow: none; }}
-    .action-link {{
-      min-height: 34px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 7px 10px;
-      border: 1px solid #cfd6e3;
-      border-radius: 8px;
-      background: #fff;
-      color: var(--ink);
-      font-size: 13px;
-      font-weight: 850;
-    }}
-    .action-link:hover {{ text-decoration: none; transform: translateY(-1px); }}
-    .button-text {{
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
-    }}
-    ul {{ list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 10px; }}
-    .results-panel {{ margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }}
-    .subhead {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 900; }}
-    .message {{ margin: 12px 0 0; color: #b9284a; font-weight: 800; }}
-    li {{
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--panel);
-      padding: 13px;
-      box-shadow: var(--shadow);
-    }}
-    .watch-row {{ align-items: flex-start; }}
-    .event-row {{ min-height: 108px; }}
-    .attention-row {{ min-height: 96px; }}
-    .empty-row {{ color: var(--muted); font-weight: 700; box-shadow: none; }}
-    .watch-copy {{ min-width: 0; display: grid; gap: 4px; }}
-    .event-title {{
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }}
-    small {{ color: var(--muted); line-height: 1.45; }}
-    li form {{ display: block; flex: 0 0 auto; }}
-    .row-actions {{ display: inline-flex; gap: 8px; align-items: center; }}
-    .watch-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }}
-    .mini-stat {{
-      display: inline-flex;
-      align-items: center;
-      max-width: 100%;
-      min-height: 24px;
-      padding: 4px 8px;
-      border-radius: 8px;
-      background: #fff3f6;
-      border: 1px solid #efc2cd;
-      color: #6d263a;
-      font-size: 12px;
-      font-weight: 900;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }}
-    .mini-stat:nth-child(2) {{ background: #effbf5; border-color: #cfe9dc; color: var(--green); }}
-    .mini-stat:nth-child(3) {{ background: #f3f7ff; border-color: #d5e2ff; color: var(--blue); }}
-    .mini-stat.wide {{ max-width: min(100%, 320px); }}
-    li .icon-button {{ width: 34px; min-width: 34px; min-height: 34px; font-size: 18px; }}
-    .run-form {{ display: flex; margin-top: 10px; }}
-    .run-form button {{ width: auto; min-width: 92px; padding: 0 12px; font-size: 14px; }}
-    .watch-editor {{ margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }}
-    .watch-editor summary {{ cursor: pointer; font-weight: 900; }}
-    .watch-editor form {{ margin: 10px 0 7px; }}
-    @media (max-width: 820px) {{
-      header {{ padding: 12px 16px; }}
-      main {{ padding: 18px 16px 42px; }}
-      .dashboard-intro {{ align-items: flex-start; flex-direction: column; }}
-      .summary-strip {{ justify-content: flex-start; }}
-      .account-panel form {{ grid-template-columns: 1fr; }}
-      .account-panel.signed-in {{ align-items: flex-start; flex-direction: column; }}
-      .dashboard-tabs {{ grid-template-columns: 1fr; }}
-      form {{ grid-template-columns: 1fr auto; }}
-      input {{ grid-column: 1 / -1; }}
-      input[name="keyword"] {{ grid-column: 1 / 2; }}
-      li {{ align-items: flex-start; flex-direction: column; }}
-      .row-actions {{ width: 100%; justify-content: flex-start; }}
-    }}
-  </style>
-</head>
-<body>
-  <header>
-    <div class="topbar">
-      <a class="brand" href="/"><span class="brand-mark">cn</span><span>chusennote</span></a>
-      <a class="back" href="/notifications" title="Notifications">Notifications</a>
+    ) or f'<li class="empty-row">{"Nothing needs your attention right now." if active_event_watches else "Watch an event to see its ticket deadlines here."}</li>'
+    legacy_tabs = {"attention": "upcoming", "events": "watching", "artists": "watching"}
+    selected_tab = legacy_tabs.get(selected_tab, selected_tab)
+    active_dashboard_tab = selected_tab if selected_tab in {"upcoming", "watching"} else "watching" if event_search_keyword or event_search_error or not upcoming_rows else "upcoming"
+    sign_in_hint = (
+        ""
+        if user_id > 0 or account_email
+        else '<p class="panel muted">Using this device only. <a href="/settings">Sign in</a> to see your app watches.</p>'
+    )
+
+    def tab_button(name: str, label: str, count: int) -> str:
+        selected = "true" if active_dashboard_tab == name else "false"
+        return (
+            f'<button class="tab" type="button" role="tab" aria-selected="{selected}" aria-controls="panel-{name}" '
+            f'id="tab-{name}" data-tab-target="{name}">{label}<span class="tab-count">{count}</span></button>'
+        )
+
+    def panel_attributes(name: str) -> str:
+        active = " is-active" if active_dashboard_tab == name else ""
+        return f'class="tab-panel{active}" id="panel-{name}" role="tabpanel" aria-labelledby="tab-{name}" data-tab-panel="{name}"'
+
+    return render_page(
+        "chusennote",
+        f"""
+    {sign_in_hint}
+    <div class="tabs" role="tablist" aria-label="Dashboard sections">
+      {tab_button("upcoming", "Upcoming", len(upcoming_rows))}
+      {tab_button("watching", "Watching", len(active_event_watches))}
     </div>
-  </header>
-  <main>
-    {account_panel}
-    <div class="dashboard-intro">
-      <div>
-        <h1>Watch dashboard</h1>
-        <p>Track official pages, ticket links, and lottery rounds from one place.</p>
-      </div>
-      <div class="summary-strip" aria-label="Dashboard summary">
-        <span class="summary-pill">{len(active_artist_watches)} active artists</span>
-        <span class="summary-pill">{len(active_event_watches)} active events</span>
-        <span class="summary-pill">{len(events)} saved events</span>
-        <span class="summary-pill" title="Server release">v{html.escape(APP_VERSION)} ({APP_BUILD}) · schema {DB_SCHEMA_VERSION}</span>
-      </div>
-    </div>
-    <div class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
-      <button class="tab-button" type="button" role="tab" aria-selected="{'true' if active_dashboard_tab == 'attention' else 'false'}" aria-controls="panel-attention" id="tab-attention" data-tab-target="attention"><span class="tab-label">Attention</span><span class="tab-count">{len(upcoming_rows)}</span></button>
-      <button class="tab-button" type="button" role="tab" aria-selected="{'true' if active_dashboard_tab == 'artists' else 'false'}" aria-controls="panel-artists" id="tab-artists" data-tab-target="artists"><span class="tab-label">Artists</span><span class="tab-count">{len(active_artist_watches)}</span></button>
-      <button class="tab-button" type="button" role="tab" aria-selected="{'true' if active_dashboard_tab == 'events' else 'false'}" aria-controls="panel-events" id="tab-events" data-tab-target="events"><span class="tab-label">Events</span><span class="tab-count">{len(active_event_watches)}</span></button>
-    </div>
-    <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'attention' else ''}" id="panel-attention" role="tabpanel" aria-labelledby="tab-attention" data-tab-panel="attention">
-      <div class="section-head"><h2>Needs Attention</h2><span class="status">{len(upcoming_rows)} {upcoming_label}</span></div>
+    <section {panel_attributes("upcoming")}>
       <ul>{upcoming_items}</ul>
     </section>
-    <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'artists' else ''}" id="panel-artists" role="tabpanel" aria-labelledby="tab-artists" data-tab-panel="artists">
-      <div class="section-head"><h2>Tracked Artists</h2><span class="status">{len(active_artist_watches)} active</span></div>
-      <details class="watch-editor" id="artist-watch-editor">
-        <summary>Add or update an artist watch</summary>
-        <form method="post" action="/watch/add">
-          <input type="hidden" name="kind" value="artist">
-          <input id="artist-watch-keyword" name="keyword" placeholder="Artist or production company" aria-label="Artist or production company" maxlength="{MAX_KEYWORD_LENGTH}" required>
-          <input id="artist-watch-tags" name="tags" placeholder="Tags, comma separated" aria-label="Tags">
-          <input id="artist-watch-regions" name="regions" placeholder="Preferred regions" aria-label="Preferred regions">
-          <input id="artist-watch-venues" name="venues" placeholder="Preferred venues" aria-label="Preferred venues">
-          <input id="artist-watch-alerts" name="alerts" placeholder="Alert types, comma separated" aria-label="Alert types" value="{html.escape(DEFAULT_ALERT_PREFERENCES)}">
-          <button class="secondary-button" title="Save artist watch" aria-label="Save artist watch">Save</button>
-        </form>
-        <small>Enter an existing artist keyword to update only your account's filters and alerts.</small>
-      </details>
-      <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="artist"><button class="secondary-button" title="Run artists" aria-label="Run artists">Run artists</button></form>
-      <ul>{artist_items}</ul>
-    </section>
-    <section class="dashboard-panel {'is-active' if active_dashboard_tab == 'events' else ''}" id="panel-events" role="tabpanel" aria-labelledby="tab-events" data-tab-panel="events">
-      <div class="section-head"><h2>Tracked Events</h2><span class="status">{len(active_event_watches)} active</span></div>
-      <details class="watch-editor" id="event-watch-editor">
-        <summary>Add or update a keyword watch</summary>
-        <form method="post" action="/watch/add">
-          <input type="hidden" name="kind" value="event">
-          <input id="event-watch-keyword" name="keyword" placeholder="Event keyword" aria-label="Event keyword" maxlength="{MAX_KEYWORD_LENGTH}" required>
-          <input id="event-watch-tags" name="tags" placeholder="Tags, comma separated" aria-label="Tags">
-          <input id="event-watch-regions" name="regions" placeholder="Preferred regions" aria-label="Preferred regions">
-          <input id="event-watch-venues" name="venues" placeholder="Preferred venues" aria-label="Preferred venues">
-          <input id="event-watch-alerts" name="alerts" placeholder="Alert types, comma separated" aria-label="Alert types" value="{html.escape(DEFAULT_ALERT_PREFERENCES)}">
-          <button class="secondary-button" title="Save watch" aria-label="Save watch">Save</button>
-        </form>
-        <small>Enter an existing keyword to update only your account's filters and alerts.</small>
-      </details>
-      <form method="post" action="/event/search">
-        <input name="keyword" placeholder="Search exact event" value="{html.escape(event_search_keyword)}" maxlength="{MAX_KEYWORD_LENGTH}" required>
-        <button class="secondary-button" title="Search events" aria-label="Search events">Search</button>
+    <section {panel_attributes("watching")}>
+      <form class="stack" method="post" action="/watch/add">
+        <input type="hidden" name="kind" value="event">
+        <div class="inline-form">
+          <input id="watch-keyword" name="keyword" placeholder="Event name or keyword" aria-label="Event name or keyword" value="{html.escape(event_search_keyword)}" maxlength="{MAX_KEYWORD_LENGTH}" required>
+          <button class="primary" title="Watch this keyword">Watch</button>
+          <button type="submit" formaction="/event/search" title="Find the official page">Find page</button>
+        </div>
+        <details id="watch-filters">
+          <summary>Filters</summary>
+          <div class="form-grid">
+            <input id="watch-tags" name="tags" placeholder="Tags" aria-label="Tags">
+            <input id="watch-regions" name="regions" placeholder="Regions" aria-label="Preferred regions">
+            <input id="watch-venues" name="venues" placeholder="Venues" aria-label="Preferred venues">
+            <input id="watch-alerts" name="alerts" placeholder="Alert types" aria-label="Alert types" value="{html.escape(DEFAULT_ALERT_PREFERENCES)}">
+          </div>
+          <small>Watching a keyword you already follow updates its filters.</small>
+        </details>
       </form>
       {event_search_panel}
-      <form class="run-form" method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="secondary-button" title="Run events" aria-label="Run events">Run events</button></form>
+      <div class="section-head"><h2>Events</h2>
+        <form method="post" action="/watch/run"><input type="hidden" name="kind" value="event"><button class="quiet" title="Check events now">Check now</button></form>
+      </div>
       <ul>{tracked_event_items}</ul>
     </section>
-  </main>
-  <script>
-    const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
-    const tabPanels = Array.from(document.querySelectorAll('[data-tab-panel]'));
-    function showDashboardTab(name) {{
-      tabButtons.forEach((button) => {{
-        button.setAttribute('aria-selected', String(button.dataset.tabTarget === name));
-      }});
-      tabPanels.forEach((panel) => {{
-        panel.classList.toggle('is-active', panel.dataset.tabPanel === name);
-      }});
-    }}
-    tabButtons.forEach((button) => {{
-      button.addEventListener('click', () => showDashboardTab(button.dataset.tabTarget));
-    }});
-    document.querySelectorAll('[data-edit-watch]').forEach((button) => {{
-      button.addEventListener('click', () => {{
-        const kind = button.dataset.kind === 'artist' ? 'artist' : 'event';
-        showDashboardTab(kind === 'artist' ? 'artists' : 'events');
-        const editor = document.getElementById(`${{kind}}-watch-editor`);
-        if (editor) editor.open = true;
-        ['keyword', 'tags', 'regions', 'venues', 'alerts'].forEach((field) => {{
-          const input = document.getElementById(`${{kind}}-watch-${{field}}`);
-          if (input) input.value = button.dataset[field] || '';
-        }});
-        document.getElementById(`${{kind}}-watch-keyword`)?.focus();
-      }});
-    }});
-  </script>
-</body>
-</html>"""
+    <footer>
+      <a href="/privacy">Privacy</a>
+      <a href="/support">Support</a>
+    </footer>
+  """,
+        script=DASHBOARD_SCRIPT,
+    )
 
 
 def render_alert_item(alert: dict[str, object]) -> str:
@@ -1393,37 +1093,13 @@ def render_event_card(event: dict[str, object], basic: bool = False) -> str:
 
 
 def render_information_page(title: str, content: str) -> str:
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)} · Chusennote</title>
-  <style>
-    :root {{ --ink: #202126; --muted: #667085; --line: #d9dee8; --paper: #f6f7fb; --panel: #ffffff; --accent: #9b2446; }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--paper); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; }}
-    header {{ border-bottom: 1px solid var(--line); background: var(--panel); }}
-    header div, main, footer {{ width: min(760px, calc(100% - 32px)); margin: 0 auto; }}
-    header div {{ display: flex; align-items: center; justify-content: space-between; min-height: 64px; gap: 16px; }}
-    main {{ padding: 36px 0 48px; }}
-    article {{ padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }}
-    h1 {{ margin: 0 0 8px; line-height: 1.2; }}
-    h2 {{ margin-top: 28px; line-height: 1.3; }}
-    p, li {{ color: #3f4653; }}
-    a {{ color: var(--accent); font-weight: 750; }}
-    .effective {{ margin-top: 0; color: var(--muted); }}
-    footer {{ padding: 0 0 36px; color: var(--muted); }}
-    footer a {{ margin-right: 16px; }}
-    @media (max-width: 600px) {{ article {{ padding: 21px; }} main {{ padding-top: 22px; }} }}
-  </style>
-</head>
-<body>
-  <header><div><a href="/">Chusennote</a><strong>{html.escape(title)}</strong></div></header>
-  <main><article>{content}</article></main>
-  <footer><a href="/privacy">Privacy</a><a href="/support">Support</a></footer>
-</body>
-</html>"""
+    return render_page(
+        f"{title} · Chusennote",
+        f"""
+    <article class="prose">{content}</article>
+    <footer><a href="/privacy">Privacy</a><a href="/support">Support</a></footer>
+  """,
+    )
 
 
 def render_privacy_page() -> str:
@@ -1431,7 +1107,7 @@ def render_privacy_page() -> str:
         "Privacy Policy",
         """
         <h1>Privacy Policy</h1>
-        <p class="effective">Effective September 22, 2026</p>
+        <p class="meta">Effective September 22, 2026</p>
         <p>Chusennote helps people track public event and ticket information and receive reminders. This notice describes the information the hosted service processes.</p>
         <h2>Information you provide</h2>
         <ul>
@@ -1556,8 +1232,16 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 html_response(self, render_artist_detail_page(db_path, int(path.rsplit("/", 1)[1]), self.browser_user_id()))
             elif re.fullmatch(r"/events/\d+", path):
                 html_response(self, render_event_detail_page(db_path, int(path.rsplit("/", 1)[1]), self.browser_user_id()))
-            elif path == "/notifications":
-                html_response(self, render_notifications_page(db_path, self.browser_user_id()))
+            elif path in {"/settings", "/notifications"}:
+                user = self.authenticated_user()
+                html_response(self, render_settings_page(db_path, user.id if user else 0, user.email if user else ""))
+            elif path == PAGE_CSS_PATH:
+                text_response(
+                    self,
+                    PAGE_CSS,
+                    "text/css; charset=utf-8",
+                    cache_control="public, max-age=31536000, immutable",
+                )
             elif path == "/privacy":
                 html_response(self, render_privacy_page())
             elif path == "/support":
@@ -1696,7 +1380,7 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                 if not web_request_allows_credentials(self):
                     html_response(
                         self,
-                        render_web_page(
+                        render_settings_page(
                             db_path,
                             account_error="Use HTTPS, localhost, or a literal private-network IP to sign in.",
                         ),
@@ -1709,12 +1393,12 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     try:
                         user = create_user(db_path, email, password)
                     except ValueError as error:
-                        html_response(self, render_web_page(db_path, account_error=str(error)), status=400)
+                        html_response(self, render_settings_page(db_path, account_error=str(error)), status=400)
                         return
                 else:
                     user = verify_user(db_path, email, password)
                     if user is None:
-                        html_response(self, render_web_page(db_path, account_error="Invalid credentials."), status=401)
+                        html_response(self, render_settings_page(db_path, account_error="Invalid credentials."), status=401)
                         return
                 token = issue_token(db_path, user.id)
                 redirect_response(
@@ -1775,17 +1459,17 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                         status=400,
                     )
                     return
-                redirect_response(self, f"/?tab={'artists' if form.get('kind') == WATCH_KIND_ARTIST else 'events'}")
+                redirect_response(self, "/settings" if form.get("kind") == WATCH_KIND_ARTIST else "/?tab=watching")
             elif path == "/watch/remove":
                 remove_watch(db_path, form.get("identifier", ""), user_id=self.browser_user_id())
-                redirect_response(self)
+                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/?tab=watching"))
             elif path == "/watch/unmute":
                 set_watch_muted(db_path, form.get("identifier", ""), False, user_id=self.browser_user_id())
                 redirect_response(self)
             elif path == "/watch/run":
                 kind = form.get("kind") or None
                 run_watches(db_path, kind=kind, user_id=self.browser_user_id())
-                redirect_response(self, f"/?tab={'artists' if kind == WATCH_KIND_ARTIST else 'events' if kind == WATCH_KIND_EVENT else 'attention'}")
+                redirect_response(self, "/settings" if kind == WATCH_KIND_ARTIST else "/?tab=watching" if kind == WATCH_KIND_EVENT else "/")
             elif path == "/event/search":
                 try:
                     keyword = validated_keyword(form.get("keyword", ""))
@@ -1907,12 +1591,12 @@ def make_web_handler(db_path: str) -> type[http.server.BaseHTTPRequestHandler]:
                     )
                 except ValueError:
                     pass
-                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/notifications"))
+                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/settings"))
             elif path == "/subscribe/remove":
                 identifier = form.get("identifier", "")
                 if str(identifier).isdigit():
                     remove_subscription(db_path, int(identifier), user_id=self.browser_user_id())
-                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/notifications"))
+                redirect_response(self, safe_web_redirect(form.get("redirect", ""), "/settings"))
             elif path == "/api/subscriptions":
                 try:
                     subscription = add_subscription(

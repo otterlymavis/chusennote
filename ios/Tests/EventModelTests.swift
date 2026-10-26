@@ -89,4 +89,21 @@ final class EventModelTests: XCTestCase {
         XCTAssertEqual(alertTypeText(current), "Lottery closing soon")
         XCTAssertEqual(alertTypeText(legacy), "Official resale opened")
     }
+
+    func testTicketLinkAlertsNameTheirLink() throws {
+        let alert = try JSONDecoder().decode(
+            AlertPayload.self,
+            from: Data(#"{"type":"new_ticket_link","event_title":"King Gnu Dome Tour","label":"Pia search"}"#.utf8)
+        )
+
+        XCTAssertEqual(chusennoteAlertText(alert), "King Gnu Dome Tour · Pia search")
+    }
+
+    func testFriendlyDateDropsCurrentYearAndKeepsFreeText() throws {
+        let today = try XCTUnwrap(Calendar(identifier: .gregorian).date(from: DateComponents(year: 2026, month: 10, day: 25)))
+        XCTAssertEqual(friendlyDate("2026-10-26T23:59", today: today), "Oct 26, 23:59")
+        XCTAssertEqual(friendlyDate("2027-01-16", today: today), "Jan 16, 2027")
+        XCTAssertEqual(friendlyDate("10月下旬", today: today), "10月下旬")
+        XCTAssertEqual(friendlyDate(nil, today: today), "")
+    }
 }

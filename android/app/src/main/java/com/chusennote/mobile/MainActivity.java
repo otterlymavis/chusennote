@@ -15,18 +15,22 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
 
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.android.gms.tasks.Tasks;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.ProgressBar;
 import android.widget.TextView;
+
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -39,8 +43,18 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.net.URLEncoder;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -48,7 +62,41 @@ public class MainActivity extends Activity {
     static final String DEFAULT_BASE_URL = "https://chusennote.onrender.com";
     private static final String PREFS_NAME = "chusennote";
     private static final String PREF_BASE_URL = "base_url";
+    private static final String STATE_SELECTED_TAB = "selected_tab";
+    /** One server collection the app mirrors, and where to fetch it. */
+    private enum Resource {
+        WATCHES("/api/watchlist?include_muted=1"),
+        EVENTS("/api/events"),
+        UPCOMING("/api/upcoming"),
+        ALERTS("/api/alerts"),
+        NOTIFICATION_FEED("/api/notifications?limit=100"),
+        SUBSCRIPTIONS("/api/subscriptions"),
+        DEVICES("/api/devices"),
+        SOURCES("/api/sources?include_muted=1"),
+        HEALTH("/api/health");
+
+        final String path;
+
+        Resource(String path) {
+            this.path = path;
+        }
+    }
+
+    // Actions refetch only what they can change. Muting a watch drops it out of
+    // events, deadlines, and alert context; manual sources also appear in events.
+    private static final Set<Resource> WATCH_CHANGES = EnumSet.of(
+            Resource.WATCHES, Resource.EVENTS, Resource.UPCOMING, Resource.ALERTS,
+            Resource.SUBSCRIPTIONS, Resource.HEALTH);
+    private static final Set<Resource> SOURCE_CHANGES = EnumSet.of(Resource.SOURCES, Resource.EVENTS);
+    private static final Set<Resource> CHECK_RESULTS = EnumSet.of(
+            Resource.WATCHES, Resource.EVENTS, Resource.UPCOMING, Resource.ALERTS, Resource.HEALTH);
+
+    // Serializes actions so account transitions never interleave with other requests.
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    // Lets one refresh fetch its collections concurrently.
+    private final ExecutorService fetchPool = Executors.newFixedThreadPool(4);
+    // The last fetched copy of each collection, so a partial refresh can re-render everything.
+    private final Map<Resource, Object> data = new EnumMap<>(Resource.class);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile String apiBaseUrl = "";
     private volatile boolean destroyed;
@@ -78,28 +126,84 @@ public class MainActivity extends Activity {
     private EditText sourceUrlInput;
     private EditText sourceLabelInput;
     private CheckBox sourcePrivateNoteInput;
-    private LinearLayout artistList;
-    private LinearLayout eventList;
-    private LinearLayout mutedWatchList;
-    private LinearLayout needsAttentionList;
-    private LinearLayout sourceList;
-    private LinearLayout mutedSourceList;
-    private LinearLayout alertList;
-    private LinearLayout notificationFeedList;
-    private LinearLayout subscriptionList;
-    private LinearLayout deviceList;
+    private KeyedRowList artistList;
+    private KeyedRowList eventList;
+    private TextView mutedWatchHeading;
+    private KeyedRowList mutedWatchList;
+    private KeyedRowList needsAttentionList;
+    private KeyedRowList sourceList;
+    private TextView mutedSourceHeading;
+    private KeyedRowList mutedSourceList;
+    private KeyedRowList alertList;
+    private KeyedRowList notificationFeedList;
+    private KeyedRowList subscriptionList;
+    private KeyedRowList deviceList;
     private TextView statusText;
+    private TextView debugStatusText;
+    private TextView notificationStatusText;
+    private ProgressBar busyIndicator;
+    private int busyCount;
+    private SwipeRefreshLayout[] refreshLayouts;
+    private final List<Button> checkButtons = new ArrayList<>();
+    private View[] tabPages;
+    private View detailPage;
+    private LinearLayout detailContent;
+    // The event shown on the detail page, by row key, or null when it is closed.
+    private String openEventKey;
+    private String openEventSignature;
+    private final Map<String, JSONObject> eventsByKey = new HashMap<>();
+    private LinearLayout addEventFlow;
+    private LinearLayout exactEventForm;
+    private LinearLayout keywordEventForm;
+    private View eventPreferences;
+    private Button eventPreferencesButton;
+    private Button[] tabButtons;
+    private int selectedTab;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(buildLayout());
+        buildLayout();
+        selectTab(savedInstanceState == null ? 0 : savedInstanceState.getInt(STATE_SELECTED_TAB, 0));
         ensureNotificationChannel();
         requestNotificationPermissionIfNeeded();
         setSignedInControls(!SecureTokenStore.apiToken(getApplicationContext()).isEmpty());
+        updateNotificationStatus();
         registerPushToken();
         refreshAccountStatus();
         refresh();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateNotificationStatus();
+    }
+
+    private void updateNotificationStatus() {
+        if (notificationStatusText != null) {
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            notificationStatusText.setText(manager != null && manager.areNotificationsEnabled()
+                    ? R.string.notifications_enabled : R.string.notifications_disabled);
+        }
+    }
+
+    private void openNotificationSettings() {
+        Intent intent = new Intent(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                : android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            intent.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
+        } else {
+            intent.setData(Uri.parse("package:" + getPackageName()));
+        }
+        startActivity(intent);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putInt(STATE_SELECTED_TAB, selectedTab);
     }
 
     @Override
@@ -107,6 +211,7 @@ public class MainActivity extends Activity {
         destroyed = true;
         mainHandler.removeCallbacksAndMessages(null);
         executor.shutdownNow();
+        fetchPool.shutdownNow();
         super.onDestroy();
     }
 
@@ -119,6 +224,34 @@ public class MainActivity extends Activity {
                 action.run();
             }
         });
+    }
+
+    /** Runs network work on the action executor while the busy indicator shows. */
+    private void runInBackground(Runnable work) {
+        setBusy(1);
+        executor.execute(() -> {
+            try {
+                work.run();
+            } finally {
+                postToMain(() -> setBusy(-1));
+            }
+        });
+    }
+
+    private void setBusy(int delta) {
+        busyCount = Math.max(0, busyCount + delta);
+        busyIndicator.setVisibility(busyCount > 0 ? View.VISIBLE : View.INVISIBLE);
+        if (busyCount == 0) {
+            for (SwipeRefreshLayout layout : refreshLayouts) {
+                layout.setRefreshing(false);
+            }
+        }
+    }
+
+    private void setChecksRunning(boolean running) {
+        for (Button button : checkButtons) {
+            button.setEnabled(!running);
+        }
     }
 
     private void ensureNotificationChannel() {
@@ -152,34 +285,249 @@ public class MainActivity extends Activity {
             });
         } catch (Throwable error) {
             // Firebase is not configured (no google-services.json) — push stays off.
-            statusText.setText(R.string.push_disabled);
+            if (BuildConfig.DEBUG) {
+                debugStatusText.setText(R.string.push_disabled);
+            }
         }
     }
 
-    private View buildLayout() {
-        ScrollView scrollView = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(32, 32, 32, 32);
-        scrollView.addView(
-                root,
-                new ScrollView.LayoutParams(
-                        ScrollView.LayoutParams.MATCH_PARENT,
-                        ScrollView.LayoutParams.WRAP_CONTENT));
+    private void buildLayout() {
+        setContentView(R.layout.activity_main);
+        View header = findViewById(R.id.header);
+        View tabBar = findViewById(R.id.tab_bar);
+        int headerTop = header.getPaddingTop();
+        int tabBarBottom = tabBar.getPaddingBottom();
+        // The header and tab bar stay fixed while pages scroll, so they are what
+        // must clear the system bars.
+        findViewById(R.id.root).setOnApplyWindowInsetsListener((view, insets) -> {
+            int[] bars = systemBarInsets(insets);
+            header.setPadding(
+                    header.getPaddingLeft(),
+                    headerTop + bars[0],
+                    header.getPaddingRight(),
+                    header.getPaddingBottom());
+            tabBar.setPadding(
+                    tabBar.getPaddingLeft(),
+                    tabBar.getPaddingTop(),
+                    tabBar.getPaddingRight(),
+                    tabBarBottom + bars[1]);
+            return insets;
+        });
 
-        TextView title = heading("chusennote");
-        root.addView(title);
+        statusText = findViewById(R.id.status_text);
+        busyIndicator = findViewById(R.id.busy_indicator);
+        LinearLayout headerActions = findViewById(R.id.header_actions);
+        headerActions.addView(textButton(getString(R.string.refresh), this::refresh));
 
-        statusText = body("Connect to the Chusennote service.");
-        statusText.setId(R.id.status_text);
-        root.addView(statusText);
+        buildAlertsPage(findViewById(R.id.alerts_content));
+        buildWatchPage(findViewById(R.id.watch_content));
+        buildSettingsPage(findViewById(R.id.settings_content));
 
-        baseUrlInput = new EditText(this);
+        detailPage = findViewById(R.id.detail_page);
+        detailContent = findViewById(R.id.detail_content);
+        refreshLayouts = new SwipeRefreshLayout[]{
+                findViewById(R.id.alerts_page),
+                findViewById(R.id.watch_page),
+                findViewById(R.id.settings_page)};
+        tabPages = refreshLayouts;
+        for (SwipeRefreshLayout layout : refreshLayouts) {
+            layout.setColorSchemeColors(getColor(R.color.accent));
+            layout.setProgressBackgroundColorSchemeColor(getColor(R.color.surface));
+            layout.setOnRefreshListener(this::refresh);
+        }
+        tabButtons = new Button[]{
+                findViewById(R.id.tab_alerts),
+                findViewById(R.id.tab_watch),
+                findViewById(R.id.tab_settings)};
+        for (int i = 0; i < tabButtons.length; i++) {
+            int index = i;
+            tabButtons[i].setOnClickListener(view -> selectTab(index));
+        }
+    }
+
+    /** {top, bottom} system bar insets. */
+    @SuppressWarnings("deprecation")
+    private static int[] systemBarInsets(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+            return new int[]{bars.top, bars.bottom};
+        }
+        return new int[]{insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetBottom()};
+    }
+
+    /** Each page keeps its own scroll position while hidden. */
+    private void selectTab(int index) {
+        openEventKey = null;
+        detailPage.setVisibility(View.GONE);
+        selectedTab = index >= 0 && index < tabPages.length ? index : 0;
+        for (int i = 0; i < tabPages.length; i++) {
+            tabPages[i].setVisibility(i == selectedTab ? View.VISIBLE : View.GONE);
+            tabButtons[i].setSelected(i == selectedTab);
+        }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        if (openEventKey != null) {
+            closeEventDetail();
+        } else if (selectedTab != 0) {
+            selectTab(0);
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    private void showEventDetail(String key) {
+        JSONObject event = eventsByKey.get(key);
+        if (event == null) {
+            closeEventDetail();
+            return;
+        }
+        boolean alreadyShown = key.equals(openEventKey) && event.toString().equals(openEventSignature);
+        openEventKey = key;
+        openEventSignature = event.toString();
+        if (!alreadyShown) {
+            detailContent.removeAllViews();
+            LinearLayout bar = actionBar();
+            bar.addView(textButton(getString(R.string.back_to_events), this::closeEventDetail));
+            detailContent.addView(bar);
+            LinearLayout surface = list();
+            surface.addView(trackedEventBlock(event, eventSummary(event)));
+            detailContent.addView(surface);
+            detailPage.scrollTo(0, 0);
+        }
+        tabPages[selectedTab].setVisibility(View.GONE);
+        detailPage.setVisibility(View.VISIBLE);
+    }
+
+    private void closeEventDetail() {
+        openEventKey = null;
+        detailPage.setVisibility(View.GONE);
+        tabPages[selectedTab].setVisibility(View.VISIBLE);
+    }
+
+    /** A button that shows and hides {@code form}, which starts hidden. */
+    private Button formToggle(String label, View form) {
+        form.setVisibility(View.GONE);
+        Button toggle = textButton(getString(R.string.section_collapsed, label), () -> {});
+        toggle.setContentDescription(getString(R.string.section_collapsed_description, label));
+        toggle.setOnClickListener(view -> {
+            boolean opening = form.getVisibility() != View.VISIBLE;
+            form.setVisibility(opening ? View.VISIBLE : View.GONE);
+            toggle.setText(getString(opening ? R.string.section_expanded : R.string.section_collapsed, label));
+            toggle.setContentDescription(getString(opening
+                    ? R.string.section_expanded_description
+                    : R.string.section_collapsed_description, label));
+        });
+        return toggle;
+    }
+
+    private void buildAlertsPage(LinearLayout page) {
+        page.addView(section("Upcoming"));
+        needsAttentionList = rowList();
+        page.addView(needsAttentionList.container());
+
+        page.addView(section("Recent Updates"));
+        alertList = rowList();
+        page.addView(alertList.container());
+    }
+
+    private void buildWatchPage(LinearLayout page) {
+        page.addView(body(getString(R.string.watch_intro)));
+        LinearLayout addFlow = new LinearLayout(this);
+        addEventFlow = addFlow;
+        addFlow.setOrientation(LinearLayout.VERTICAL);
+        Button addFlowButton = primaryButton(getString(R.string.add_event), () -> {
+            boolean opening = addFlow.getVisibility() != View.VISIBLE;
+            addFlow.setVisibility(opening ? View.VISIBLE : View.GONE);
+        });
+        addFlowButton.setId(R.id.add_event_flow_button);
+        page.addView(addFlowButton);
+        addFlow.setVisibility(View.GONE);
+        page.addView(addFlow);
+
+        exactEventForm = form();
+        exactEventForm.addView(body(getString(R.string.exact_event_intro)));
+        exactEventInput = singleLineInput("Event name");
+        exactEventInput.setId(R.id.exact_event_input);
+        exactEventForm.addView(exactEventInput);
+        exactEventSearchButton = primaryButton(getString(R.string.search_events), this::searchExactEvents);
+        exactEventSearchButton.setId(R.id.exact_event_search_button);
+        exactEventForm.addView(exactEventSearchButton);
+        exactEventResultList = list();
+        exactEventResultList.setId(R.id.exact_event_result_list);
+        exactEventForm.addView(exactEventResultList);
+
+        LinearLayout eventForm = form();
+        keywordEventForm = eventForm;
+        eventForm.addView(body(getString(R.string.keyword_watch_intro)));
+        eventInput = singleLineInput("Event keyword");
+        eventInput.setId(R.id.event_keyword_input);
+        eventForm.addView(eventInput);
+        LinearLayout preferences = new LinearLayout(this);
+        preferences.setOrientation(LinearLayout.VERTICAL);
+        eventTagsInput = singleLineInput("Tags (optional)");
+        eventTagsInput.setId(R.id.event_tags_input);
+        preferences.addView(eventTagsInput);
+        eventRegionsInput = singleLineInput("Preferred regions (optional)");
+        preferences.addView(eventRegionsInput);
+        eventVenuesInput = singleLineInput("Preferred venues (optional)");
+        preferences.addView(eventVenuesInput);
+        eventAlertsInput = singleLineInput("Alert types (optional)");
+        preferences.addView(eventAlertsInput);
+        Button preferencesButton = formToggle(getString(R.string.watch_preferences), preferences);
+        preferencesButton.setId(R.id.event_preferences_button);
+        eventPreferences = preferences;
+        eventPreferencesButton = preferencesButton;
+        eventForm.addView(preferencesButton);
+        eventForm.addView(preferences);
+        Button addEvent = primaryButton(getString(R.string.watch_keyword), () ->
+                addWatch("event", eventInput, eventTagsInput, eventRegionsInput, eventVenuesInput, eventAlertsInput));
+        addEvent.setId(R.id.add_event_button);
+        eventForm.addView(addEvent);
+        eventForm.setVisibility(View.GONE);
+
+        LinearLayout modes = actionBar();
+        Button exactMode = textButton(getString(R.string.find_event_page), () -> {
+            exactEventForm.setVisibility(View.VISIBLE);
+            eventForm.setVisibility(View.GONE);
+        });
+        exactMode.setId(R.id.exact_event_mode_button);
+        Button keywordMode = textButton(getString(R.string.watch_keyword), () -> {
+            exactEventForm.setVisibility(View.GONE);
+            eventForm.setVisibility(View.VISIBLE);
+        });
+        keywordMode.setId(R.id.keyword_event_mode_button);
+        modes.addView(exactMode);
+        modes.addView(keywordMode);
+        addFlow.addView(modes);
+        addFlow.addView(exactEventForm);
+        addFlow.addView(eventForm);
+
+        page.addView(section("Events"));
+        eventList = rowList();
+        eventList.container().setId(R.id.event_list);
+        page.addView(eventList.container());
+        Button checkNow = textButton(getString(R.string.check_now), () -> runWatches("event"));
+        checkButtons.add(checkNow);
+        page.addView(checkNow);
+
+        mutedWatchHeading = section("Removed");
+        page.addView(mutedWatchHeading);
+        mutedWatchList = rowList();
+        page.addView(mutedWatchList.container());
+    }
+
+    private void buildSettingsPage(LinearLayout page) {
+        page.addView(section("Account"));
+        LinearLayout accountForm = form();
+        // The saved endpoint remains bound to account transitions even when its
+        // developer-only editor is not attached to the release UI.
+        baseUrlInput = singleLineInput("API base URL");
         baseUrlInput.setId(R.id.base_url_input);
-        baseUrlInput.setSingleLine(true);
         apiBaseUrl = normalizeBaseUrl(preferences().getString(PREF_BASE_URL, DEFAULT_BASE_URL));
         baseUrlInput.setText(apiBaseUrl);
-        baseUrlInput.setHint("API base URL");
         baseUrlInput.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
@@ -193,220 +541,178 @@ public class MainActivity extends Activity {
                 preferences().edit().putString(PREF_BASE_URL, apiBaseUrl).apply();
             }
         });
-        root.addView(baseUrlInput);
-
-        Button refresh = new Button(this);
-        refresh.setText(R.string.refresh);
-        refresh.setOnClickListener(view -> {
-            saveBaseUrl();
-            refresh();
-        });
-        root.addView(refresh);
-
-        Button calendar = new Button(this);
-        calendar.setText(R.string.open_calendar_feed);
-        calendar.setOnClickListener(view -> openCalendarFeed());
-        root.addView(calendar);
-
-        root.addView(section("Account"));
-        accountStatusText = body("Not signed in.");
-        root.addView(accountStatusText);
-        emailInput = new EditText(this);
+        accountStatusText = body(getString(R.string.not_signed_in));
+        accountForm.addView(accountStatusText);
+        emailInput = singleLineInput("Email");
         emailInput.setId(R.id.email_input);
-        emailInput.setSingleLine(true);
-        emailInput.setHint("Email");
         emailInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        root.addView(emailInput);
-        passwordInput = new EditText(this);
+        accountForm.addView(emailInput);
+        passwordInput = singleLineInput("Password");
         passwordInput.setId(R.id.password_input);
-        passwordInput.setSingleLine(true);
-        passwordInput.setHint("Password");
         passwordInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         passwordInput.setTransformationMethod(PasswordTransformationMethod.getInstance());
-        root.addView(passwordInput);
-        LinearLayout accountButtons = new LinearLayout(this);
-        accountButtons.setOrientation(LinearLayout.HORIZONTAL);
-        registerButton = new Button(this);
-        registerButton.setId(R.id.register_button);
-        registerButton.setText(R.string.register);
-        registerButton.setOnClickListener(view -> registerAccount());
-        accountButtons.addView(registerButton);
-        loginButton = new Button(this);
-        loginButton.setText(R.string.log_in);
-        loginButton.setOnClickListener(view -> loginAccount());
+        accountForm.addView(passwordInput);
+        LinearLayout accountButtons = actionBar();
+        loginButton = textButton(getString(R.string.log_in), this::loginAccount);
         accountButtons.addView(loginButton);
-        logoutButton = new Button(this);
-        logoutButton.setText(R.string.log_out);
-        logoutButton.setOnClickListener(view -> logoutAccount());
+        registerButton = textButton(getString(R.string.register), this::registerAccount);
+        registerButton.setId(R.id.register_button);
+        accountButtons.addView(registerButton);
+        logoutButton = textButton(getString(R.string.log_out), this::logoutAccount);
         accountButtons.addView(logoutButton);
-        root.addView(accountButtons);
-        deleteAccountButton = new Button(this);
+        accountForm.addView(accountButtons);
+        deleteAccountButton = textButton(getString(R.string.delete_account), this::showDeleteAccountDialog);
         deleteAccountButton.setId(R.id.delete_account_button);
-        deleteAccountButton.setText(R.string.delete_account);
-        deleteAccountButton.setOnClickListener(view -> showDeleteAccountDialog());
-        root.addView(deleteAccountButton);
+        deleteAccountButton.setTextColor(getColorStateList(R.color.danger_text));
+        accountForm.addView(deleteAccountButton);
+        page.addView(accountForm);
 
-        root.addView(section("Tracked Artists"));
-        artistInput = new EditText(this);
-        artistInput.setSingleLine(true);
-        artistInput.setHint("Artist keyword");
-        root.addView(artistInput);
-        artistTagsInput = singleLineInput("Tags");
-        root.addView(artistTagsInput);
-        artistRegionsInput = singleLineInput("Preferred regions");
-        root.addView(artistRegionsInput);
-        artistVenuesInput = singleLineInput("Preferred venues");
-        root.addView(artistVenuesInput);
-        Button addArtist = new Button(this);
-        addArtist.setText(R.string.add_artist);
-        addArtist.setOnClickListener(view -> addWatch("artist", artistInput, artistTagsInput, artistRegionsInput, artistVenuesInput, null));
-        root.addView(addArtist);
-        Button runArtists = new Button(this);
-        runArtists.setText(R.string.run_artist_watches);
-        runArtists.setOnClickListener(view -> runWatches("artist"));
-        root.addView(runArtists);
-        artistList = new LinearLayout(this);
-        artistList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(artistList);
+        page.addView(section("Notifications & Calendar"));
+        LinearLayout notificationControls = form();
+        notificationStatusText = body("");
+        notificationControls.addView(notificationStatusText);
+        notificationControls.addView(textButton(getString(R.string.notification_settings), this::openNotificationSettings));
+        notificationControls.addView(textButton(getString(R.string.open_calendar_feed), this::openCalendarFeed));
+        page.addView(notificationControls);
+        LinearLayout reminders = new LinearLayout(this);
+        reminders.setOrientation(LinearLayout.VERTICAL);
+        reminders.addView(section("Subscriptions"));
+        subscriptionList = rowList();
+        reminders.addView(subscriptionList.container());
+        reminders.addView(section("Delivered Reminders"));
+        notificationFeedList = rowList();
+        reminders.addView(notificationFeedList.container());
+        Button remindersToggle = formToggle(getString(R.string.manage_reminders), reminders);
+        remindersToggle.setId(R.id.manage_reminders_button);
+        page.addView(remindersToggle);
+        page.addView(reminders);
 
-        root.addView(section("Tracked Events"));
-        eventInput = new EditText(this);
-        eventInput.setId(R.id.event_keyword_input);
-        eventInput.setSingleLine(true);
-        eventInput.setHint("Event keyword");
-        root.addView(eventInput);
-        eventTagsInput = singleLineInput("Tags");
-        root.addView(eventTagsInput);
-        eventRegionsInput = singleLineInput("Preferred regions");
-        root.addView(eventRegionsInput);
-        eventVenuesInput = singleLineInput("Preferred venues");
-        root.addView(eventVenuesInput);
-        eventAlertsInput = singleLineInput("Alert types");
-        root.addView(eventAlertsInput);
-        Button addEvent = new Button(this);
-        addEvent.setId(R.id.add_event_button);
-        addEvent.setText(R.string.add_event);
-        addEvent.setOnClickListener(view -> addWatch("event", eventInput, eventTagsInput, eventRegionsInput, eventVenuesInput, eventAlertsInput));
-        root.addView(addEvent);
-        Button runEvents = new Button(this);
-        runEvents.setText(R.string.run_event_watches);
-        runEvents.setOnClickListener(view -> runWatches("event"));
-        root.addView(runEvents);
-        eventList = new LinearLayout(this);
-        eventList.setId(R.id.event_list);
-        eventList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(eventList);
+        LinearLayout tracking = new LinearLayout(this);
+        tracking.setOrientation(LinearLayout.VERTICAL);
+        tracking.addView(body(getString(R.string.advanced_tracking_intro)));
+        tracking.addView(section("Artists"));
+        artistList = rowList();
+        tracking.addView(artistList.container());
+        LinearLayout artistForm = form();
+        artistInput = singleLineInput("Artist keyword");
+        artistForm.addView(artistInput);
+        LinearLayout artistPreferences = new LinearLayout(this);
+        artistPreferences.setOrientation(LinearLayout.VERTICAL);
+        artistTagsInput = singleLineInput("Tags (optional)");
+        artistPreferences.addView(artistTagsInput);
+        artistRegionsInput = singleLineInput("Preferred regions (optional)");
+        artistPreferences.addView(artistRegionsInput);
+        artistVenuesInput = singleLineInput("Preferred venues (optional)");
+        artistPreferences.addView(artistVenuesInput);
+        artistForm.addView(formToggle(getString(R.string.watch_preferences), artistPreferences));
+        artistForm.addView(artistPreferences);
+        artistForm.addView(primaryButton(getString(R.string.add_artist), () ->
+                addWatch("artist", artistInput, artistTagsInput, artistRegionsInput, artistVenuesInput, null)));
+        tracking.addView(formToggle(getString(R.string.add_artist_ellipsis), artistForm));
+        tracking.addView(artistForm);
+        Button checkArtists = textButton(getString(R.string.run_artist_watches), () -> runWatches("artist"));
+        checkButtons.add(checkArtists);
+        tracking.addView(checkArtists);
 
-        root.addView(section("Find Exact Event"));
-        exactEventInput = singleLineInput("Event name");
-        exactEventInput.setId(R.id.exact_event_input);
-        root.addView(exactEventInput);
-        exactEventSearchButton = new Button(this);
-        exactEventSearchButton.setId(R.id.exact_event_search_button);
-        exactEventSearchButton.setText(R.string.search_events);
-        exactEventSearchButton.setOnClickListener(view -> searchExactEvents());
-        root.addView(exactEventSearchButton);
-        exactEventResultList = new LinearLayout(this);
-        exactEventResultList.setId(R.id.exact_event_result_list);
-        exactEventResultList.setOrientation(LinearLayout.VERTICAL);
-        exactEventResultList.addView(body("Search for an official event page."));
-        root.addView(exactEventResultList);
-
-        root.addView(section("Muted Watches"));
-        mutedWatchList = new LinearLayout(this);
-        mutedWatchList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(mutedWatchList);
-
-        root.addView(section("Needs Attention"));
-        needsAttentionList = new LinearLayout(this);
-        needsAttentionList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(needsAttentionList);
-
-        root.addView(section("Manual Event Source"));
-        sourceWatchInput = new EditText(this);
-        sourceWatchInput.setSingleLine(true);
-        sourceWatchInput.setHint("Tracked event watch id or keyword");
-        root.addView(sourceWatchInput);
-        sourceUrlInput = new EditText(this);
-        sourceUrlInput.setSingleLine(true);
-        sourceUrlInput.setHint("Ticket or source URL");
-        root.addView(sourceUrlInput);
-        sourceLabelInput = new EditText(this);
-        sourceLabelInput.setSingleLine(true);
-        sourceLabelInput.setHint("Label");
-        root.addView(sourceLabelInput);
+        tracking.addView(section("Manual Sources"));
+        sourceList = rowList();
+        tracking.addView(sourceList.container());
+        LinearLayout sourceForm = form();
+        sourceWatchInput = singleLineInput("Tracked event watch id or keyword");
+        sourceForm.addView(sourceWatchInput);
+        sourceUrlInput = singleLineInput("Ticket or source URL");
+        sourceForm.addView(sourceUrlInput);
+        sourceLabelInput = singleLineInput("Label (optional)");
+        sourceForm.addView(sourceLabelInput);
         sourcePrivateNoteInput = new CheckBox(this);
         sourcePrivateNoteInput.setText(R.string.private_note);
-        root.addView(sourcePrivateNoteInput);
-        Button addSource = new Button(this);
-        addSource.setText(R.string.add_source);
-        addSource.setOnClickListener(view -> addSource());
-        root.addView(addSource);
-        sourceList = new LinearLayout(this);
-        sourceList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(sourceList);
-        root.addView(section("Muted Sources"));
-        mutedSourceList = new LinearLayout(this);
-        mutedSourceList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(mutedSourceList);
+        sourceForm.addView(sourcePrivateNoteInput);
+        sourceForm.addView(primaryButton(getString(R.string.add_source), this::addSource));
+        tracking.addView(formToggle(getString(R.string.add_source_ellipsis), sourceForm));
+        tracking.addView(sourceForm);
+        mutedSourceHeading = section("Removed Sources");
+        tracking.addView(mutedSourceHeading);
+        mutedSourceList = rowList();
+        tracking.addView(mutedSourceList.container());
+        Button trackingToggle = formToggle(getString(R.string.advanced_tracking), tracking);
+        trackingToggle.setId(R.id.advanced_tracking_button);
+        page.addView(trackingToggle);
+        page.addView(tracking);
 
-        root.addView(section("Recent Alerts"));
-        alertList = new LinearLayout(this);
-        alertList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(alertList);
-
-        root.addView(section("Due Reminders"));
-        Button runNotifications = new Button(this);
-        runNotifications.setText(R.string.run_due_reminders);
-        runNotifications.setOnClickListener(view -> runNotifications());
-        root.addView(runNotifications);
-        notificationFeedList = new LinearLayout(this);
-        notificationFeedList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(notificationFeedList);
-
-        root.addView(section("Notification Subscriptions"));
-        subscriptionList = new LinearLayout(this);
-        subscriptionList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(subscriptionList);
-
-        TextView registeredDevicesHeading = section("Registered Devices");
-        registeredDevicesHeading.setId(R.id.registered_devices_heading);
-        root.addView(registeredDevicesHeading);
-        deviceList = new LinearLayout(this);
-        deviceList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(deviceList);
-
-        return scrollView;
+        debugStatusText = body("");
+        deviceList = rowList();
+        if (BuildConfig.DEBUG) {
+            LinearLayout developer = form();
+            developer.addView(baseUrlInput);
+            developer.addView(debugStatusText);
+            developer.addView(textButton(getString(R.string.run_due_reminders), this::runNotifications));
+            TextView devicesHeading = section("Registered Devices");
+            devicesHeading.setId(R.id.registered_devices_heading);
+            developer.addView(devicesHeading);
+            developer.addView(deviceList.container());
+            Button developerToggle = formToggle(getString(R.string.developer_tools), developer);
+            developerToggle.setId(R.id.developer_tools_button);
+            page.addView(developerToggle);
+            page.addView(developer);
+        }
     }
 
     private void refresh() {
+        refresh(EnumSet.allOf(Resource.class));
+    }
+
+    /** Fetches {@code resources} concurrently, then re-renders with the cached rest. */
+    private void refresh(Set<Resource> resources) {
         saveBaseUrl();
         statusText.setText(R.string.loading);
-        executor.execute(() -> {
+        runInBackground(() -> {
+            Map<Resource, Future<Object>> pending = new EnumMap<>(Resource.class);
             try {
-                JSONArray watches = getJsonArray("/api/watchlist?include_muted=1");
-                JSONArray events = getJsonArray("/api/events");
-                JSONArray upcoming = getJsonArray("/api/upcoming");
-                JSONArray alerts = getJsonArray("/api/alerts");
-                JSONArray notificationFeed = getJsonArray("/api/notifications?limit=100");
-                JSONArray subscriptions = getJsonArray("/api/subscriptions");
-                JSONArray devices = getJsonArray("/api/devices");
-                JSONArray sources = getJsonArray("/api/sources?include_muted=1");
-                JSONObject health = getJsonObject("/api/health");
-                postToMain(() -> render(
-                        watches,
-                        events,
-                        upcoming,
-                        alerts,
-                        notificationFeed,
-                        subscriptions,
-                        devices,
-                        sources,
-                        health));
+                for (Resource resource : resources) {
+                    pending.put(resource, fetchPool.submit(() -> {
+                        String body = getText(resource.path);
+                        return resource == Resource.HEALTH ? new JSONObject(body) : new JSONArray(body);
+                    }));
+                }
+                Map<Resource, Object> fetched = new EnumMap<>(Resource.class);
+                for (Map.Entry<Resource, Future<Object>> entry : pending.entrySet()) {
+                    fetched.put(entry.getKey(), entry.getValue().get());
+                }
+                postToMain(() -> {
+                    data.putAll(fetched);
+                    render(
+                            array(Resource.WATCHES),
+                            array(Resource.EVENTS),
+                            array(Resource.UPCOMING),
+                            array(Resource.ALERTS),
+                            array(Resource.NOTIFICATION_FEED),
+                            array(Resource.SUBSCRIPTIONS),
+                            array(Resource.DEVICES),
+                            array(Resource.SOURCES),
+                            data.containsKey(Resource.HEALTH) ? (JSONObject) data.get(Resource.HEALTH) : new JSONObject());
+                });
             } catch (Exception error) {
-                postToMain(() -> statusText.setText(getString(R.string.could_not_load, error.getMessage())));
+                for (Future<Object> future : pending.values()) {
+                    future.cancel(true);
+                }
+                Throwable cause = error instanceof ExecutionException && error.getCause() != null
+                        ? error.getCause()
+                        : error;
+                postToMain(() -> {
+                    statusText.setText(getString(R.string.could_not_load, cause.getMessage()));
+                    if (data.isEmpty()) {
+                        String retry = getString(R.string.load_failed_retry);
+                        showRows(needsAttentionList, new ArrayList<>(), retry);
+                        showRows(alertList, new ArrayList<>(), retry);
+                    }
+                });
             }
         });
+    }
+
+    private JSONArray array(Resource resource) {
+        Object value = data.get(resource);
+        return value instanceof JSONArray ? (JSONArray) value : new JSONArray();
     }
 
     private SharedPreferences preferences() {
@@ -436,7 +742,7 @@ public class MainActivity extends Activity {
         // Signed-in: authorize the feed with a calendar-only token (minted
         // separately from, and unusable as, the account's full API token) so
         // this shareable URL can't be replayed to mutate the account.
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 String calendarToken = SecureTokenStore.calendarToken(getApplicationContext());
                 if (calendarToken.isEmpty()) {
@@ -484,7 +790,7 @@ public class MainActivity extends Activity {
         String venues = venuesInput == null ? "" : venuesInput.getText().toString().trim();
         String alerts = alertsInput == null ? "" : alertsInput.getText().toString().trim();
         statusText.setText(getString(R.string.adding_watch, kind));
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 String body = "keyword=" + encode(keyword)
                     + "&kind=" + encode(kind)
@@ -509,7 +815,7 @@ public class MainActivity extends Activity {
                     if (alertsInput != null) {
                         alertsInput.setText("");
                     }
-                    refresh();
+                    refresh(WATCH_CHANGES);
                 });
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_add_watch, error.getMessage())));
@@ -517,27 +823,49 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Opens the keyword form filled with {@code watch}; saving the same keyword updates its filters. */
+    private void editWatch(JSONObject watch) {
+        addEventFlow.setVisibility(View.VISIBLE);
+        exactEventForm.setVisibility(View.GONE);
+        keywordEventForm.setVisibility(View.VISIBLE);
+        if (eventPreferences.getVisibility() != View.VISIBLE) {
+            eventPreferencesButton.performClick();
+        }
+        eventInput.setText(text(watch, "keyword"));
+        eventTagsInput.setText(text(watch, "tags"));
+        eventRegionsInput.setText(text(watch, "preferred_regions"));
+        eventVenuesInput.setText(text(watch, "preferred_venues"));
+        eventAlertsInput.setText(text(watch, "alert_preferences"));
+        eventInput.requestFocus();
+        eventInput.getParent().requestChildFocus(eventInput, eventInput);
+    }
+
     private void runWatches(String kind) {
         statusText.setText(getString(R.string.running_watches, kind));
-        executor.execute(() -> {
+        setChecksRunning(true);
+        runInBackground(() -> {
             try {
                 JSONArray alerts = postJsonArray("/api/run", "kind=" + encode(kind));
                 postToMain(() -> {
+                    setChecksRunning(false);
                     statusText.setText(getResources().getQuantityString(
                             R.plurals.run_complete_alerts,
                             alerts.length(),
                             alerts.length()));
-                    refresh();
+                    refresh(CHECK_RESULTS);
                 });
             } catch (Exception error) {
-                postToMain(() -> statusText.setText(getString(R.string.could_not_run_watches, error.getMessage())));
+                postToMain(() -> {
+                    setChecksRunning(false);
+                    statusText.setText(getString(R.string.could_not_run_watches, error.getMessage()));
+                });
             }
         });
     }
 
     private void runNotifications() {
         statusText.setText(R.string.sending_due_reminders);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 JSONArray delivered = postJsonArray("/api/notifications/run", "");
                 postToMain(() -> {
@@ -545,7 +873,7 @@ public class MainActivity extends Activity {
                             R.plurals.reminders_delivered,
                             delivered.length(),
                             delivered.length()));
-                    refresh();
+                    refresh(EnumSet.of(Resource.NOTIFICATION_FEED));
                 });
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(
@@ -560,7 +888,7 @@ public class MainActivity extends Activity {
 
     private void addSubscription(int watchId, String scope, String location, String roundKey) {
         statusText.setText(R.string.adding_subscription);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm(
                         "/api/subscriptions",
@@ -570,7 +898,7 @@ public class MainActivity extends Activity {
                                 + "&round_key=" + encode(roundKey)
                                 + "&channels=" + encode("feed,push")
                                 + "&lead_days=" + encode("7,1,0"));
-                postToMain(this::refresh);
+                postToMain(() -> refresh(EnumSet.of(Resource.SUBSCRIPTIONS)));
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(
                         getString(R.string.could_not_add_subscription, error.getMessage())));
@@ -580,10 +908,10 @@ public class MainActivity extends Activity {
 
     private void removeSubscription(int id) {
         statusText.setText(R.string.removing_subscription);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm("/api/subscriptions/remove", "identifier=" + encode(String.valueOf(id)));
-                postToMain(this::refresh);
+                postToMain(() -> refresh(EnumSet.of(Resource.SUBSCRIPTIONS)));
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(
                         getString(R.string.could_not_remove_subscription, error.getMessage())));
@@ -604,7 +932,7 @@ public class MainActivity extends Activity {
         exactEventActionInFlight = true;
         exactEventSearchButton.setEnabled(false);
         statusText.setText(R.string.searching_exact_events);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 JSONArray results = getJsonArray(
                         "/api/event/search?keyword=" + encode(keyword) + "&limit=6");
@@ -633,7 +961,7 @@ public class MainActivity extends Activity {
     private void renderExactEventResults(JSONArray results) {
         exactEventResultList.removeAllViews();
         if (results.length() == 0) {
-            exactEventResultList.addView(body("No matching official pages found."));
+            exactEventResultList.addView(emptyRow("No matching official pages found."));
             return;
         }
         for (int i = 0; i < results.length(); i++) {
@@ -641,25 +969,20 @@ public class MainActivity extends Activity {
             if (result == null) {
                 continue;
             }
-            String title = result.optString("title", "").trim();
-            String url = result.optString("url", "").trim();
-            String snippet = result.optString("snippet", "").trim();
-            String displayTitle = title.isEmpty() ? url : title;
+            String title = text(result, "title").trim();
+            String url = text(result, "url").trim();
+            String snippet = text(result, "snippet").trim();
             String detail = url + (snippet.isEmpty() ? "" : "\n" + snippet);
-            if (isWebUrl(url)) {
-                exactEventResultList.addView(twoActionCard(
-                        displayTitle,
-                        detail,
-                        "Open",
-                        () -> openUrl(url),
-                        "Add Exact Event",
-                        () -> addExactEvent(exactEventSearchKeyword, title, url, snippet)));
-            } else {
-                exactEventResultList.addView(card(displayTitle, detail));
-            }
+            exactEventResultList.addView(row(
+                    title.isEmpty() ? url : title,
+                    detail,
+                    isWebUrl(url)
+                            ? new Action("Watch", () -> addExactEvent(exactEventSearchKeyword, title, url, snippet))
+                            : null,
+                    openAction("Open", url)));
         }
         if (exactEventResultList.getChildCount() == 0) {
-            exactEventResultList.addView(body("No valid event pages found."));
+            exactEventResultList.addView(emptyRow("No valid event pages found."));
         }
     }
 
@@ -675,7 +998,7 @@ public class MainActivity extends Activity {
         exactEventActionInFlight = true;
         exactEventSearchButton.setEnabled(false);
         statusText.setText(R.string.adding_exact_event);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm(
                         "/api/event/add",
@@ -689,8 +1012,8 @@ public class MainActivity extends Activity {
                     exactEventActionInFlight = false;
                     exactEventSearchButton.setEnabled(true);
                     exactEventResultList.removeAllViews();
-                    exactEventResultList.addView(body("Exact event added."));
-                    refresh();
+                    exactEventResultList.addView(emptyRow("Exact event added."));
+                    refresh(WATCH_CHANGES);
                 });
             } catch (Exception error) {
                 postToMain(() -> {
@@ -712,7 +1035,7 @@ public class MainActivity extends Activity {
             return;
         }
         statusText.setText(R.string.adding_source);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm(
                     "/api/sources",
@@ -726,7 +1049,7 @@ public class MainActivity extends Activity {
                     sourceUrlInput.setText("");
                     sourceLabelInput.setText("");
                     sourcePrivateNoteInput.setChecked(false);
-                    refresh();
+                    refresh(SOURCE_CHANGES);
                 });
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_add_source, error.getMessage())));
@@ -736,10 +1059,10 @@ public class MainActivity extends Activity {
 
     private void removeWatch(int id) {
         statusText.setText(R.string.removing_watch);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm("/api/watchlist/remove", "identifier=" + encode(String.valueOf(id)));
-                postToMain(this::refresh);
+                postToMain(() -> refresh(WATCH_CHANGES));
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_remove_watch, error.getMessage())));
             }
@@ -748,10 +1071,10 @@ public class MainActivity extends Activity {
 
     private void restoreWatch(int id) {
         statusText.setText(R.string.restoring_watch);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm("/api/watchlist/unmute", "identifier=" + encode(String.valueOf(id)));
-                postToMain(this::refresh);
+                postToMain(() -> refresh(WATCH_CHANGES));
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_restore_watch, error.getMessage())));
             }
@@ -760,10 +1083,10 @@ public class MainActivity extends Activity {
 
     private void removeSource(int id) {
         statusText.setText(R.string.removing_source);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm("/api/sources/remove", "identifier=" + encode(String.valueOf(id)));
-                postToMain(this::refresh);
+                postToMain(() -> refresh(SOURCE_CHANGES));
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_remove_source, error.getMessage())));
             }
@@ -772,10 +1095,10 @@ public class MainActivity extends Activity {
 
     private void restoreSource(int id) {
         statusText.setText(R.string.restoring_source);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 postForm("/api/sources/unmute", "identifier=" + encode(String.valueOf(id)));
-                postToMain(this::refresh);
+                postToMain(() -> refresh(SOURCE_CHANGES));
             } catch (Exception error) {
                 postToMain(() -> statusText.setText(getString(R.string.could_not_restore_source, error.getMessage())));
             }
@@ -904,7 +1227,7 @@ public class MainActivity extends Activity {
         }
         setAccountTransitionControls();
         accountStatusText.setText(progressMessage);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 String body = "email=" + encode(email) + "&password=" + encode(password);
                 JSONObject response = new JSONObject(postForm(path, body));
@@ -935,7 +1258,7 @@ public class MainActivity extends Activity {
         }
         setAccountTransitionControls();
         accountStatusText.setText(R.string.signing_out);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 synchronized (ChusennoteMessagingService.REGISTRATION_LOCK) {
                     String pushToken = ChusennoteMessagingService.savedToken(getApplicationContext());
@@ -1005,7 +1328,7 @@ public class MainActivity extends Activity {
         }
         setAccountTransitionControls();
         accountStatusText.setText(R.string.deleting_account);
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 synchronized (ChusennoteMessagingService.REGISTRATION_LOCK) {
                     JSONObject response = new JSONObject(postForm(
@@ -1044,7 +1367,7 @@ public class MainActivity extends Activity {
             return;
         }
         setAccountTransitionControls();
-        executor.execute(() -> {
+        runInBackground(() -> {
             try {
                 String email = new JSONObject(getText("/api/auth/me")).getString("email");
                 postToMain(() -> {
@@ -1082,6 +1405,12 @@ public class MainActivity extends Activity {
         loginButton.setEnabled(!signedIn);
         logoutButton.setEnabled(signedIn);
         deleteAccountButton.setEnabled(signedIn);
+        emailInput.setVisibility(signedIn ? View.GONE : View.VISIBLE);
+        passwordInput.setVisibility(signedIn ? View.GONE : View.VISIBLE);
+        registerButton.setVisibility(signedIn ? View.GONE : View.VISIBLE);
+        loginButton.setVisibility(signedIn ? View.GONE : View.VISIBLE);
+        logoutButton.setVisibility(signedIn ? View.VISIBLE : View.GONE);
+        deleteAccountButton.setVisibility(signedIn ? View.VISIBLE : View.GONE);
     }
 
     /** Prevent duplicate login/logout submissions while one is in flight. */
@@ -1105,178 +1434,146 @@ public class MainActivity extends Activity {
             JSONArray devices,
             JSONArray sources,
             JSONObject health) {
-        artistList.removeAllViews();
-        eventList.removeAllViews();
-        mutedWatchList.removeAllViews();
-        needsAttentionList.removeAllViews();
-        sourceList.removeAllViews();
-        mutedSourceList.removeAllViews();
-        alertList.removeAllViews();
-        notificationFeedList.removeAllViews();
-        subscriptionList.removeAllViews();
-        deviceList.removeAllViews();
+        List<KeyedRowList.Row> artistRows = new ArrayList<>();
+        List<KeyedRowList.Row> watchRows = new ArrayList<>();
+        List<KeyedRowList.Row> mutedWatchRows = new ArrayList<>();
         int artistCount = 0;
         int eventCount = 0;
-        int mutedCount = 0;
-        int mutedSourceCount = 0;
+        Set<Integer> watchIdsWithEvents = new HashSet<>();
+        Map<Integer, JSONObject> watchesById = new HashMap<>();
+        for (int i = 0; i < watches.length(); i++) {
+            JSONObject watch = watches.optJSONObject(i);
+            if (watch != null) {
+                watchesById.put(watch.optInt("id"), watch);
+            }
+        }
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event != null && !"artist".equals(event.optString("watch_kind"))) {
+                watchIdsWithEvents.add(event.optInt("watch_id"));
+            }
+        }
 
         for (int i = 0; i < watches.length(); i++) {
             JSONObject watch = watches.optJSONObject(i);
             if (watch == null) {
                 continue;
             }
+            int id = watch.optInt("id");
+            String keyword = watch.optString("keyword");
             String kind = watch.optString("kind", "event");
+            String key = "watch:" + id;
             if (watch.optBoolean("muted")) {
-                String detail = "Watch #" + watch.optInt("id")
-                    + " - " + kind
-                    + "\n" + watchPreferences(watch, "event".equals(kind));
-                mutedWatchList.addView(actionCard(watch.optString("keyword"), detail, "Restore", () -> restoreWatch(watch.optInt("id"))));
-                mutedCount++;
+                mutedWatchRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
+                        keyword,
+                        watchCheckedText(watch),
+                        new Action("Restore", () -> restoreWatch(id)))));
                 continue;
             }
             if ("artist".equals(kind)) {
-                artistList.addView(twoActionCard(
-                        watch.optString("keyword"),
-                        watchPreferences(watch, false),
-                        "Remove",
-                        () -> removeWatch(watch.optInt("id")),
-                        "Notify",
-                        () -> addSubscription(watch.optInt("id"), "artist_all")));
+                artistRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
+                        keyword,
+                        watchCheckedText(watch),
+                        new Action("Notify Me", () -> addSubscription(id, "artist_all")),
+                        new Action("Remove", () -> removeWatch(id)))));
                 artistCount++;
             } else {
-                eventList.addView(twoActionCard(
-                        watch.optString("keyword"),
-                        "Watch #" + watch.optInt("id") + "\n" + watchPreferences(watch, true),
-                        "Remove",
-                        () -> removeWatch(watch.optInt("id")),
-                        "Notify",
-                        () -> addSubscription(watch.optInt("id"), "event_all")));
+                // A watch that found an event is shown as that event below.
+                if (!watchIdsWithEvents.contains(id)) {
+                    watchRows.add(new KeyedRowList.Row(key, watch.toString(), () -> row(
+                            keyword,
+                            watchCheckedText(watch),
+                            new Action("Edit", () -> editWatch(watch)),
+                            new Action("Remove", () -> removeWatch(id)))));
+                }
                 eventCount++;
             }
         }
 
+        List<KeyedRowList.Row> eventRows = new ArrayList<>();
+        eventsByKey.clear();
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
             if (event == null) {
                 continue;
             }
-            String clues = eventClues(event);
+            String title = event.optString("title", "Untitled event");
+            String officialUrl = text(event, "official_url");
             if ("artist".equals(event.optString("watch_kind"))) {
-                String detail = EventStatusText.label(
-                    event.optString("status_label", ""),
-                    event.optString("status", "watching")
-                );
-                if (!clues.isEmpty()) {
-                    detail = detail + "\n" + clues;
-                }
-                String reasons = joinFirst(event.optJSONArray("match_reasons"));
-                if (!reasons.isEmpty()) {
-                    detail = detail + "\nWhy: " + reasons;
-                }
-                addEventCard(artistList, event, detail);
+                artistRows.add(new KeyedRowList.Row(
+                        "artist-event:" + event.optInt("id", i), event.toString(), () -> row(
+                                title,
+                                artistEventSummary(event),
+                                openAction("Official Page", officialUrl))));
                 continue;
             }
-            JSONArray rounds = event.optJSONArray("rounds");
-            String detail = EventStatusText.label(
-                event.optString("status_label", ""),
-                event.optString("status", "watching")
-            ) + " - " + (rounds == null ? 0 : rounds.length()) + " ticket rounds";
-            if (!clues.isEmpty()) {
-                detail = detail + "\n" + clues;
+            String key = "event:" + event.optInt("id", -1) + ":" + event.optInt("watch_id", -1);
+            if (eventsByKey.containsKey(key)) {
+                key = key + "#" + i;
             }
-            String reasons = joinFirst(event.optJSONArray("match_reasons"));
-            if (!reasons.isEmpty()) {
-                detail = detail + "\nWhy: " + reasons;
-            }
-            addTrackedEventDetails(eventList, event, detail);
+            String eventKey = key;
+            eventsByKey.put(eventKey, event);
+            // The list shows a summary; everything else is on the detail page.
+            int watchId = event.optInt("watch_id");
+            JSONObject eventWatch = watchesById.get(watchId);
+            // The watch is part of what the row shows through its Edit action.
+            eventRows.add(new KeyedRowList.Row(eventKey, event + "\n" + eventWatch, () -> summaryRow(
+                    title,
+                    eventSummary(event),
+                    new Action("Details", () -> showEventDetail(eventKey)),
+                    eventWatch == null ? null : new Action("Edit", () -> editWatch(eventWatch)),
+                    new Action("Remove", () -> removeWatch(watchId)))));
         }
+        if (openEventKey != null) {
+            showEventDetail(openEventKey);
+        }
+        showRows(artistList, artistRows, "No tracked artists yet.");
+        eventRows.addAll(watchRows);
+        showRows(eventList, eventRows, "Add an event to keep its ticket dates here.");
+        showRows(mutedWatchList, mutedWatchRows, null);
 
-        if (artistCount == 0) {
-            artistList.addView(body("No tracked artists yet."));
-        }
-        if (eventCount == 0 && eventList.getChildCount() == 0) {
-            eventList.addView(body("No tracked events yet."));
-        }
-        if (mutedCount == 0) {
-            mutedWatchList.addView(body("No muted watches."));
-        }
+        List<KeyedRowList.Row> needsAttentionRows = new ArrayList<>();
         for (int i = 0; i < Math.min(upcoming.length(), 8); i++) {
             JSONObject item = upcoming.optJSONObject(i);
             if (item == null) {
                 continue;
             }
-            String statusText = item.optString("status_label", "");
-            if (statusText.isEmpty()) {
-                statusText = item.optString("status", "unknown");
-            }
-            String detail = statusText
-                + " - " + item.optString("platform", "unknown")
-                + " - " + item.optString("round_name", "Ticket round")
-                + " - " + item.optString("relevant_date", "date unknown");
-            String reasons = joinFirst(item.optJSONArray("match_reasons"));
-            if (!reasons.isEmpty()) {
-                detail = detail + "\nWhy: " + reasons;
-            }
-            String url = item.optString("url", "");
-            if (!isWebUrl(url)) {
-                needsAttentionList.addView(card(item.optString("event_title", "Untitled event"), detail));
-            } else {
-                needsAttentionList.addView(actionCard(item.optString("event_title", "Untitled event"), detail, "Open", () -> openUrl(url)));
-            }
+            needsAttentionRows.add(new KeyedRowList.Row("upcoming:" + i, item.toString(), () -> upcomingRow(item)));
         }
-        if (needsAttentionList.getChildCount() == 0) {
-            needsAttentionList.addView(body("No urgent ticket dates saved yet."));
-        }
+        showRows(needsAttentionList, needsAttentionRows, eventCount == 0
+                ? "Watch an event to see its ticket deadlines here."
+                : "Nothing needs your attention right now.");
+
+        List<KeyedRowList.Row> sourceRows = new ArrayList<>();
+        List<KeyedRowList.Row> mutedSourceRows = new ArrayList<>();
         for (int i = 0; i < sources.length(); i++) {
             JSONObject source = sources.optJSONObject(i);
             if (source == null) {
                 continue;
             }
-            String mode = source.optBoolean("private_note") ? "private note" : source.optString("platform", "manual");
-            String detail = "Watch #" + source.optInt("watch_id") + " - " + mode + "\n" + source.optString("url", "");
-            String sourceUrl = source.optString("url", "");
-            if (source.optBoolean("muted")) {
-                mutedSourceList.addView(sourceActionCard(source.optString("label", "Source"), detail, sourceUrl, "Restore", () -> restoreSource(source.optInt("id"))));
-                mutedSourceCount++;
-                continue;
-            }
-            sourceList.addView(sourceActionCard(source.optString("label", "Source"), detail, sourceUrl, "Remove", () -> removeSource(source.optInt("id"))));
+            int id = source.optInt("id");
+            boolean muted = source.optBoolean("muted");
+            (muted ? mutedSourceRows : sourceRows).add(new KeyedRowList.Row(
+                    "source:" + id, source.toString(), () -> sourceRow(source, id, muted)));
         }
-        if (sourceList.getChildCount() == 0) {
-            sourceList.addView(body("No manual sources."));
-        }
-        if (mutedSourceCount == 0) {
-            mutedSourceList.addView(body("No muted sources."));
-        }
+        showRows(sourceList, sourceRows, "No manual sources.");
+        showRows(mutedSourceList, mutedSourceRows, null);
+        setSectionVisible(mutedWatchHeading, mutedWatchList);
+        setSectionVisible(mutedSourceHeading, mutedSourceList);
+
+        List<KeyedRowList.Row> alertRows = new ArrayList<>();
         for (int i = 0; i < Math.min(alerts.length(), 10); i++) {
             JSONObject alert = alerts.optJSONObject(i);
             if (alert == null) {
                 continue;
             }
-            String title = AlertTypeText.label(
-                alert.optString("type_label", ""),
-                alert.optString("type", "alert")
-            );
-            String detail = alert.optString("event", alert.optString("event_title", alert.optString("keyword", ""))) + " " + alert.optString("round", "");
-            if (alert.has("event_id")) {
-                detail = detail.trim() + "\nEvent #" + alert.optInt("event_id");
-            }
-            String watchKeyword = alert.optString("watch_keyword", "");
-            if (!watchKeyword.isEmpty()) {
-                String muted = alert.optBoolean("watch_muted") ? " muted" : "";
-                detail = detail.trim() + "\n" + alert.optString("watch_kind", "watch") + " " + watchKeyword + muted;
-            } else if (alert.has("watch_id")) {
-                detail = detail.trim() + "\nWatch #" + alert.optInt("watch_id");
-            }
-            alertList.addView(card(title, detail.trim()));
+            alertRows.add(new KeyedRowList.Row("alert:" + i, alert.toString(), () -> alertRow(alert)));
         }
-        if (alertList.getChildCount() == 0) {
-            alertList.addView(body("No recent alerts."));
-        }
+        showRows(alertList, alertRows, "Ticket updates will appear here.");
         renderNotificationFeed(notificationFeed);
         renderSubscriptions(subscriptions, watches);
         renderDevices(devices);
-        String version = health.optString("version", "").trim();
+        String version = text(health, "version").trim();
         int build = health.optInt("build", -1);
         int schemaVersion = health.optInt("schema_version", -1);
         String release = version.isEmpty() || build < 0
@@ -1292,7 +1589,10 @@ public class MainActivity extends Activity {
                 R.plurals.event_count, trackedEvents, trackedEvents);
         String alertSummary = getResources().getQuantityString(
                 R.plurals.alert_count, alertCount, alertCount);
-        statusText.setText(getString(
+        statusText.setText("ok".equalsIgnoreCase(text(health, "status"))
+                ? R.string.updated_just_now : R.string.updates_may_be_delayed);
+        if (BuildConfig.DEBUG) {
+            debugStatusText.setText(getString(
                 R.string.server_status,
                 health.optString("status", "unknown"),
                 release,
@@ -1300,78 +1600,179 @@ public class MainActivity extends Activity {
                 artistSummary,
                 eventSummary,
                 alertSummary));
+        }
+    }
+
+    /** Renders {@code rows}, or a single empty-state row when there are none and {@code emptyText} is set. */
+    private void showRows(KeyedRowList list, List<KeyedRowList.Row> rows, String emptyText) {
+        if (rows.isEmpty() && emptyText != null) {
+            rows.add(new KeyedRowList.Row("empty", emptyText, () -> emptyRow(emptyText)));
+        }
+        list.render(rows);
+    }
+
+    /** Status, first date, and venue on one line, as on the web and iOS. */
+    private String eventSummary(JSONObject event) {
+        JSONArray dates = event.optJSONArray("event_dates");
+        // Prefer the backend's honest venue_label (real venues, "Multiple cities"
+        // for a tour, or a dash) over the raw venues array, which is empty for tours.
+        String venue = text(event, "venue_label");
+        if (venue.isEmpty()) {
+            venue = joinFirst(event.optJSONArray("venues"));
+        }
+        return FriendlyDate.meta(
+                EventStatusText.label(text(event, "status_label"), event.optString("status", "watching")),
+                dates == null || dates.length() == 0 ? "" : FriendlyDate.format(dates.optString(0)),
+                venue);
+    }
+
+    private String artistEventSummary(JSONObject event) {
+        return eventSummary(event);
+    }
+
+    private String watchCheckedText(JSONObject watch) {
+        String checked = watch.isNull("last_checked_at") ? "" : text(watch, "last_checked_at");
+        return checked.isEmpty() ? "Not checked yet" : "Checked " + FriendlyDate.day(checked);
+    }
+
+    private View upcomingRow(JSONObject item) {
+        StringBuilder detail = new StringBuilder(FriendlyDate.meta(
+                text(item, "status_label"),
+                FriendlyDate.format(text(item, "relevant_date")),
+                text(item, "platform")));
+        appendNonEmptyLine(detail, text(item, "round_name"));
+        String eventKey = eventKeyForId(item.optInt("event_id", -1));
+        return row(
+                item.optString("event_title", "Untitled event"),
+                detail.toString(),
+                eventKey == null
+                        ? openAction("Open", text(item, "url"))
+                        : new Action("Details", () -> showEventDetail(eventKey)));
+    }
+
+    private String eventKeyForId(int eventId) {
+        for (Map.Entry<String, JSONObject> entry : eventsByKey.entrySet()) {
+            if (entry.getValue().optInt("id", -2) == eventId) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    private View sourceRow(JSONObject source, int id, boolean muted) {
+        String mode = source.optBoolean("private_note") ? "private note" : source.optString("platform", "manual");
+        String detail = mode;
+        return row(
+                source.optString("label", "Source"),
+                detail,
+                openAction("Open", text(source, "url")),
+                muted
+                        ? new Action("Restore", () -> restoreSource(id))
+                        : new Action("Remove", () -> removeSource(id)));
+    }
+
+    private View alertRow(JSONObject alert) {
+        String title = AlertTypeText.label(
+                text(alert, "type_label"),
+                alert.optString("type", "alert"));
+        String event = alert.optString("event_title", text(alert, "event"));
+        if (event.isEmpty()) {
+            event = alert.optString("watch_keyword", text(alert, "keyword"));
+        }
+        String round = text(alert, "round");
+        if (round.isEmpty()) {
+            // Ticket-link alerts carry the link's name instead of a round.
+            round = text(alert, "label");
+        }
+        return row(title, FriendlyDate.meta(
+                event,
+                round.equals(event) ? "" : round,
+                FriendlyDate.day(text(alert, "created_at"))));
     }
 
     private void renderNotificationFeed(JSONArray notificationFeed) {
+        List<KeyedRowList.Row> rows = new ArrayList<>();
         for (int i = 0; i < Math.min(notificationFeed.length(), 10); i++) {
             JSONObject item = notificationFeed.optJSONObject(i);
             if (item == null) {
                 continue;
             }
-            String title = item.optString("title", item.optString("label", "Reminder"));
-            StringBuilder detail = new StringBuilder();
-            appendNonEmptyLine(detail, item.optString("body", ""));
-            appendNonEmptyLine(detail, item.optString("event_title", ""));
-            appendLabeledLine(detail, "Location", item.optString("location", ""));
-            appendLabeledLine(detail, "Date", item.optString("date", ""));
-            appendLabeledLine(detail, "Channel", item.optString("channel", ""));
-            appendNonEmptyLine(detail, item.optString("created_at", ""));
-            String url = item.optString("url", "");
-            if (isWebUrl(url)) {
-                notificationFeedList.addView(actionCard(title, detail.toString(), "Open", () -> openUrl(url)));
-            } else {
-                notificationFeedList.addView(card(title, detail.toString()));
-            }
+            rows.add(new KeyedRowList.Row("reminder:" + i, item.toString(), () -> {
+                StringBuilder detail = new StringBuilder();
+                appendNonEmptyLine(detail, text(item, "body"));
+                appendNonEmptyLine(detail, FriendlyDate.meta(
+                        text(item, "event_title"),
+                        text(item, "location"),
+                        FriendlyDate.format(text(item, "date")),
+                        FriendlyDate.day(text(item, "created_at"))));
+                return row(
+                        item.optString("title", item.optString("label", "Reminder")),
+                        detail.toString(),
+                        openAction("Open", text(item, "url")));
+            }));
         }
-        if (notificationFeedList.getChildCount() == 0) {
-            notificationFeedList.addView(body("No delivered reminders."));
-        }
+        showRows(notificationFeedList, rows, "No delivered reminders.");
     }
 
     private void renderSubscriptions(JSONArray subscriptions, JSONArray watches) {
+        List<KeyedRowList.Row> rows = new ArrayList<>();
         for (int i = 0; i < subscriptions.length(); i++) {
             JSONObject subscription = subscriptions.optJSONObject(i);
             if (subscription == null) {
                 continue;
             }
+            int id = subscription.optInt("id");
             int watchId = subscription.optInt("watch_id");
-            String title = watchKeyword(watches, watchId);
-            if (title.isEmpty()) {
-                title = "Watch #" + watchId;
-            }
-            StringBuilder detail = new StringBuilder();
-            appendLabeledLine(detail, "Scope", subscription.optString("scope", ""));
-            appendLabeledLine(detail, "Location", subscription.optString("location", ""));
-            appendLabeledLine(detail, "Round", subscription.optString("round_key", ""));
-            appendLabeledLine(detail, "Channels", subscription.optString("channels", ""));
-            appendLabeledLine(detail, "Lead days", subscription.optString("lead_days", ""));
-            subscriptionList.addView(actionCard(
-                    title,
-                    detail.toString(),
-                    "Remove",
-                    () -> removeSubscription(subscription.optInt("id"))));
+            String keyword = watchKeyword(watches, watchId);
+            String title = keyword.isEmpty() ? "Removed watch" : keyword;
+            // The title comes from the watch list, so it is part of what this row shows.
+            rows.add(new KeyedRowList.Row("subscription:" + id, title + "\n" + subscription, () -> {
+                String leadDays = text(subscription, "lead_days");
+                return row(
+                        title,
+                        FriendlyDate.meta(
+                                subscriptionScopeLabel(text(subscription, "scope")),
+                                text(subscription, "location"),
+                                text(subscription, "channels").replace(",", ", "),
+                                leadDays.isEmpty() ? "" : leadDays + " days before"),
+                        new Action("Remove", () -> removeSubscription(id)));
+            }));
         }
-        if (subscriptionList.getChildCount() == 0) {
-            subscriptionList.addView(body("No notification subscriptions."));
-        }
+        showRows(subscriptionList, rows, "No notification subscriptions.");
     }
 
     private void renderDevices(JSONArray devices) {
+        List<KeyedRowList.Row> rows = new ArrayList<>();
         for (int i = 0; i < devices.length(); i++) {
             JSONObject device = devices.optJSONObject(i);
             if (device == null) {
                 continue;
             }
-            String title = device.optString("label", "").trim();
-            if (title.isEmpty()) {
-                title = device.optString("platform", "Device");
-            }
-            String detail = device.optString("platform", "unknown")
-                    + "\nToken: " + abbreviatedToken(device.optString("token", ""));
-            deviceList.addView(card(title, detail));
+            rows.add(new KeyedRowList.Row("device:" + device.optInt("id", i), device.toString(), () -> {
+                String title = text(device, "label").trim();
+                if (title.isEmpty()) {
+                    title = device.optString("platform", "Device");
+                }
+                String detail = device.optString("platform", "unknown")
+                        + "\nToken: " + abbreviatedToken(text(device, "token"));
+                return row(title, detail);
+            }));
         }
-        if (deviceList.getChildCount() == 0) {
-            deviceList.addView(body("No push devices registered."));
+        showRows(deviceList, rows, "No push devices registered.");
+    }
+
+    private static String subscriptionScopeLabel(String scope) {
+        switch (scope) {
+            case "artist_all":
+                return "All shows";
+            case "event_all":
+                return "All rounds";
+            case "event_location":
+                return "One location";
+            case "round":
+                return "One round";
+            default:
+                return scope;
         }
     }
 
@@ -1389,7 +1790,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < watches.length(); i++) {
             JSONObject watch = watches.optJSONObject(i);
             if (watch != null && watch.optInt("id") == watchId) {
-                return watch.optString("keyword", "");
+                return text(watch, "keyword");
             }
         }
         return "";
@@ -1412,120 +1813,23 @@ public class MainActivity extends Activity {
         appendNonEmptyLine(detail, label + ": " + value.trim());
     }
 
-    private TextView heading(String text) {
-        TextView view = body(text);
-        view.setTextSize(28);
-        return view;
-    }
-
-    private TextView section(String text) {
-        TextView view = body(text);
-        view.setTextSize(20);
-        view.setPadding(0, 28, 0, 8);
-        return view;
-    }
-
-    private TextView body(String text) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(16);
-        view.setPadding(0, 6, 0, 6);
-        return view;
-    }
-
-    private EditText singleLineInput(String hint) {
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setHint(hint);
-        return input;
-    }
-
-    private TextView card(String title, String detail) {
-        TextView view = body(title + "\n" + detail);
-        view.setPadding(18, 18, 18, 18);
-        return view;
-    }
-
-    private String watchPreferences(JSONObject watch, boolean includeAlerts) {
-        StringBuilder detail = new StringBuilder();
-        appendPreference(detail, "Tags", watch.optString("tags", ""));
-        appendPreference(detail, "Regions", watch.optString("preferred_regions", ""));
-        appendPreference(detail, "Venues", watch.optString("preferred_venues", ""));
-        if (includeAlerts) {
-            appendPreference(detail, "Alerts", AlertTypeText.labels(watch.optString("alert_preferences", "")));
-        }
-        appendPreference(detail, "Last checked", watch.optString("last_checked_at", "never"));
-        return detail.toString();
-    }
-
-    private void appendPreference(StringBuilder detail, String label, String value) {
-        if (detail.length() > 0) {
-            detail.append("\n");
-        }
-        detail.append(label).append(": ").append(value == null || value.isEmpty() ? "none" : value);
-    }
-
-    private String eventClues(JSONObject event) {
-        StringBuilder detail = new StringBuilder();
-        String dates = joinFirst(event.optJSONArray("event_dates"));
-        // Prefer the backend's honest venue_label (real venues, "Multiple cities"
-        // for a tour, or a dash) over the raw venues array, which is empty for
-        // tour listings and read as missing data.
-        String venue = event.optString("venue_label", "");
-        if (venue.isEmpty()) {
-            venue = joinFirst(event.optJSONArray("venues"));
-        }
-        if (!dates.isEmpty()) {
-            detail.append("Dates: ").append(dates);
-        }
-        if (!venue.isEmpty()) {
-            if (detail.length() > 0) {
-                detail.append("\n");
-            }
-            detail.append("Venue: ").append(venue);
-        }
-        return detail.toString();
-    }
-
-    private void addEventCard(LinearLayout list, JSONObject event, String detail) {
-        String title = event.optString("title", "Untitled event");
-        String officialUrl = event.optString("official_url", "");
-        if (!isWebUrl(officialUrl)) {
-            list.addView(card(title, detail));
-        } else {
-            list.addView(actionCard(title, detail, "Open", () -> openUrl(officialUrl)));
-        }
-    }
-
-    private void addTrackedEventDetails(LinearLayout list, JSONObject event, String summaryDetail) {
+    /** One event is one block in the list: a summary row followed by indented detail rows. */
+    private View trackedEventBlock(JSONObject event, String summaryDetail) {
         int watchId = event.optInt("watch_id");
-        String title = event.optString("title", "Untitled event");
-        StringBuilder overview = new StringBuilder(summaryDetail);
-        appendLabeledText(event, "Summary", "summary", overview);
-        appendLabeledText(event, "Updated", "updated_at", overview);
-        String officialUrl = event.optString("official_url", "");
-        if (isWebUrl(officialUrl)) {
-            list.addView(twoActionCard(
-                    title,
-                    overview.toString(),
-                    "Open Official",
-                    () -> openUrl(officialUrl),
-                    "Notify All Rounds",
-                    () -> addSubscription(watchId, "event_all")));
-        } else {
-            list.addView(actionCard(
-                    title,
-                    overview.toString(),
-                    "Notify All Rounds",
-                    () -> addSubscription(watchId, "event_all")));
-        }
+        LinearLayout block = new LinearLayout(this);
+        block.setOrientation(LinearLayout.VERTICAL);
+        block.addView(row(
+                event.optString("title", "Untitled event"),
+                summaryDetail,
+                openAction("Official Page", text(event, "official_url")),
+                new Action("Notify Me", () -> addSubscription(watchId, "event_all"))));
 
         JSONArray rounds = event.optJSONArray("rounds");
         if (rounds != null) {
             for (int i = 0; i < rounds.length(); i++) {
                 JSONObject round = rounds.optJSONObject(i);
                 if (round != null) {
-                    addTicketRoundCard(list, watchId, round);
+                    addTicketRoundRow(block, watchId, round);
                 }
             }
         }
@@ -1535,72 +1839,66 @@ public class MainActivity extends Activity {
             for (int i = 0; i < locations.length(); i++) {
                 JSONObject location = locations.optJSONObject(i);
                 if (location != null) {
-                    addEventLocationCard(list, watchId, location);
+                    addEventLocationRow(block, watchId, location);
                 }
             }
         }
 
-        appendTicketLinks(list, event.optJSONArray("ticket_links"));
-        appendTextCards(list, "Organizer", event.optJSONArray("organizers"));
-        appendTextCards(list, "Cast / lineup", event.optJSONArray("lineup"));
-        appendTextCards(list, "Ticket rule", event.optJSONArray("ticket_rules"));
-        appendTextCards(list, "Ticket price", event.optJSONArray("ticket_prices"));
-        appendRelatedEvents(list, event.optJSONArray("related_events"));
-        appendManualSources(list, event.optJSONArray("manual_sources"));
+        appendTicketLinks(block, event.optJSONArray("ticket_links"));
+        appendFacts(block, "Organizers", event.optJSONArray("organizers"));
+        appendFacts(block, "Cast & lineup", event.optJSONArray("lineup"));
+        appendFacts(block, "Ticket rules", event.optJSONArray("ticket_rules"));
+        appendFacts(block, "Ticket prices", event.optJSONArray("ticket_prices"));
+        appendRelatedEvents(block, event.optJSONArray("related_events"));
+        appendManualSources(block, event.optJSONArray("manual_sources"));
+        return block;
     }
 
-    private void addTicketRoundCard(LinearLayout list, int watchId, JSONObject round) {
-        StringBuilder detail = new StringBuilder();
-        appendLabeledText(round, "Status", "status_label", detail);
-        appendLabeledText(round, "Platform", "platform", detail);
-        appendLabeledText(round, "Type", "round_type_label", detail);
-        appendLabeledText(round, "Access", "membership_label", detail);
-        appendLabeledText(round, "Schedule", "schedule_label", detail);
-        if (round.has("confidence")) {
-            appendNonEmptyLine(detail, "Confidence: " + round.optInt("confidence") + "%");
-        }
-        appendLabeledText(round, "Evidence", "evidence", detail);
-        String title = round.optString("name", "Ticket round");
-        String url = round.optString("url", "");
-        String roundKey = round.optString("round_key", "");
-        if (isWebUrl(url) && !roundKey.isEmpty()) {
-            list.addView(twoActionCard(
-                    title,
-                    detail.toString(),
-                    "Open Ticket Page",
-                    () -> openUrl(url),
-                    "Notify This Round",
-                    () -> addSubscription(watchId, "round", "", roundKey)));
-        } else if (!roundKey.isEmpty()) {
-            list.addView(actionCard(
-                    title,
-                    detail.toString(),
-                    "Notify This Round",
-                    () -> addSubscription(watchId, "round", "", roundKey)));
-        } else if (isWebUrl(url)) {
-            list.addView(actionCard(title, detail.toString(), "Open Ticket Page", () -> openUrl(url)));
-        } else {
-            list.addView(card(title, detail.toString()));
-        }
+    private void addTicketRoundRow(LinearLayout block, int watchId, JSONObject round) {
+        StringBuilder detail = new StringBuilder(FriendlyDate.meta(
+                text(round, "status_label"),
+                text(round, "platform"),
+                text(round, "membership_label")));
+        // Only dates the source published; many lotteries never list results or payment.
+        String schedule = FriendlyDate.meta(
+                labeled("Apply", FriendlyDate.range(text(round, "application_start_at"), text(round, "application_end_at"))),
+                labeled("Results", FriendlyDate.format(text(round, "results_date"))),
+                labeled("Payment due", FriendlyDate.format(text(round, "payment_end_at"))),
+                labeled("On sale", FriendlyDate.format(text(round, "general_sale_date"))),
+                labeled("Resale", FriendlyDate.range(text(round, "trade_start_at"), text(round, "trade_end_at"))));
+        appendNonEmptyLine(detail, schedule.isEmpty() ? text(round, "schedule_label") : schedule);
+        String roundKey = text(round, "round_key");
+        block.addView(subRow(
+                round.optString("name", "Ticket round"),
+                detail.toString(),
+                roundKey.isEmpty()
+                        ? null
+                        : new Action("Notify Me", () -> addSubscription(watchId, "round", "", roundKey)),
+                openAction("Source", text(round, "url"))));
     }
 
-    private void addEventLocationCard(LinearLayout list, int watchId, JSONObject location) {
-        String locationKey = location.optString("location", "").trim();
+    /** {@code optString} turns a JSON null into the text "null"; this returns "" instead. */
+    private static String text(JSONObject object, String key) {
+        return object == null || object.isNull(key) ? "" : object.optString(key, "");
+    }
+
+    private static String labeled(String label, String value) {
+        return value == null || value.isEmpty() ? "" : label + " " + value;
+    }
+
+    private void addEventLocationRow(LinearLayout block, int watchId, JSONObject location) {
+        String locationKey = text(location, "location").trim();
         if (locationKey.isEmpty()) {
             return;
         }
-        StringBuilder detail = new StringBuilder();
-        appendLabeledText(location, "City", "city", detail);
-        appendLabeledText(location, "Venue", "venue", detail);
-        appendLabeledText(location, "Date", "date", detail);
-        list.addView(actionCard(
-                "Location: " + locationKey,
-                detail.toString(),
-                "Notify This Location",
-                () -> addSubscription(watchId, "event_location", locationKey, "")));
+        String venue = text(location, "venue");
+        block.addView(subRow(
+                locationKey,
+                FriendlyDate.meta(venue.equals(locationKey) ? "" : venue, FriendlyDate.format(text(location, "date"))),
+                new Action("Notify Me", () -> addSubscription(watchId, "event_location", locationKey, ""))));
     }
 
-    private void appendTicketLinks(LinearLayout list, JSONArray links) {
+    private void appendTicketLinks(LinearLayout block, JSONArray links) {
         if (links == null) {
             return;
         }
@@ -1609,35 +1907,28 @@ public class MainActivity extends Activity {
             if (link == null) {
                 continue;
             }
-            String url = link.optString("url", "");
-            String title = link.optString("label", "Ticket link");
-            StringBuilder detail = new StringBuilder();
-            appendLabeledText(link, "Platform", "platform", detail);
-            appendLabeledText(link, "Source", "provenance", detail);
-            if (link.has("confidence")) {
-                appendNonEmptyLine(detail, "Confidence: " + link.optInt("confidence") + "%");
-            }
-            if (isWebUrl(url)) {
-                list.addView(actionCard(title, detail.toString(), "Open Ticket Link", () -> openUrl(url)));
-            } else {
-                list.addView(card(title, detail.toString()));
-            }
+            block.addView(subRow(
+                    link.optString("label", "Ticket link"),
+                    text(link, "platform"),
+                    openAction("Open", text(link, "url"))));
         }
     }
 
-    private void appendTextCards(LinearLayout list, String title, JSONArray values) {
+    /** All values of one kind share a single row instead of one row each. */
+    private void appendFacts(LinearLayout block, String title, JSONArray values) {
         if (values == null) {
             return;
         }
+        StringBuilder detail = new StringBuilder();
         for (int i = 0; i < values.length(); i++) {
-            String value = values.optString(i, "").trim();
-            if (!value.isEmpty()) {
-                list.addView(card(title, value));
-            }
+            appendNonEmptyLine(detail, values.optString(i, ""));
+        }
+        if (detail.length() > 0) {
+            block.addView(subRow(title, detail.toString()));
         }
     }
 
-    private void appendManualSources(LinearLayout list, JSONArray sources) {
+    private void appendManualSources(LinearLayout block, JSONArray sources) {
         if (sources == null) {
             return;
         }
@@ -1646,18 +1937,15 @@ public class MainActivity extends Activity {
             if (source == null) {
                 continue;
             }
-            String title = source.optString("label", "Manual source");
-            String url = source.optString("url", "");
             String mode = source.optBoolean("private_note") ? "Private note" : source.optString("platform", "Manual");
-            if (isWebUrl(url)) {
-                list.addView(actionCard(title, mode, "Open Source", () -> openUrl(url)));
-            } else {
-                list.addView(card(title, mode));
-            }
+            block.addView(subRow(
+                    source.optString("label", "Manual source"),
+                    mode,
+                    openAction("Source", text(source, "url"))));
         }
     }
 
-    private void appendRelatedEvents(LinearLayout list, JSONArray relatedEvents) {
+    private void appendRelatedEvents(LinearLayout block, JSONArray relatedEvents) {
         if (relatedEvents == null) {
             return;
         }
@@ -1666,18 +1954,13 @@ public class MainActivity extends Activity {
             if (related == null) {
                 continue;
             }
-            String title = related.optString("title", "Related event");
-            StringBuilder detail = new StringBuilder("Related saved event");
-            appendLabeledText(related, "Date", "event_date", detail);
-            appendLabeledText(related, "Venue", "venue_label", detail);
-            String reasons = joinFirst(related.optJSONArray("recommendation_reasons"));
-            appendLabeledLine(detail, "Why", reasons);
-            String url = related.optString("official_url", "");
-            if (isWebUrl(url)) {
-                list.addView(actionCard(title, detail.toString(), "Open Official Page", () -> openUrl(url)));
-            } else {
-                list.addView(card(title, detail.toString()));
-            }
+            block.addView(subRow(
+                    related.optString("title", "Related event"),
+                    FriendlyDate.meta(
+                            FriendlyDate.format(text(related, "event_date")),
+                            text(related, "venue_label"),
+                            joinFirst(related.optJSONArray("recommendation_reasons"))),
+                    openAction("Official Page", text(related, "official_url"))));
         }
     }
 
@@ -1699,31 +1982,160 @@ public class MainActivity extends Activity {
         return joined.toString();
     }
 
-    private LinearLayout actionCard(String title, String detail, String buttonLabel, Runnable action) {
+    // ---- View building. One row shape, one list shape, one form shape. ----
+
+    private static final class Action {
+        final String label;
+        final Runnable run;
+
+        Action(String label, Runnable run) {
+            this.label = label;
+            this.run = run;
+        }
+    }
+
+    /** An action that opens {@code url}, or null (no button) when it is not a web URL. */
+    private Action openAction(String label, String url) {
+        return isWebUrl(url) ? new Action(label, () -> openUrl(url)) : null;
+    }
+
+    private int dimen(int resource) {
+        return getResources().getDimensionPixelSize(resource);
+    }
+
+    /** A TextView whose look comes entirely from {@code style}. */
+    private TextView styledText(String value, int style) {
+        TextView view = new TextView(this, null, 0, style);
+        view.setText(value);
+        return view;
+    }
+
+    private TextView section(String value) {
+        return styledText(value, R.style.SectionLabel);
+    }
+
+    private TextView body(String value) {
+        return styledText(value, R.style.BodyText);
+    }
+
+    private TextView emptyRow(String value) {
+        return styledText(value, R.style.EmptyRowText);
+    }
+
+    private EditText singleLineInput(String hint) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(hint);
+        return input;
+    }
+
+    /** A rounded surface whose rows are separated by hairlines. */
+    private LinearLayout list() {
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setBackgroundResource(R.drawable.surface);
+        list.setDividerDrawable(getDrawable(R.drawable.list_divider));
+        list.setDividerPadding(dimen(R.dimen.row_inset));
+        list.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE);
+        return list;
+    }
+
+    private KeyedRowList rowList() {
+        return new KeyedRowList(list());
+    }
+
+    /** A rounded surface holding inputs and their submit button. */
+    private LinearLayout form() {
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setBackgroundResource(R.drawable.surface);
+        int horizontal = dimen(R.dimen.row_vertical);
+        int vertical = dimen(R.dimen.space_sm);
+        form.setPadding(horizontal, vertical, horizontal, vertical);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.topMargin = vertical;
+        form.setLayoutParams(params);
+        return form;
+    }
+
+    private LinearLayout actionBar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        return bar;
+    }
+
+    private Button textButton(String label, Runnable action) {
+        Button button = new Button(this, null, 0, R.style.TextButton);
+        button.setText(label);
+        button.setOnClickListener(view -> action.run());
+        return button;
+    }
+
+    private Button primaryButton(String label, Runnable action) {
+        Button button = new Button(this, null, 0, R.style.PrimaryButton);
+        button.setText(label);
+        button.setOnClickListener(view -> action.run());
+        return button;
+    }
+
+    private LinearLayout row(String title, String detail, Action... actions) {
+        return buildRow(title, detail, false, actions);
+    }
+
+    /** A row whose detail is cut to two lines, for lists whose rows open a full page. */
+    private LinearLayout summaryRow(String title, String detail, Action... actions) {
+        LinearLayout row = buildRow(title, detail, false, actions);
+        View detailView = row.getChildAt(1);
+        if (detailView instanceof TextView) {
+            ((TextView) detailView).setMaxLines(2);
+            ((TextView) detailView).setEllipsize(TextUtils.TruncateAt.END);
+        }
+        return row;
+    }
+
+    /** A row indented under the event it belongs to. */
+    private LinearLayout subRow(String title, String detail, Action... actions) {
+        return buildRow(title, detail, true, actions);
+    }
+
+    private LinearLayout buildRow(String title, String detail, boolean nested, Action... actions) {
+        int start = dimen(nested ? R.dimen.row_inset_nested : R.dimen.row_inset);
+        int end = dimen(R.dimen.row_inset);
+        int vertical = dimen(nested ? R.dimen.row_vertical_nested : R.dimen.row_vertical);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(18, 18, 18, 18);
-        row.addView(body(title + "\n" + detail));
-        Button button = new Button(this);
-        button.setText(buttonLabel);
-        button.setOnClickListener(view -> action.run());
-        row.addView(button);
-        return row;
-    }
-
-    private LinearLayout twoActionCard(String title, String detail, String firstLabel, Runnable firstAction, String secondLabel, Runnable secondAction) {
-        LinearLayout row = actionCard(title, detail, firstLabel, firstAction);
-        Button second = new Button(this);
-        second.setText(secondLabel);
-        second.setOnClickListener(view -> secondAction.run());
-        row.addView(second);
-        return row;
-    }
-
-    private LinearLayout sourceActionCard(String title, String detail, String url, String actionLabel, Runnable action) {
-        if (!isWebUrl(url)) {
-            return actionCard(title, detail, actionLabel, action);
+        row.setPadding(0, vertical, 0, vertical);
+        TextView titleView = styledText(title, nested ? R.style.RowTitle_Nested : R.style.RowTitle);
+        titleView.setPadding(start, 0, end, 0);
+        row.addView(titleView);
+        if (detail != null && !detail.isEmpty()) {
+            TextView detailView = styledText(detail, R.style.RowDetail);
+            detailView.setPadding(start, dimen(R.dimen.space_xs), end, 0);
+            row.addView(detailView);
         }
-        return twoActionCard(title, detail, "Open", () -> openUrl(url), actionLabel, action);
+        LinearLayout buttons = null;
+        for (Action action : actions) {
+            if (action == null) {
+                continue;
+            }
+            if (buttons == null) {
+                buttons = actionBar();
+                // Buttons carry their own inset, so pull the bar back to align labels with the text.
+                int buttonInset = dimen(R.dimen.space_sm);
+                buttons.setPadding(start - buttonInset, 0, buttonInset, 0);
+                row.addView(buttons);
+                row.setPadding(0, vertical, 0, 0);
+            }
+            buttons.addView(textButton(action.label, action.run));
+        }
+        return row;
+    }
+
+    private void setSectionVisible(TextView heading, KeyedRowList list) {
+        int visibility = list.container().getChildCount() == 0 ? View.GONE : View.VISIBLE;
+        heading.setVisibility(visibility);
+        list.container().setVisibility(visibility);
     }
 }

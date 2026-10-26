@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app shell: a fixed header with the status line, one scrolling page
+     per tab, and a bottom tab bar. Page contents are built in MainActivity. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:id="@+id/header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/page_padding"
+        android:paddingTop="@dimen/space_md"
+        android:paddingEnd="@dimen/space_sm"
+        android:paddingBottom="@dimen/space_sm">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                style="@style/Heading"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/app_title" />
+
+            <LinearLayout
+                android:id="@+id/header_actions"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/status_text"
+            style="@style/BodyText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="0dp"
+            android:paddingEnd="@dimen/space_sm"
+            android:text="@string/connect_prompt" />
+    </LinearLayout>
+
+    <!-- Invisible rather than gone when idle, so content never shifts. -->
+    <ProgressBar
+        android:id="@+id/busy_indicator"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/busy_indicator_height"
+        android:indeterminate="true"
+        android:maxHeight="@dimen/busy_indicator_height"
+        android:minHeight="@dimen/busy_indicator_height"
+        android:visibility="invisible" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/alerts_page"
+            style="@style/TabPage">
+
+            <ScrollView style="@style/TabPage">
+
+                <LinearLayout
+                    android:id="@+id/alerts_content"
+                    style="@style/TabPageContent" />
+            </ScrollView>
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/watch_page"
+            style="@style/TabPage"
+            android:visibility="gone">
+
+            <ScrollView style="@style/TabPage">
+
+                <LinearLayout
+                    android:id="@+id/watch_content"
+                    style="@style/TabPageContent" />
+            </ScrollView>
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/settings_page"
+            style="@style/TabPage"
+            android:visibility="gone">
+
+            <ScrollView style="@style/TabPage">
+
+                <LinearLayout
+                    android:id="@+id/settings_content"
+                    style="@style/TabPageContent" />
+            </ScrollView>
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+        <!-- One event's full details, opened from the Watch tab. -->
+        <ScrollView
+            android:id="@+id/detail_page"
+            style="@style/TabPage"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/detail_content"
+                style="@style/TabPageContent" />
+        </ScrollView>
+    </FrameLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/hairline"
+        android:background="@color/line" />
+
+    <LinearLayout
+        android:id="@+id/tab_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/surface"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/tab_alerts"
+            style="@style/TabButton"
+            android:text="@string/tab_alerts" />
+
+        <Button
+            android:id="@+id/tab_watch"
+            style="@style/TabButton"
+            android:text="@string/tab_watch" />
+
+        <Button
+            android:id="@+id/tab_settings"
+            style="@style/TabButton"
+            android:text="@string/tab_settings" />
+    </LinearLayout>
+</LinearLayout>

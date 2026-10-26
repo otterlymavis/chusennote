@@ -3383,7 +3383,7 @@ def test_web_ui_subscribe_buttons_and_notifications_page(tmp_path):
         subs = json.loads(urllib.request.urlopen(f"{base}/api/subscriptions", timeout=5).read().decode("utf-8"))
         assert any(subscription["scope"] == "event_all" for subscription in subs)
         page = urllib.request.urlopen(f"{base}/notifications", timeout=5).read().decode("utf-8")
-        assert "Subscriptions" in page
+        assert "Reminders" in page
         assert "Event — all locations" in page
         assert 'name="channel_slack"' in page
         assert 'name="channel_discord"' in page
@@ -5477,8 +5477,8 @@ def test_web_needs_attention_does_not_link_non_web_source_urls(tmp_path):
     home = lm.render_web_page(str(db_path))
 
     assert 'href="keyword:Example"' not in home
-    assert "Tracked Artists" in home
-    assert "Tracked Events" in home
+    assert 'data-tab-target="upcoming"' in home
+    assert 'data-tab-target="watching"' in home
     assert "Source unavailable" not in home
 
 
@@ -5518,9 +5518,8 @@ def test_event_detail_groups_lottery_rounds_by_ticket_website(tmp_path):
     detail = lm.render_event_detail_page(str(db_path), 1)
 
     # Rounds are grouped by ticket website, keeping membership-specific names.
-    assert '<div class="round-group-head">' in detail
-    assert "<h3>pia</h3>" in detail
-    assert "<h3>eplus</h3>" in detail
+    assert "<span>pia</span>" in detail
+    assert "<span>eplus</span>" in detail
     assert "先着先行 / ゴールド会員" in detail
     assert "プレオーダー / 無料会員" in detail
 
@@ -5555,8 +5554,8 @@ def test_event_detail_groups_touring_rounds_by_city(tmp_path):
     assert "Locations &amp; Tour Dates" in detail
     assert 'class="tour-list"' in detail
     # Lottery rounds are grouped by ticket website, not simplified by city.
-    assert "<h3>pia</h3>" in detail
-    assert "<h3>tv-asahi-ticket</h3>" in detail
+    assert "<span>pia</span>" in detail
+    assert "<span>tv-asahi-ticket</span>" in detail
 
 
 def test_event_detail_renders_official_resale_dates_and_status(tmp_path):
@@ -5589,11 +5588,7 @@ def test_event_detail_renders_official_resale_dates_and_status(tmp_path):
     detail = lm.render_event_detail_page(str(db_path), 1)
 
     assert "Ticket Rounds" in detail
-    assert "Resale opens" in detail
-    assert "2026-07-01" in detail
-    assert "Resale closes" in detail
-    assert "2026-07-03" in detail
-    assert "Resale open" in detail
+    assert "Resale Jul 1" in detail
     assert "Example Productions" in detail
     assert "Example Lead" in detail
 
@@ -5956,37 +5951,25 @@ def test_web_server_serves_home_and_api_endpoints(tmp_path, monkeypatch):
         muted_calendar = urllib.request.urlopen(f"{base}/calendar.ics?include_muted=1", timeout=5).read().decode("utf-8")
 
         assert "chusennote" in home
-        assert "Tracked Artists" in home
-        assert "Tracked Events" in home
-        assert f'title="Server release">v{lm.APP_VERSION} ({lm.APP_BUILD}) · schema {lm.DB_SCHEMA_VERSION}</span>' in home
         assert 'role="tablist"' in home
-        assert 'data-tab-target="attention"' in home
-        assert 'data-tab-target="artists"' in home
-        assert 'data-tab-target="events"' in home
-        assert "Search exact event" in home
-        assert "Search events" in home
+        assert 'data-tab-target="upcoming"' in home
+        assert 'data-tab-target="watching"' in home
+        assert 'formaction="/event/search"' in home
+        assert 'href="/settings"' in home
         assert 'href="/events/1"' in home
         assert "Calendar feed" not in home
         assert "Muted Watches" not in home
         assert "Muted Sources" not in home
-        assert "Needs Attention" in home
-        assert 'title="Ticket status">Closing soon</span>' in home
-        assert 'title="Ticket status">closing_soon</span>' not in home
-        assert "Rounds 1" in home
+        assert '<span class="now">Closing soon</span>' in home
+        assert ">closing_soon</span>" not in home
         assert "Example Tour" in detail
         assert "Ticket window open" in detail
         assert ">lottery_open</span>" not in detail
-        assert "General Info" in detail
-        assert "Location" in detail
-        assert "Time" in detail
-        assert "Venue" in detail
-        assert "Ticket Rules" in detail
-        assert "Ticket Price" in detail
-        assert "Ticket Links" in detail
+        assert "Details" in detail
         assert "Ticket Rounds" in detail
         # Only populated facts render: this round has application dates but no
         # payment date, so that label is omitted rather than shown blank.
-        assert "Lottery opens" in detail
+        assert "Apply " in detail
         assert "Payment due" not in detail
         assert "event Example" not in home
         assert health["status"] == "ok"
@@ -6062,7 +6045,7 @@ def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatc
         search_home = post_text(f"{base}/event/search", {"keyword": "Example Musical"})
         assert "Example Musical Official" in search_home
         assert "https://official.example/stage" in search_home
-        assert 'title="Add exact event"' in search_home
+        assert 'title="Watch this page"' in search_home
 
         added_home = post_text(
             f"{base}/event/add",
@@ -6075,14 +6058,11 @@ def test_web_event_search_adds_exact_event_with_detail_link(tmp_path, monkeypatc
         )
         assert "Example Musical" in added_home
         assert 'href="/events/1"' in added_home
-        assert "Tickets 1" in added_home
-        assert "Rounds 1" in added_home
         detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert "Official page" in detail
         assert "https://t.pia.jp/example" in detail
         assert "第1次抽選先行" in detail
-        assert "Lottery opens" in detail
-        assert "Lottery closes" in detail
+        assert "Apply " in detail
         # This round has no payment or general-sale date, so those facts are
         # omitted instead of rendered as blank "unknown" cells.
         assert "Payment due" not in detail
@@ -6494,16 +6474,14 @@ def test_artist_detail_lists_discovered_events_sorted_by_date(tmp_path):
     lm.save_blocks(str(db_path), later, now="2026-06-02T00:00:00+00:00")
     lm.save_blocks(str(db_path), earlier, now="2026-06-03T00:00:00+00:00")
 
-    home = lm.render_web_page(str(db_path))
+    settings = lm.render_settings_page(str(db_path))
     detail = lm.render_artist_detail_page(str(db_path), artist.id)
 
-    assert f'href="/artists/{artist.id}"' in home
+    assert f'href="/artists/{artist.id}"' in settings
     assert detail.index("Earlier Show") < detail.index("Later Show")
-    assert "Date 2026-07-10" in detail
-    assert "Date 2026-09-20" in detail
-    assert "Venue 会場 Earlier Hall" in detail
-    assert "Tickets 0" in detail
-    assert "Rounds 0" in detail
+    assert "<span>Jul 10" in detail
+    assert "<span>Sep 20" in detail
+    assert "<span>会場 Earlier Hall</span>" in detail
 
 
 def test_artist_run_saves_multiple_discovered_events_under_artist_watch(tmp_path, monkeypatch):
@@ -6593,16 +6571,13 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert json_load_url(f"{base}/api/watchlist")[0]["keyword"] == "Example"
         home_with_preferences = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         assert "Example" in home_with_preferences
-        assert "not searched yet" in home_with_preferences
-        assert "Add or update a keyword watch" in home_with_preferences
-        assert "Add or update an artist watch" in home_with_preferences
+        assert "Not checked yet" in home_with_preferences
         assert 'name="regions"' in home_with_preferences
         assert 'name="venues"' in home_with_preferences
         assert 'name="alerts"' in home_with_preferences
-        assert 'id="artist-watch-editor"' in home_with_preferences
-        assert 'id="event-watch-editor"' in home_with_preferences
+        assert 'id="watch-filters"' in home_with_preferences
         assert 'data-edit-watch data-kind="event" data-keyword="Example" data-tags="musical"' in home_with_preferences
-        assert "tags musical | regions none | venues Example Hall | alerts New ticket round" in home_with_preferences
+        assert 'data-venues="Example Hall" data-alerts="new_lottery_round"' in home_with_preferences
 
         source = post_form(f"{base}/api/sources", {"watch": "Example", "url": "https://fan.example/private", "label": "FC", "private_note": "1"})
         assert source["private_note"] is True
@@ -6620,7 +6595,6 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
                 "alerts": "results_today",
             },
         )
-        assert "tags stage | regions Tokyo | venues New Hall | alerts Results today" in edited_home
         edited_watch = json_load_url(f"{base}/api/watchlist")[0]
         assert edited_watch["tags"] == "stage"
         assert edited_watch["preferred_regions"] == "Tokyo"
@@ -6630,7 +6604,7 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         home_with_source = urllib.request.urlopen(f"{base}/", timeout=5).read().decode("utf-8")
         detail_with_source = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert '<a href="https://fan.example/private">Open</a>' not in home_with_source
-        assert '<a class="action-link" href="https://fan.example/private">Open</a>' in detail_with_source
+        assert '<a class="button" href="https://fan.example/private">Open</a>' in detail_with_source
 
         removed_source = post_form(f"{base}/api/sources/remove", {"identifier": "1"})
         assert removed_source["removed"] is True
@@ -6644,8 +6618,7 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert events_with_muted_sources[0]["manual_sources"][0]["muted"] is True
 
         restored_source_home = post_text(f"{base}/source/unmute", {"identifier": "1"})
-        assert "Tracked Artists" in restored_source_home
-        assert "Tracked Events" in restored_source_home
+        assert 'data-tab-target="watching"' in restored_source_home
         assert "Muted Sources" not in restored_source_home
         assert json_load_url(f"{base}/api/sources")[0]["muted"] is False
 
@@ -6670,11 +6643,10 @@ def test_web_server_add_remove_and_run_actions(tmp_path, monkeypatch):
         assert json_load_url(f"{base}/api/upcoming?include_muted=1") == []
         muted_detail = urllib.request.urlopen(f"{base}/events/1", timeout=5).read().decode("utf-8")
         assert "Example Tour" in muted_detail
-        assert '<a class="action-link" href="https://fan.example/private">Open</a>' in muted_detail
+        assert '<a class="button" href="https://fan.example/private">Open</a>' in muted_detail
 
         restored_home = post_text(f"{base}/watch/unmute", {"identifier": "Example"})
-        assert "Tracked Artists" in restored_home
-        assert "Tracked Events" in restored_home
+        assert 'data-tab-target="watching"' in restored_home
         assert "Muted Watches" not in restored_home
         assert json_load_url(f"{base}/api/watchlist")[0]["muted"] is False
     finally:
@@ -6783,6 +6755,30 @@ def test_web_responses_apply_security_headers(tmp_path, monkeypatch):
         )
         with urllib.request.urlopen(proxied, timeout=5) as response:
             assert_web_security_headers(response, hsts=True)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_web_pages_link_a_cacheable_versioned_stylesheet(tmp_path):
+    server = lm.create_web_server(str(tmp_path / "stylesheet.sqlite3"), 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urllib.request.urlopen(f"{base}/privacy", timeout=5) as response:
+            page = response.read().decode("utf-8")
+        assert f'<link rel="stylesheet" href="{lm.web.PAGE_CSS_URL}">' in page
+        assert "<style>" not in page
+        assert lm.web.PAGE_CSS_URL.startswith("/static/page.css?v=")
+
+        with urllib.request.urlopen(f"{base}{lm.web.PAGE_CSS_URL}", timeout=5) as response:
+            stylesheet = response.read().decode("utf-8")
+            assert response.headers.get_content_type() == "text/css"
+            assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert stylesheet == lm.web.PAGE_CSS
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -7601,3 +7597,12 @@ def test_search_web_prefers_api_results_over_scraping(monkeypatch):
     results = lm.search_web("any keyword")
 
     assert [r.url for r in results] == ["https://api.example/"]
+
+
+def test_friendly_date_drops_current_year_and_keeps_free_text():
+    today = lm.dt.date(2026, 10, 25)
+    assert lm.web.friendly_date("2026-10-26T23:59", today) == "Oct 26, 23:59"
+    assert lm.web.friendly_date("2027-01-16", today) == "Jan 16, 2027"
+    assert lm.web.friendly_date("2026-07-01T00:00:00+00:00", today) == "Jul 1, 00:00"
+    assert lm.web.friendly_date("10月下旬", today) == "10月下旬"
+    assert lm.web.friendly_date("", today) == ""

@@ -1,100 +1,67 @@
 import SwiftUI
 
+/// The Home tab: ticket deadlines that need action, then recent updates.
 struct NotificationsView: View {
-    @ObservedObject var store: ChusennoteStore
-    @ObservedObject var notificationPermission: NotificationPermission
+    let store: ChusennoteStore
+    let notificationPermission: NotificationPermission
     @Binding var selectedTab: AppTab
-    @State private var showsRecentAlerts = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Spacing.lg) {
-                NotificationHero(store: store)
+        List {
+            ErrorSection(store: store)
 
-                NotificationPermissionCard(permission: notificationPermission)
-
-                HStack(spacing: Spacing.sm) {
-                    MetricTile(title: "Watching", value: "\(store.trackedEvents.count)", systemImage: "ticket", tint: .info)
-                    MetricTile(title: "Due Soon", value: "\(store.upcoming.count)", systemImage: "clock.badge.exclamationmark", tint: .warning)
-                    MetricTile(title: "Alerts", value: "\(store.alerts.count)", systemImage: "bell", tint: store.alerts.isEmpty ? .info : .danger)
+            if !notificationPermission.isEnabled {
+                Section {
+                    NotificationPermissionRows(permission: notificationPermission)
                 }
+            }
 
-                NotificationSection(title: "Needs Attention", icon: "clock.badge.exclamationmark", accent: .warning) {
-                    if store.upcoming.isEmpty {
-                        EmptyStateRow(title: "No deadlines need attention", detail: "Add a ticket watch, then run checks.")
+            Section("Upcoming") {
+                if store.upcoming.isEmpty {
+                    if store.trackedEvents.isEmpty {
+                        EmptyRow("Watch an event to see its ticket deadlines here.")
+                        Button("Watch an Event") {
+                            selectedTab = .watch
+                        }
                     } else {
-                        if let first = store.upcoming.first {
-                            FeaturedDeadlineCard(item: first)
-                        }
-                        ForEach(Array(store.upcoming.dropFirst().prefix(5))) { item in
-                            UpcomingDeadlineRow(item: item)
-                        }
+                        EmptyRow("Nothing needs your attention right now.")
                     }
-                }
-
-                HStack(spacing: Spacing.sm) {
-                    Button {
-                        Task { await store.runEventWatches() }
-                    } label: {
-                        ProgressLabel(
-                            title: store.isRunningChecks ? "Checking" : "Run Checks",
-                            systemImage: "play.circle.fill",
-                            isLoading: store.isRunningChecks
-                        )
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.isRunningChecks)
-
-                    Button {
-                        selectedTab = .watch
-                    } label: {
-                        Label("Watches", systemImage: "ticket")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                NotificationSection(title: "Recent Alerts", icon: "bell.badge", accent: .info) {
-                    DisclosureGroup(isExpanded: $showsRecentAlerts) {
-                        VStack(alignment: .leading, spacing: Spacing.md) {
-                            if store.alerts.isEmpty {
-                                EmptyStateRow(title: "No alert history yet", detail: "New reminders appear here.")
-                            } else {
-                                ForEach(store.alerts.prefix(10)) { alert in
-                                    RowContent(
-                                        title: alertTypeText(alert),
-                                        subtitle: chusennoteAlertText(alert),
-                                        systemImage: "bell.badge"
-                                    )
-                                }
+                } else {
+                    ForEach(store.upcoming.prefix(8)) { item in
+                        if let event = store.ticketEvents.first(where: { $0.id == item.eventId }) {
+                            NavigationLink {
+                                EventDetailView(store: store, event: event)
+                            } label: {
+                                TextRow(title: item.eventTitle ?? "Untitled event", subtitle: upcomingStatusText(item))
                             }
+                        } else {
+                            LinkRow(
+                                title: item.eventTitle ?? "Untitled event",
+                                subtitle: upcomingStatusText(item),
+                                url: chusennoteWebURL(item.url)
+                            )
                         }
-                        .padding(.top, Spacing.sm)
-                    } label: {
-                        Label("\(store.alerts.count)", systemImage: "bell.badge")
-                            .font(Typography.sectionHeader)
                     }
                 }
             }
-            .padding(Spacing.xl)
-            .padding(.bottom, Spacing.scrollBottomInset)
+
+            if !store.alerts.isEmpty {
+                Section("Recent Updates") {
+                    ForEach(store.alerts.prefix(10)) { alert in
+                        TextRow(title: alertTypeText(alert), subtitle: chusennoteAlertText(alert))
+                    }
+                }
+            }
         }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle("Notifications")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Home")
+        .refreshable {
+            await store.refresh()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await store.refresh() }
-                } label: {
-                    ProgressLabel(
-                        title: store.isRefreshing ? "Refreshing" : "Refresh",
-                        systemImage: "arrow.clockwise",
-                        isLoading: store.isRefreshing
-                    )
+                RunChecksButton(isRunning: store.isRunningChecks) {
+                    Task { await store.runEventWatches() }
                 }
-                .disabled(store.isRefreshing)
             }
         }
     }

@@ -12,6 +12,17 @@ Event detail includes organizer and cast/lineup sections when an official page
 publishes those facts under explicit labels. The app does not infer people or
 companies from unlabeled prose.
 
+The app has three tabs: Home (upcoming ticket deadlines and recent updates),
+Watching, and Settings. In Watching, tap + and choose Keyword or Official Page;
+filters and reminder choices stay collapsed until needed. Swipe an event to edit
+or remove it. Settings contains Account, notifications, the calendar feed, and,
+under More, artist watches and your own sources. Their Add actions open a
+separate editor, leaving saved items visible first.
+
+Debug builds also include Settings → Developer Tools for the server override,
+release/schema diagnostics, push-device tokens, and Send Due Reminders. These
+controls are excluded from Release builds.
+
 ## Run in Xcode
 
 1. Open `ios/Chusennote.xcodeproj` in Xcode.
@@ -22,7 +33,7 @@ The app defaults to the hosted production API at
 python lottery_monitor.py web --db chusennote.sqlite3 --port 8877
 ```
 
-Then set the Base URL in the app's Settings screen to
+Then set the Base URL in the Debug app's Settings → Developer Tools screen to
 `http://127.0.0.1:8877` in the iOS simulator. On a physical device, use the
 computer's private LAN address instead.
 
@@ -93,3 +104,34 @@ archive/export reproducible without relying on an Xcode account while leaving
 Debug signing automatic. A successful archive alone is not distribution proof:
 verify that export produces an IPA signed by an Apple Distribution identity and
 containing a production push entitlement.
+
+## TestFlight acceptance on an iPhone
+
+An uploaded, validated build is not installed automatically. In App Store
+Connect, add the intended Apple ID to an internal TestFlight group containing
+the specific build. On the iPhone, sign in to the TestFlight app with that same
+Apple ID, accept the invitation, and install Chusennote. Record the build number
+shown in TestFlight before testing; a simulator run or an older IPA does not
+verify this distributed build.
+
+For build `0.1.0 (1)`, check the following on the installed app:
+
+1. Open the default hosted API without entering a local server URL. Verify
+   Home/Notifications and Settings load without a connection error.
+2. In Watch, add an event keyword, run checks, and inspect any ticket timeline
+   and its official source link. Empty results alone are not a delivery failure.
+3. In Watch → Add → Official Page, search for a known public event page, add one
+   result, and verify the success/error message and resulting watch. A saved
+   page still needs source verification before relying on ticket dates.
+4. Edit the watch's tags, region/venue filters, and reminder choices; then
+   confirm the saved values survive app restart. Remove and restore a watch.
+5. Check account sign-in/out only with a disposable test account. Keep
+   permanent account deletion for a separately authorized disposable account.
+6. Check notification permission and token registration on the physical
+   device. A visible alert requires a real due event plus working backend FCM
+   and APNs configuration; an install or permission grant alone proves neither.
+
+Record the device/iOS version, Apple ID used for TestFlight, build number,
+steps, expected versus observed behavior, and screenshots for any failure.
+Keep TestFlight installation, hosted API reachability, and real push delivery
+as separate acceptance results.

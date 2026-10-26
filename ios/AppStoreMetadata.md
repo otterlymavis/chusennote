@@ -53,7 +53,7 @@ URLs:
 
 - The production API is `https://chusennote.onrender.com`.
 - Account creation is optional; the anonymous workspace remains usable.
-- Account deletion is in **Settings → Server → Delete Account** and requires
+- Account deletion is in **Settings → Account → Delete Account** and requires
   the current password plus a destructive confirmation.
 - Push delivery uses Firebase Cloud Messaging backed by production APNs.
 - The app does not sell tickets or unlock paid digital content.
@@ -69,6 +69,8 @@ The listing should describe data used for app functionality, not tracking:
 - User Content → Other User Content: watches, tags, regions, venues, manual
   public source links, and reminder preferences; linked to identity when signed
   in; app functionality.
+- Identifiers → User ID: the account identifier used to scope signed-in data;
+  linked to identity, app functionality.
 - Identifiers → Device ID: Firebase device token; linked to identity when
   signed in; app functionality.
 - Diagnostics: disclose only if production logging is changed to retain crash,

@@ -21,8 +21,6 @@
 		A10000000000000000000003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* Models.swift */; };
 		A10000000000000000000004 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* APIClient.swift */; };
 		B59BF84C9B7A7DC5B3B474A4 /* RowComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1CAC33B19250E21B5E6A7D0 /* RowComponents.swift */; };
-		C53DD85830F66DD1F8DC8AC3 /* ViewModifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF3F164EB3963F656F4CEB60 /* ViewModifiers.swift */; };
-		D91FB95D6A0B1A99B8878806 /* CardComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D28690642AE73142E42BD4 /* CardComponents.swift */; };
 		E059F3641A554ACFEC062E5B /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A2C30AD03B680C2D1751AD4 /* DesignTokens.swift */; };
 		F06ECBBCB56B9997E5EB04B9 /* WatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6708F5B7F71DA636F9B778 /* WatchView.swift */; };
 		F20000000000000000000001 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000003 /* FirebaseMessaging */; };
@@ -46,7 +44,6 @@
 		2506980B6584C9C168A81495 /* ControlComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ControlComponents.swift; sourceTree = "<group>"; };
 		29660E0D22DCC37908E73F45 /* SettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		2A2C30AD03B680C2D1751AD4 /* DesignTokens.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
-		96D28690642AE73142E42BD4 /* CardComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CardComponents.swift; sourceTree = "<group>"; };
 		9DB6B6B9E91D1A502FFFCA78 /* TicketRoundComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TicketRoundComponents.swift; sourceTree = "<group>"; };
 		A10000000000000000000010 /* Chusennote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Chusennote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000011 /* ChusennoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChusennoteApp.swift; sourceTree = "<group>"; };
@@ -55,7 +52,6 @@
 		A10000000000000000000014 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AB6708F5B7F71DA636F9B778 /* WatchView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatchView.swift; sourceTree = "<group>"; };
-		AF3F164EB3963F656F4CEB60 /* ViewModifiers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ViewModifiers.swift; sourceTree = "<group>"; };
 		D250AEFE2184D33F628256DF /* EventDetailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventDetailView.swift; sourceTree = "<group>"; };
 		DCCF68DDA9C3D5F5DF380734 /* NotificationPermission.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotificationPermission.swift; sourceTree = "<group>"; };
 		5E6F7089A1B2C3D41A2B3C4D /* KeychainStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
@@ -92,7 +88,6 @@
 			isa = PBXGroup;
 			children = (
 				2A2C30AD03B680C2D1751AD4 /* DesignTokens.swift */,
-				AF3F164EB3963F656F4CEB60 /* ViewModifiers.swift */,
 			);
 			name = Theme;
 			path = Theme;
@@ -114,7 +109,6 @@
 			isa = PBXGroup;
 			children = (
 				F1CAC33B19250E21B5E6A7D0 /* RowComponents.swift */,
-				96D28690642AE73142E42BD4 /* CardComponents.swift */,
 				9DB6B6B9E91D1A502FFFCA78 /* TicketRoundComponents.swift */,
 				2506980B6584C9C168A81495 /* ControlComponents.swift */,
 			);
@@ -310,9 +304,7 @@
 				A10000000000000000000003 /* Models.swift in Sources */,
 				A10000000000000000000004 /* APIClient.swift in Sources */,
 				E059F3641A554ACFEC062E5B /* DesignTokens.swift in Sources */,
-				C53DD85830F66DD1F8DC8AC3 /* ViewModifiers.swift in Sources */,
 				B59BF84C9B7A7DC5B3B474A4 /* RowComponents.swift in Sources */,
-				D91FB95D6A0B1A99B8878806 /* CardComponents.swift in Sources */,
 				3D6A514E83D0D059F7945013 /* TicketRoundComponents.swift in Sources */,
 				9CBC56681498CD73DCA0BD97 /* ControlComponents.swift in Sources */,
 				4DBF9419CE49F3D6474E881B /* NotificationsView.swift in Sources */,

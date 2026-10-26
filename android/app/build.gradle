@@ -35,6 +35,10 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig true
+    }
+
     buildTypes {
         release {
             if (hasReleaseSigning) {
@@ -56,6 +60,7 @@ dependencies {
     implementation platform("com.google.firebase:firebase-bom:33.5.1")
     implementation "com.google.firebase:firebase-messaging"
     implementation "androidx.core:core:1.13.1"
+    implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"
     // Keystore-backed encrypted storage for the account's bearer token (a
     // full-access credential that plain SharedPreferences' unencrypted XML
     // file isn't a safe place for).

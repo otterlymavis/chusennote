@@ -2,8 +2,9 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-final class NotificationPermission: ObservableObject {
-    @Published private(set) var status: UNAuthorizationStatus = .notDetermined
+@Observable
+final class NotificationPermission {
+    private(set) var status: UNAuthorizationStatus = .notDetermined
 
     private var pushIsConfigured: Bool {
         DeviceRegistration.firebaseMessagingConfigured
@@ -22,7 +23,7 @@ final class NotificationPermission: ObservableObject {
     }
 
     var title: String {
-        guard pushIsConfigured else { return "Firebase is not configured" }
+        guard pushIsConfigured else { return "Notifications unavailable" }
         switch status {
         case .authorized:
             return "Notifications are on"
@@ -41,7 +42,7 @@ final class NotificationPermission: ObservableObject {
 
     var detail: String {
         guard pushIsConfigured else {
-            return "Add GoogleService-Info.plist to enable push registration."
+            return "Push reminders are unavailable in this build. Check Alerts or use the calendar feed for ticket deadlines."
         }
         switch status {
         case .authorized, .provisional, .ephemeral:
@@ -56,12 +57,12 @@ final class NotificationPermission: ObservableObject {
     }
 
     var actionTitle: String {
-        guard pushIsConfigured else { return "Firebase setup required" }
+        guard pushIsConfigured else { return "Notifications unavailable" }
         return status == .denied ? "Open iOS Settings" : "Enable Notifications"
     }
 
     var actionIcon: String {
-        guard pushIsConfigured else { return "wrench.and.screwdriver" }
+        guard pushIsConfigured else { return "bell.slash" }
         return status == .denied ? "gearshape" : "bell.badge.fill"
     }
 

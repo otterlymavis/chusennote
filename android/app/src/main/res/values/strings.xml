@@ -1,5 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_title" translatable="false">chusennote</string>
+    <string name="connect_prompt">Your ticket updates, in one place.</string>
+    <string name="watch_intro">Follow events and keep track of their ticket dates.</string>
+    <string name="exact_event_intro">Find an official page, review it, then follow that event.</string>
+    <string name="keyword_watch_intro">Discover events that match a name or keyword.</string>
+    <string name="find_event_page">Find event page</string>
+    <string name="watch_keyword">Watch a keyword</string>
+    <string name="watch_preferences">Tags &amp; filters</string>
+    <string name="manage_reminders">Manage reminders</string>
+    <string name="advanced_tracking">More</string>
+    <string name="advanced_tracking_intro">Follow artists or attach your own ticket sources.</string>
+    <string name="developer_tools">Developer tools</string>
+    <string name="notification_settings">Notification Settings</string>
+    <string name="notifications_enabled">Notifications are allowed on this device.</string>
+    <string name="notifications_disabled">Notifications are off. Enable them in device settings for push reminders.</string>
+    <string name="updated_just_now">Updated just now</string>
+    <string name="updates_may_be_delayed">Some updates may be delayed. Pull down to refresh.</string>
+    <string name="tab_alerts">Home</string>
+    <string name="tab_watch">Watching</string>
+    <string name="tab_settings">Settings</string>
+    <string name="check_now">Check Now</string>
+    <string name="back_to_events">‹ Back</string>
+    <string name="add_artist_ellipsis">Add Artist…</string>
+    <string name="add_source_ellipsis">Add Source…</string>
     <string name="refresh">Refresh</string>
     <string name="open_calendar_feed">Open Calendar Feed</string>
     <string name="register">Register</string>
@@ -7,16 +31,16 @@
     <string name="log_out">Log Out</string>
     <string name="delete_account">Delete Account</string>
     <string name="add_artist">Add Artist</string>
-    <string name="run_artist_watches">Run Artist Watches</string>
+    <string name="run_artist_watches">Check Artists Now</string>
     <string name="add_event">Add Event</string>
-    <string name="run_event_watches">Run Event Watches</string>
     <string name="search_events">Search Events</string>
     <string name="private_note">Private note</string>
     <string name="add_source">Add Source</string>
-    <string name="run_due_reminders">Run Due Reminders</string>
+    <string name="run_due_reminders">Send Due Reminders</string>
 
     <string name="push_disabled">Push disabled: add google-services.json to enable notifications.</string>
     <string name="loading">Loading…</string>
+    <string name="load_failed_retry">Couldn\'t reach the server. Pull down to try again.</string>
     <string name="could_not_load">Could not load chusennote: %1$s</string>
     <string name="enter_api_base_url">Enter the API base URL first.</string>
     <string name="could_not_open_calendar">Could not open calendar feed: %1$s</string>
@@ -94,6 +118,10 @@
         <item quantity="one">%1$d event</item>
         <item quantity="other">%1$d events</item>
     </plurals>
+    <string name="section_collapsed">%1$s ›</string>
+    <string name="section_expanded">%1$s ▾</string>
+    <string name="section_collapsed_description">%1$s, collapsed</string>
+    <string name="section_expanded_description">%1$s, expanded</string>
     <plurals name="alert_count">
         <item quantity="one">%1$d alert</item>
         <item quantity="other">%1$d alerts</item>

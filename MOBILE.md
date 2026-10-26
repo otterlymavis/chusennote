@@ -1,10 +1,26 @@
 # Mobile apps
 
-chusennote now includes lightweight native mobile clients for the local web/API server.
+chusennote includes native iOS and Android clients. Both default to the hosted
+API at `https://chusennote.onrender.com`; a local server is optional for
+development, not required to use a distributed app.
 
-## Start the API server
+## Check the hosted API
 
-Run this from the repository root before opening either app:
+Before testing a distributed build, verify the public service and its
+PostgreSQL backing store:
+
+```bash
+python3 lottery_monitor.py smoke \
+  --base-url https://chusennote.onrender.com --require-postgres
+```
+
+This checks public API reachability, not account sign-in, scheduled checks, or
+push delivery on a real device. A free hosted service may take time to wake.
+
+## Optional local development server
+
+To develop against local changes, run this from the repository root and change
+the app's Base URL in Settings to the appropriate loopback or LAN address:
 
 ```bash
 python lottery_monitor.py web --db chusennote.sqlite3 --port 8877
@@ -56,12 +72,16 @@ settings screen displays all three so operators can confirm which server
 release the app is using; older servers remain decodable and show the release
 as unavailable.
 
-They display the same two product lanes as the web app:
+The web app and both mobile clients share one layout:
 
-- **Tracked Artists**: basic artist/event discovery watches with saved date and venue clues.
-- **Tracked Events**: ticket and lottery timeline watches.
+- **Home** (web: Upcoming): ticket deadlines that need action, then recent updates.
+- **Watching**: event watches, each shown as its found event, or as the keyword until one is found.
+- **Settings**: account, reminders, calendar feed, and, under More, artist watches and manual sources.
 
-Both mobile clients can add and remove tracked artists, add and remove tracked events, set and show tags plus preferred regions/venues, set and show event alert filters, restore muted tracked artists/events, add and remove manual public sources, store private source notes, open official event pages, web source URLs, and urgent ticket URLs, refresh current data, run tracked event checks, show server health, open the calendar feed, show “Needs Attention” ticket dates, show ticket evidence snippets, show event-detail manual sources where available, show official-resale windows, show organizer and cast/lineup sections from explicitly labeled public-page facts, and show recent alerts with watch context from the local server. The iOS client additionally provides dedicated official-resale alert toggles; the additive API fields remain safe for older clients. The Python server still performs the actual scraping, persistence, and alert generation. The apps remember the API base URL locally after you change it.
+Rows use the same short wording everywhere: status · date · place, with dates
+such as `Oct 26, 23:59` (the year is shown only when it differs from this year).
+
+Both mobile clients can add and remove tracked artists, add and remove tracked events, set and show tags plus preferred regions/venues, set and show event alert filters, restore muted tracked artists/events, add and remove manual public sources, store private source notes, open official event pages, web source URLs, and urgent ticket URLs, refresh current data, run tracked event checks, show server health, open the calendar feed, show upcoming ticket dates, show ticket evidence snippets, show event-detail manual sources where available, show official-resale windows, show organizer and cast/lineup sections from explicitly labeled public-page facts, and show recent alerts with watch context from the configured server. The iOS client additionally provides dedicated official-resale alert toggles; the additive API fields remain safe for older clients. The Python server still performs the actual scraping, persistence, and alert generation. The apps remember the API base URL locally after you change it.
 
 `/api/events` and `/api/upcoming` retain machine-readable `status` codes and
 also expose `status_label` for display. `/api/alerts` likewise retains `type`
@@ -85,27 +105,41 @@ calendar authorization failure instead of opening the anonymous feed.
 Any supplied blank, invalid, duplicated, or rotated calendar token returns 401;
 only a request with no token at all selects the local anonymous calendar.
 
-Watch and source removal in the apps is a local soft mute. Muted tracked artists/events appear in the mobile "Muted Watches" section, muted manual sources appear in "Muted Sources", and both can be restored there.
+Watch and source removal in the apps is a local soft mute. Muted tracked artists/events appear in a "Removed" section (shown only when there is something to restore), as do muted manual sources, and both can be restored there.
 
-Recurring checks run on the desktop/server side with `python lottery_monitor.py watch loop ...` or `scripts/start-chusennote-monitor.ps1`. On Windows, `scripts/install-chusennote-monitor-task.ps1` can also register a local Task Scheduler job that runs saved checks periodically. The mobile apps read the saved local state; they do not schedule scraping themselves.
+Recurring checks run server-side, not in the mobile apps. The hosted deployment
+uses the separate `Hosted monitor` GitHub Actions workflow against the same
+PostgreSQL database; its schedule and actual delivery must be verified
+separately. For optional local development, use `python lottery_monitor.py
+watch loop ...` or `scripts/start-chusennote-monitor.ps1`. On Windows,
+`scripts/install-chusennote-monitor-task.ps1` can register a local Task
+Scheduler job. The mobile apps read server state; they do not schedule
+scraping themselves.
 
 ## Android
 
 Open `android/` in Android Studio.
 
-Default emulator URL:
+Default API URL:
+
+```text
+https://chusennote.onrender.com
+```
+
+Optional local emulator URL:
 
 ```text
 http://10.0.2.2:8877
 ```
 
-For a physical Android device, change the base URL in the app to your computer's LAN IP, for example:
+For local development on a physical Android device, change the base URL in the
+app to your computer's LAN IP, for example:
 
 ```text
 http://192.168.1.20:8877
 ```
 
-Start the server with LAN binding first:
+Start the optional local server with LAN binding first:
 
 ```powershell
 .\scripts\start-chusennote.ps1 -Lan
@@ -115,15 +149,22 @@ Start the server with LAN binding first:
 
 Open `ios/Chusennote.xcodeproj` in Xcode.
 
-Default simulator URL:
+Default API URL:
+
+```text
+https://chusennote.onrender.com
+```
+
+Optional local simulator URL:
 
 ```text
 http://127.0.0.1:8877
 ```
 
-For a physical iPhone, change the base URL in the app to your computer's LAN IP.
+For local development on a physical iPhone, change the base URL in the app to
+your computer's LAN IP. Distributed builds should keep the hosted URL.
 
-Start the server with LAN binding first:
+Start the optional local server with LAN binding first:
 
 ```powershell
 .\scripts\start-chusennote.ps1 -Lan
