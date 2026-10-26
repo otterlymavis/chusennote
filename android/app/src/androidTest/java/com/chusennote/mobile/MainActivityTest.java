@@ -101,6 +101,7 @@ public class MainActivityTest {
     @Test
     public void fullFormCanScrollToRegisteredDevices() {
         showTab(R.id.tab_settings);
+        openSection(R.id.developer_tools_button);
         onView(withId(R.id.registered_devices_heading))
                 .perform(scrollTo())
                 .check(matches(isDisplayed()));
@@ -108,6 +109,11 @@ public class MainActivityTest {
 
     @Test
     public void accountDeletionControlIsVisibleInAccountSection() {
+        // Deletion is offered only to a signed-in account.
+        SecureTokenStore.setApiToken(ApplicationProvider.getApplicationContext(), "signed-in-token");
+        scenario.close();
+        scenario = ActivityScenario.launch(MainActivity.class);
+        drainMainThread();
         showTab(R.id.tab_settings);
         onView(withId(R.id.delete_account_button))
                 .perform(scrollTo())
@@ -116,12 +122,16 @@ public class MainActivityTest {
 
     @Test
     public void serverReleaseIdentityIsVisible() {
+        showTab(R.id.tab_settings);
+        openSection(R.id.developer_tools_button);
         assertEventuallyDisplayed("Server ok - v0.1.0 (1) - schema 16 - 0 artists, 0 events, 0 alerts.");
     }
 
     @Test
     public void addEventPostsFormAndRendersRefreshedWatch() throws Exception {
         showTab(R.id.tab_watch);
+        openSection(R.id.add_event_flow_button);
+        openSection(R.id.keyword_event_mode_button);
         int deviceFetchesBefore = dispatcher.deviceFetches.get();
         onView(withId(R.id.event_keyword_input))
                 .perform(scrollTo(), replaceText("Runtime Musical"), closeSoftKeyboard());
@@ -142,13 +152,14 @@ public class MainActivityTest {
     @Test
     public void exactEventSearchAndAddUseSelectedResult() throws Exception {
         showTab(R.id.tab_watch);
+        openSection(R.id.add_event_flow_button);
         onView(withId(R.id.exact_event_input))
                 .perform(scrollTo(), replaceText("Runtime Musical"), closeSoftKeyboard());
         onView(withId(R.id.exact_event_search_button)).perform(scrollTo(), click());
 
         assertTrue("Exact-event search was not received", dispatcher.exactSearch.await(10, TimeUnit.SECONDS));
         assertEventuallyDisplayed("Official Runtime Musical");
-        onView(withText("Add Exact Event")).perform(scrollTo(), click());
+        onView(withText("Watch")).perform(scrollTo(), click());
 
         assertTrue("Exact-event add was not received", dispatcher.exactAdd.await(10, TimeUnit.SECONDS));
         Map<String, String> form = parseForm(dispatcher.exactAddBody.get());
@@ -162,6 +173,7 @@ public class MainActivityTest {
     @Test
     public void publicCleartextServerCannotReceiveAccountCredentials() {
         showTab(R.id.tab_settings);
+        openSection(R.id.developer_tools_button);
         onView(withId(R.id.base_url_input))
                 .perform(scrollTo(), replaceText("http://tickets.example"), closeSoftKeyboard());
         onView(withId(R.id.email_input))
@@ -297,6 +309,11 @@ public class MainActivityTest {
 
     private void showTab(int tabId) {
         onView(withId(tabId)).perform(click());
+    }
+
+    /** Expands a collapsed section or form, as a person would before using it. */
+    private void openSection(int toggleId) {
+        onView(withId(toggleId)).perform(scrollTo(), click());
     }
 
     private void drainMainThread() {

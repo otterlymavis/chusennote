@@ -940,7 +940,7 @@ public class MainActivity extends Activity {
                     title.isEmpty() ? url : title,
                     detail,
                     isWebUrl(url)
-                            ? new Action("Add Exact Event", () -> addExactEvent(exactEventSearchKeyword, title, url, snippet))
+                            ? new Action("Watch", () -> addExactEvent(exactEventSearchKeyword, title, url, snippet))
                             : null,
                     openAction("Open", url)));
         }
