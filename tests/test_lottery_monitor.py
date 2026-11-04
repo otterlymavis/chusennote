@@ -759,7 +759,7 @@ def test_extract_ticket_links_from_official_page():
     assert info.title == "Example Musical Official"
     assert info.official_page == "https://official.example/stage"
     assert info.ticket_links[0].url == "https://eplus.jp/example-musical/"
-    assert "公演日" in info.event_dates[0]
+    assert info.event_dates == ("2026年7月10日",)
     assert "Example Hall" in info.venues[0]
 
 
@@ -884,7 +884,7 @@ def test_invalid_json_ld_is_ignored_without_losing_visible_page_content():
 
     assert page.structured_data == ()
     assert info.title == "Visible title"
-    assert "公演日" in info.event_dates[0]
+    assert info.event_dates == ("2026年7月10日",)
 
 
 def test_extract_ticket_links_ignores_social_share_and_info_urls():
@@ -1065,6 +1065,37 @@ def test_extract_event_dates_captures_performance_period_not_ticketing():
 
     assert "2026年7月25日(土)～8月23日(日)" in dates
     assert all("2026年1月24日" not in date for date in dates)
+
+
+def test_extract_event_dates_keeps_only_the_labeled_date_not_following_ticket_prose():
+    text = (
+        "YOASOBI ARENA TOUR 2026 公演日:2027年1月16日(土) 開場16:00 開演17:00 "
+        "会場:さいたまスーパーアリーナ オフィシャル最速先行(抽選) 受付期間:2026年11月10日(火)12:00〜"
+    )
+
+    assert lm.extract_event_dates(text) == ("2027年1月16日(土)",)
+
+
+def test_extract_event_dates_keeps_each_of_several_labeled_dates():
+    text = "東京 公演日：2026年7月10日(金) 大阪 公演日：2026年7月11日(土) 会場 X"
+
+    assert lm.extract_event_dates(text) == ("2026年7月10日(金)", "2026年7月11日(土)")
+
+
+def test_extract_event_dates_keeps_extra_days_joined_to_the_labeled_date():
+    assert lm.extract_event_dates("公演日：2026年7月10日(金)・11日(土) 会場 X") == ("2026年7月10日(金)・11日(土)",)
+    assert lm.extract_event_dates("公演日：7月10日、11日、12日 受付期間：6月1日～") == ("7月10日、11日、12日",)
+
+
+def test_extract_event_dates_does_not_join_a_day_that_starts_the_next_sentence():
+    assert lm.extract_event_dates("公演日：2026年7月10日、18日に当選発表") == ("2026年7月10日",)
+
+
+def test_extract_venues_drops_a_sale_qualifier_glued_to_the_ticket_label():
+    assert lm.extract_venues("会場:京セラドーム大阪 FC先行(抽選) 受付期間") == ("京セラドーム大阪",)
+    assert lm.extract_venues("会場:さいたまスーパーアリーナ オフィシャル最速先行(抽選)") == ("さいたまスーパーアリーナ",)
+    assert lm.extract_venues("会場 Zepp Haneda 抽選受付") == ("Zepp Haneda",)
+    assert lm.extract_venues("会場 Example Hallチケット抽選先行はこちら") == ("Example Hall",)
 
 
 def test_extract_event_dates_captures_shiki_slash_performance_periods():
